@@ -33,6 +33,9 @@ public class NodeApi {
     /** Returned as the error message when the node says we are not enabled yet. */
     public static final String ERR_NOT_ENABLED = "NOT_ENABLED";
 
+    /** Returned as the error message when the node dropped an over-256KB reply (see {@link #cmd}). */
+    public static final String ERR_TOO_LONG = "TOO_LONG";
+
     private static final long READ_TIMEOUT_MS = 30000;
     private static final long WRITE_TIMEOUT_MS = 180000;   // build + proof-of-work + post is slow on mobile
 
@@ -77,6 +80,14 @@ public class NodeApi {
                 && (((Activity) mContext).isFinishing() || ((Activity) mContext).isDestroyed());
     }
 
+    /** The node's over-limit stub: {@code status:false} with a String {@code response} containing "too long".
+     *  The node discards any command reply over 256,000 bytes and returns this instead of the data. */
+    private static boolean isTooLong(JSONObject j) {
+        if (j == null || j.optBoolean("status", true)) return false;
+        Object r = j.opt("response");
+        return r instanceof String && ((String) r).toLowerCase().contains("too long");
+    }
+
     public void cmd(String command, Cb cb) {
         if (mReleased) return;
         final boolean[] done = {false};
@@ -108,6 +119,11 @@ public class NodeApi {
                         if (cb != null) cb.onError(ERR_NOT_ENABLED);
                         return;
                     }
+                    // The node CAPS any reply at 256,000 bytes: an over-limit command returns a
+                    // {"status":false,"response":"Result too long! MAX(256000)"} stub with NO data. Route it to
+                    // onError(ERR_TOO_LONG) so a reader can shrink/retry or message — instead of parsing the
+                    // stub's String `response` as an empty array and silently showing nothing.
+                    if (isTooLong(zResponse)) { if (cb != null) cb.onError(ERR_TOO_LONG); return; }
                     if (cb != null) cb.onResult(zResponse);
                 });
             }
