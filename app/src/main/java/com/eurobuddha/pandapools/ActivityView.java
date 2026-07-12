@@ -48,12 +48,28 @@ public class ActivityView extends BaseView {
     private boolean showGlobal = false;
     private boolean polling = false;
 
-    // The shared pool scan feeds the global swap-feed: ingest each scan's reserves (GlobalFeed diffs them
-    // against the previous scan to detect swaps) and repaint if the ALL POOLS view is showing.
+    // Every pool covenant address this device has ever seen, lowercased, in BOTH hex (0x) and Mx forms. MY
+    // ACTIVITY keeps only confirmed on-chain rows that touch one of these (and moved my wallet) — so the tab
+    // shows my pool activity, not the whole node-wallet history. Grows on discovery + own pools, PERSISTED
+    // across sessions (a past swap on a pool that has since closed must still match after a restart), never
+    // shrinks (it must remember a closed pool's address to keep matching my past swaps on it). Grows
+    // monotonically, but bounded by the pools this device ever touched — trivial storage at realistic counts.
+    // Deliberately excludes the SENTINEL: creates already match via the covenant address, and matching the
+    // sentinel would surface background re-announce dust beacons as noise.
+    private static final String ADDR_PREFS = "pandapools_known_addrs";
+    private static final String ADDR_KEY = "addrs";
+    private final Set<String> knownPandaAddrs = new HashSet<>();
+
+    // The shared pool scan feeds the global lifecycle feed (creates/swaps/adds/withdrawals) and keeps the
+    // known-address set current. GlobalFeed diffs each scan's reserves against the previous one.
     private final PoolBook.Listener poolListener = new PoolBook.Listener() {
         @Override public void onPools(List<Pool> pools) {
+            boolean added = false;
+            for (Pool p : pools) { added |= addAddr(p.address); added |= addAddr(p.mxaddress); }
+            if (added) persistKnownAddrs();
             GlobalFeed.ingest(act, pools);
-            if (showGlobal && visible()) scheduleRender();
+            // repaint ALL POOLS for the new feed rows, or MY ACTIVITY if a newly-known address may now match
+            if (visible() && (showGlobal || added)) scheduleRender();
         }
         @Override public void onError(String msg) {}
     };
@@ -67,6 +83,7 @@ public class ActivityView extends BaseView {
         statusTv    = find(R.id.actStatus);
         a.pools().subscribe(poolListener);
         sync = new HistorySync(a, a.history(), syncListener);
+        seedKnownAddrs();
 
         refreshTv.setTextColor(Design.accent());
         statusTv.setTextColor(Design.dim());
@@ -89,7 +106,7 @@ public class ActivityView extends BaseView {
     }
 
     @Override public void refresh() { render(); }
-    @Override public void onShown() { syncPersonal(); scanGlobal(); render(); startPoll(); }
+    @Override public void onShown() { seedKnownAddrs(); syncPersonal(); scanGlobal(); render(); startPoll(); }
     @Override public void onNewBlock() { syncPersonal(); if (visible()) scheduleRender(); }   // shared per-block scan (MainActivity) feeds the global feed
     @Override public void onStop() { stopPoll(); }
     @Override public void onDestroy() { stopPoll(); act.pools().unsubscribe(poolListener); }
@@ -104,6 +121,52 @@ public class ActivityView extends BaseView {
     private void syncPersonal() { if (act.node() != null && !sync.isRunning()) sync.start(); }
 
     private void scanGlobal() { act.pools().requestNow(poolListener); }
+
+    // ---- personal PandaPools filter ----
+
+    /** Seed the known-address set: persisted addresses from prior sessions + our own pools' covenant
+     *  addresses (both hex + Mx). So my own creates/closes match even before discovery runs this session,
+     *  and a past swap on a pool that has since closed still matches after a restart. */
+    private void seedKnownAddrs() {
+        Set<String> saved = act.getSharedPreferences(ADDR_PREFS, Context.MODE_PRIVATE).getStringSet(ADDR_KEY, null);
+        if (saved != null) knownPandaAddrs.addAll(saved);
+        boolean added = false;
+        for (Pool p : OwnPoolStore.all(act)) { added |= addAddr(p.address); added |= addAddr(p.mxaddress); }
+        if (added) persistKnownAddrs();
+    }
+
+    /** Add a lowercased address to the known set. Returns true if it was newly added. */
+    private boolean addAddr(String a) {
+        if (a == null || a.isEmpty()) return false;
+        return knownPandaAddrs.add(a.toLowerCase());
+    }
+
+    private void persistKnownAddrs() {
+        act.getSharedPreferences(ADDR_PREFS, Context.MODE_PRIVATE).edit()
+           .putStringSet(ADDR_KEY, new HashSet<>(knownPandaAddrs)).apply();
+    }
+
+    /** A confirmed on-chain row belongs in MY ACTIVITY iff it moved my wallet (non-zero net → not "self")
+     *  AND it touches a known PandaPools address. A stranger's swap on a pool I track nets to zero for me
+     *  (direction "self") and is excluded; so are plain wallet sends / other dapps (no panda address). */
+    private boolean isPersonalPanda(HistoryEntry n) {
+        if (n == null || "self".equals(n.direction)) return false;
+        return addrsHit(n.inputs) || addrsHit(n.outputs);
+    }
+
+    private boolean addrsHit(String coinsJson) {
+        if (coinsJson == null || coinsJson.isEmpty()) return false;
+        try {
+            JSONArray a = new JSONArray(coinsJson);
+            for (int i = 0; i < a.length(); i++) {
+                JSONObject c = a.optJSONObject(i);
+                if (c == null) continue;
+                String addr = c.optString("addr", "");
+                if (!addr.isEmpty() && knownPandaAddrs.contains(addr.toLowerCase())) return true;
+            }
+        } catch (Exception ignore) {}
+        return false;
+    }
 
     private final HistorySync.Listener syncListener = new HistorySync.Listener() {
         @Override public void onProgress(int totalNew) { act.runOnUiThread(() -> { if (!showGlobal && visible()) scheduleRender(); }); }
@@ -144,7 +207,11 @@ public class ActivityView extends BaseView {
         int cb = act.chainBlock();
         long now = System.currentTimeMillis();
         List<ActivityLog.Entry> log = ActivityLog.list(act);
-        List<HistoryEntry> hist = act.history().list(CAP, 0, null);
+        // MY ACTIVITY = my PandaPools actions only. The node's history is the whole relevant wallet (plain
+        // sends, other dapps, and strangers' swaps on pools I track), so keep only rows that touch a known
+        // pool address and actually moved my wallet.
+        List<HistoryEntry> hist = new ArrayList<>();
+        for (HistoryEntry n : act.history().list(CAP, 0, null)) if (isPersonalPanda(n)) hist.add(n);
 
         // Split the local ActivityLog: still in-flight (or recent failure) vs. safely confirmed. Confirmed
         // entries KEEP their card (with both amounts) instead of vanishing the instant they confirm.
@@ -194,10 +261,10 @@ public class ActivityView extends BaseView {
     private void renderGlobal() {
         List<GlobalFeed.Event> events = GlobalFeed.list(act);
         if (events.isEmpty()) {
-            empty("No pool swaps seen yet.\nSwaps across all pools — including other people's — appear here as they happen.");
+            empty("No pool activity seen yet.\nPool creations, swaps and withdrawals across all pools — including other people's — appear here as they happen.");
             return;
         }
-        container.addView(header("LIVE POOL SWAPS"));
+        container.addView(header("LIVE POOL ACTIVITY"));
         for (GlobalFeed.Event ev : events) container.addView(globalRow(ev));
     }
 
@@ -274,28 +341,53 @@ public class ActivityView extends BaseView {
         return row;
     }
 
-    /** A global (any-trader) swap detected from reserve movement. */
+    /** A global (any-trader) pool lifecycle event detected from reserve movement — create / swap / add /
+     *  withdraw. */
     private View globalRow(GlobalFeed.Event ev) {
         LinearLayout row = new LinearLayout(act);
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
         row.setPadding(dp(8), dp(11), dp(8), dp(11));
 
+        String m = trim(ev.minimaAmt), t = trim8(ev.tokenAmt), tl = ev.tokenLabel;
+        String glyphStr, desc, line2Str;
+        int glyphColor;
+        String poolTime = Util.shorten(ev.pool) + "  ·  " + relative(ev.ts);
+        switch (ev.kind) {
+            case GlobalFeed.CREATE:
+                glyphStr = "✦"; glyphColor = Design.success();
+                desc = "New pool  ·  " + m + " MINIMA / " + t + " " + tl;
+                line2Str = poolTime;
+                break;
+            case GlobalFeed.ADD:
+                glyphStr = "+"; glyphColor = Design.success();
+                desc = "Liquidity added  ·  +" + m + " MINIMA / +" + t + " " + tl;
+                line2Str = poolTime;
+                break;
+            case GlobalFeed.WITHDRAW:
+                glyphStr = "−"; glyphColor = Design.red();
+                desc = "Withdrawn  ·  " + m + " MINIMA / " + t + " " + tl;
+                line2Str = poolTime;
+                break;
+            default:   // SWAP
+                glyphStr = "⇄"; glyphColor = Design.accent();
+                desc = ev.minimaIn ? ("Sold " + m + " MINIMA  →  " + t + " " + tl)
+                                   : ("Bought " + m + " MINIMA  ←  " + t + " " + tl);
+                line2Str = trim8(ev.price) + " " + tl + "/MINIMA  ·  " + poolTime;
+        }
+
         TextView glyph = new TextView(act);
-        glyph.setText("⇄"); glyph.setTextColor(Design.accent()); glyph.setTextSize(17f); glyph.setWidth(dp(28));
+        glyph.setText(glyphStr); glyph.setTextColor(glyphColor); glyph.setTextSize(17f); glyph.setWidth(dp(28));
         row.addView(glyph);
 
         LinearLayout mid = new LinearLayout(act);
         mid.setOrientation(LinearLayout.VERTICAL);
         mid.setPadding(dp(6), 0, dp(6), 0);
         mid.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-        String m = trim(ev.minimaAmt), t = trim8(ev.tokenAmt), tl = ev.tokenLabel;
-        String desc = ev.minimaIn ? ("Sold " + m + " MINIMA  →  " + t + " " + tl)
-                                   : ("Bought " + m + " MINIMA  ←  " + t + " " + tl);
         TextView line1 = new TextView(act);
         line1.setText(desc); line1.setTextColor(Design.text()); line1.setTextSize(14f); line1.setTypeface(Design.typefaceBold());
         TextView line2 = new TextView(act);
-        line2.setText(trim8(ev.price) + " " + tl + "/MINIMA  ·  " + Util.shorten(ev.pool) + "  ·  " + relative(ev.ts));
+        line2.setText(line2Str);
         line2.setTextColor(Design.dim()); line2.setTextSize(12f);
         mid.addView(line1); mid.addView(line2);
         row.addView(mid);
