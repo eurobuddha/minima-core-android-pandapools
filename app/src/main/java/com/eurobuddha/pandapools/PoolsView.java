@@ -20,7 +20,7 @@ public class PoolsView extends BaseView {
 
     public PoolsView(MainActivity a) {
         super(a, R.layout.view_pools);
-        book = new PoolBook(a.node());
+        book = new PoolBook(a, a.node());
         TextView refresh = find(R.id.poolsRefresh);
         refresh.setTextColor(Design.accent());
         refresh.setOnClickListener(v -> scan());

@@ -37,7 +37,6 @@ public class MyLpView extends BaseView {
 
     private final PoolBook book;
     private final PoolManager mgr;
-    private final Set<String> myKeys = new HashSet<>();
     private boolean scanning = false, busy = false;
     // A create that's been posted but not yet discovered on-chain — drives the persistent "confirming…"
     // card (so we never flash "No pools yet"), the duplicate-create guard, and a fast self-poll so the
@@ -49,7 +48,7 @@ public class MyLpView extends BaseView {
 
     public MyLpView(MainActivity a) {
         super(a, R.layout.view_mylp);
-        book = new PoolBook(a.node());
+        book = new PoolBook(a, a.node());
         mgr = new PoolManager(a.node());
 
         Ui.card(find(R.id.lpSummaryCard));
@@ -61,41 +60,20 @@ public class MyLpView extends BaseView {
         ((TextView) find(R.id.lpSummaryValue)).setTextColor(Design.heading());
         ((TextView) find(R.id.lpSummarySub)).setTextColor(Design.dim());
         ((TextView) find(R.id.lpStatus)).setTextColor(Design.dim());
-
-        loadKeys();
     }
 
     @Override public void refresh() { scan(); }
-    @Override public void onShown() { loadKeys(); scan(); if (pendingCreate != null) startPendingPoll(); }
+    @Override public void onShown() { scan(); if (pendingCreate != null) startPendingPoll(); }
     @Override public void onNewBlock() { if (!busy) scan(); }
     @Override public void onStop() { stopPendingPoll(); }
     @Override public void onDestroy() { stopPendingPoll(); }
 
     // ---- ownership ----
 
-    private void loadKeys() {
-        if (act.node() == null) return;
-        act.node().cmd("keys", new NodeApi.Cb() {
-            @Override public void onResult(JSONObject j) {
-                myKeys.clear();
-                Object resp = j.opt("response");
-                JSONArray arr = null;
-                if (resp instanceof JSONArray) arr = (JSONArray) resp;
-                else if (resp instanceof JSONObject) arr = ((JSONObject) resp).optJSONArray("keys");
-                if (arr != null) for (int i = 0; i < arr.length(); i++) {
-                    JSONObject k = arr.optJSONObject(i);
-                    if (k != null) {
-                        String pk = k.optString("publickey", k.optString("miniaddress", ""));
-                        if (!pk.isEmpty()) myKeys.add(pk.toLowerCase());
-                    }
-                }
-                scan();
-            }
-            @Override public void onError(String m) { scan(); }
-        });
-    }
-
-    private boolean mine(Pool p) { return p.opk != null && myKeys.contains(p.opk.toLowerCase()); }
+    // Ownership is the LOCAL LpStore record (this device's own create/migrate), NOT a full `keys` node dump
+    // — which returns every public key on an established node and overflows the IPC Binder → crash. This is
+    // exactly the set PoolService keeps alive, so MY LP and the keep-alive agree on what "mine" means.
+    private boolean mine(Pool p) { return p.address != null && LpStore.get(act, p.address) != null; }
 
     // ---- discovery ----
 
@@ -143,8 +121,7 @@ public class MyLpView extends BaseView {
                 // keep the "Submitted ✓ … confirming" status — do NOT wipe it
             } else {
                 value.setText("No pools yet");
-                sub.setText(myKeys.isEmpty() ? "Pair the node to see your liquidity."
-                        : "Create a pool to start earning the swap fee.");
+                sub.setText("Create a pool to start earning the swap fee.");
                 if (!pendingLive) status("");
             }
             return;

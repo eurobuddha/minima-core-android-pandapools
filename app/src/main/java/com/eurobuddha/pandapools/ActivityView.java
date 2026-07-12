@@ -57,7 +57,7 @@ public class ActivityView extends BaseView {
         globalTab   = find(R.id.actGlobal);
         refreshTv   = find(R.id.actRefresh);
         statusTv    = find(R.id.actStatus);
-        book = new PoolBook(a.node());
+        book = new PoolBook(a, a.node());
         sync = new HistorySync(a, a.history(), syncListener);
 
         refreshTv.setTextColor(Design.accent());

@@ -49,7 +49,7 @@ public class SwapView extends BaseView {
 
     public SwapView(MainActivity a) {
         super(a, R.layout.view_swap);
-        book = new PoolBook(a.node());
+        book = new PoolBook(a, a.node());
         txn = new PoolTxn(a.node());
 
         poolLine   = find(R.id.swapPool);
@@ -143,17 +143,26 @@ public class SwapView extends BaseView {
      *  {@link WalletView#loadBalances()} but keeps only the two amounts the swap page needs. */
     private void loadBalances() {
         if (act.node() == null) return;
-        act.node().cmd("balance", new NodeApi.Cb() {
+        // BOUNDED: fetch ONLY MINIMA + the currently-shown pair token, one token per call. The plain
+        // `balance` returns EVERY token you hold with full metadata (~290KB on a busy node), which overflows
+        // Android's IPC Binder limit and crash-loops the app on open. We only ever render these two amounts.
+        fetchSendable(Util.MINIMA_TOKENID);
+        if (!pairPools.isEmpty()) {
+            String pairTid = pairPools.get(0).tok;
+            if (pairTid != null && !pairTid.isEmpty() && !Util.isMinima(pairTid)) fetchSendable(pairTid);
+        }
+    }
+
+    /** One bounded {@code balance tokenid:X} → cache that token's sendable → re-render. */
+    private void fetchSendable(final String tokenid) {
+        act.node().cmd("balance tokenid:" + tokenid, new NodeApi.Cb() {
             @Override public void onResult(JSONObject j) {
-                sendableByTok.clear();
                 JSONArray arr = j.optJSONArray("response");
                 if (arr != null) for (int i = 0; i < arr.length(); i++) {
                     JSONObject b = arr.optJSONObject(i);
                     if (b == null) continue;
                     String tid = b.optString("tokenid", "");
                     String snd = b.optString("sendable", "0");
-                    // cache EVERY sendable so the pair-token half can be resolved at render time against
-                    // whichever pair is shown — no dependency on which pair was known when we fetched.
                     if (Util.isMinima(tid)) sendableByTok.put(Util.MINIMA_TOKENID, snd);
                     else if (!tid.isEmpty()) sendableByTok.put(tid, snd);
                 }
