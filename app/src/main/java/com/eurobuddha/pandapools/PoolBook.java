@@ -216,6 +216,10 @@ public class PoolBook {
                         if (resp.optBoolean("parseok", false)) {
                             JSONObject sc = resp.getJSONObject("script");
                             String addr = sc.getString("address");
+                            // Backfill an OWNED pool's covenant params from its beacon so keep-alive can
+                            // re-anchor it — covers legacy pools created before params were stored locally.
+                            if (LpStore.get(ctx, addr) != null && LpStore.params(ctx, addr) == null)
+                                LpStore.putParams(ctx, addr, opk, oadr, tok, kmin);
                             if (!have.contains(addr.toLowerCase())) {   // not one of our own pools already shown
                                 Pool pool = new Pool();
                                 pool.opk = opk; pool.oadr = oadr; pool.tok = tok; pool.kmin = kmin;
