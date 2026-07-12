@@ -5,6 +5,27 @@
     <!-- Token icon graphics may live at remote/IPFS URLs -->
     <uses-permission android:name="android.permission.INTERNET" />
 
+    <!-- Keep-alive notifications (Android 13+ prompts at runtime; the FGS still runs without it). -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!-- Background pool keep-alive: a foreground service periodically re-broadcasts the owner's pools on-chain
+         so they don't age out of freshly-synced nodes past Minima's ~24h cascade horizon (the fix proven in
+         minimaSwap). specialUse is NOT time-boxed like dataSync (Android 14/15 caps dataSync FGS ~6h/day and
+         crashes it when exceeded), so it's the primary type; dataSync is the pre-34 fallback. Battery exemption
+         keeps the OS from doze-killing it. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+
+    <!-- Restart the keeper after reboot/update, and wake a keep-alive tick under Doze (Handler loops stall
+         when the CPU suspends — only exact allow-while-idle alarms fire). USE_EXACT_ALARM (API 33+) is
+         auto-granted; this app ships sideloaded via PandaApps and the timed on-chain keep-alive IS the product. -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" android:maxSdkVersion="32" />
+
     <!-- Android 11+ package visibility: needed to launch the node app and to deliver
          our targeted (setPackage) IPC broadcasts to it -->
     <queries>
@@ -30,6 +51,25 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <service
+            android:name=".PoolService"
+            android:exported="false"
+            android:stopWithTask="false"
+            android:foregroundServiceType="specialUse|dataSync">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Periodically re-broadcasts the owner's liquidity pools on-chain so they stay discoverable and swappable while the app is closed" />
+        </service>
+
+        <!-- exported=false is correct for both: protected system broadcasts reach non-exported receivers. -->
+        <receiver android:name=".BootReceiver" android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
+        <receiver android:name=".HeartbeatReceiver" android:exported="false" />
     </application>
 
 </manifest>

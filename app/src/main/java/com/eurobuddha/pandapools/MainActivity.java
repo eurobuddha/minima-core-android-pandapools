@@ -84,6 +84,13 @@ public class MainActivity extends AppCompatActivity {
         });
 
         pollBlock();
+
+        // Start the background pool keep-alive keeper (foreground service) + arm its Doze-proof heartbeat, so
+        // the owner's pools keep being re-broadcast on-chain even with the app closed. Idempotent + best-effort.
+        try {
+            androidx.core.content.ContextCompat.startForegroundService(this, new Intent(this, PoolService.class));
+            HeartbeatReceiver.schedule(this);
+        } catch (Exception ignore) {}
     }
 
     /**

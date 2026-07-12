@@ -268,6 +268,55 @@ public class PoolManager {
         ownerSignPost(txid, p.opk, cmds, cb);
     }
 
+    // ===================================================================== KEEP-ALIVE (re-broadcast)
+
+    /**
+     * Owner-signed keep-alive: re-anchor the pool NET-ZERO and post a FRESH announce beacon, so both the
+     * pool's reserves and its registry presence are re-broadcast into the recent chain. A Minima
+     * {@code -isclient -mobile} node keeps only a recent-block window, so a pool created before a peer
+     * joined ages out of view; periodically re-broadcasting keeps every live node seeing it past Minima's
+     * ~24h cascade horizon (the fix proven in minimaSwap).
+     *
+     * The pool's OWN funds are never touched: outputs 0/1 recreate the SAME reserve amounts at the SAME
+     * covenant address. Equal amounts satisfy the covenant's owner-recreate branch — for each covenant
+     * input, {@code SIGNEDBY($OPK)} is true, {@code VERIFYOUT(@INPUT $OADR @AMOUNT …)} is FALSE (the output
+     * goes back to @ADDRESS, not $OADR), so it falls to {@code GETOUTADDR(@INPUT) EQ @ADDRESS AND
+     * GETOUTTOK(@INPUT) EQ @TOKENID AND GETOUTAMT(@INPUT) GTE @AMOUNT}, which holds with an equal amount.
+     * Only a wallet funding coin pays the beacon dust (+ any fee); its change returns to its own address
+     * (never $OADR — same rule as create/deposit).
+     */
+    public void keepAlive(Pool p, Result cb) {
+        if (!p.funded()) { cb.onFailed("pool has no live reserves"); return; }
+        final String tokArg = " tokenid:" + p.tok;
+        // Fund ONLY the beacon dust (+ tx) from a wallet coin — the pool legs are recreated net-zero, so we
+        // never pull a pool leg in as "funding" (selectCoins also excludes the covenant address defensively).
+        selectCoins(Util.MINIMA_TOKENID, ANNOUNCE_DUST, p.address, new SelCb() {
+            @Override public void ok(List<Coin> mfunds, BigDecimal msum) {
+                String txid = "ppkeep_" + tag();
+                List<String> cmds = new ArrayList<>();
+                cmds.add("txncreate id:" + txid);
+                cmds.add("txninput id:" + txid + " coinid:" + p.coinidM);   // 0 pool MINIMA reserve
+                cmds.add("txninput id:" + txid + " coinid:" + p.coinidT);   // 1 pool token reserve
+                for (Coin c : mfunds) cmds.add("txninput id:" + txid + " coinid:" + c.coinid);   // 2+ wallet
+                // outputs 0/1 recreate the SAME reserves at the SAME address (owner recreate branch — net-zero).
+                // amt(p.reserveM)/amt(p.reserveT) are the exact scanned on-chain amounts (already grain-floored),
+                // so they are EQUAL to the input reserves → satisfies the covenant's GTE @AMOUNT.
+                cmds.add("txnoutput id:" + txid + " amount:" + amt(p.reserveM) + " address:" + p.address + " storestate:false");
+                cmds.add("txnoutput id:" + txid + " amount:" + amt(p.reserveT) + " address:" + p.address + tokArg + " storestate:false");
+                // output 2 = a fresh discovery beacon (dust at the sentinel, params in state)
+                cmds.add("txnoutput id:" + txid + " amount:" + amt(ANNOUNCE_DUST) + " address:" + PoolCovenant.SENTINEL + " storestate:true");
+                // change for the funding coin(s) back to their OWN (non-owner) address, never $OADR
+                String mChg = mfunds.isEmpty() ? p.oadr : mfunds.get(0).address;
+                BigDecimal mchange = msum.subtract(ANNOUNCE_DUST);
+                if (mchange.signum() > 0)
+                    cmds.add("txnoutput id:" + txid + " amount:" + amt(mchange) + " address:" + mChg + " storestate:false");
+                addAnnounceState(cmds, txid, p);
+                ownerSignPost(txid, p.opk, cmds, cb);
+            }
+            @Override public void none() { cb.onFailed("insufficient MINIMA to fund the keep-alive beacon"); }
+        });
+    }
+
     // ===================================================================== helpers
 
     private void ownerSignPost(String txid, String opk, List<String> cmds, Result cb) {
