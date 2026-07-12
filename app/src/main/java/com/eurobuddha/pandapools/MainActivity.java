@@ -42,6 +42,11 @@ public class MainActivity extends AppCompatActivity {
     private int currentTab = 0;
     private BaseView[] views;
     private ViewPager pager;
+    // The 30s chain-block poll self-reschedules, so gate the reschedule on this flag and cancel the pending
+    // run in onStop/onDestroy — otherwise a backgrounded app keeps polling and fanning onNewBlock() out to
+    // every tab (battery + node load) while hidden. Started in onResume, stopped in onStop.
+    private boolean blockPollActive = false;
+    private final Runnable pollTask = this::pollBlock;
 
     @Override protected void onCreate(Bundle b) {
         super.onCreate(b);
@@ -83,7 +88,7 @@ public class MainActivity extends AppCompatActivity {
             @Override public void onPageSelected(int position) { currentTab = position; views[position].onShown(); }
         });
 
-        pollBlock();
+        // The block poll is started from onResume (and cancelled in onStop), so it never runs while hidden.
     }
 
     /**
@@ -134,13 +139,26 @@ public class MainActivity extends AppCompatActivity {
                         if (views != null) for (BaseView v : views) v.onNewBlock();
                     }
                 } catch (Exception ignore) {}
-                ui.postDelayed(MainActivity.this::pollBlock, 30000);
+                if (blockPollActive) ui.postDelayed(pollTask, 30000);
             }
             @Override public void onError(String m) {
                 if (NodeApi.ERR_NOT_ENABLED.equals(m)) setPaired(false);
-                ui.postDelayed(MainActivity.this::pollBlock, 30000);
+                if (blockPollActive) ui.postDelayed(pollTask, 30000);
             }
         });
+    }
+
+    /** Begin the 30s block poll (idempotent — a second call while already active is a no-op). */
+    private void startPolling() {
+        if (blockPollActive || node == null) return;
+        blockPollActive = true;
+        pollBlock();
+    }
+
+    /** Cancel the block poll and any pending reschedule (call when backgrounded/destroyed). */
+    private void stopPolling() {
+        blockPollActive = false;
+        ui.removeCallbacks(pollTask);
     }
 
     private void openMinimaCore() {
@@ -162,19 +180,23 @@ public class MainActivity extends AppCompatActivity {
 
     @Override protected void onStop() {
         super.onStop();
-        // Backgrounded: let each view cancel its repeating polls so we don't drain battery/network while hidden.
+        // Backgrounded: stop the block poll and let each view cancel its repeating polls so we don't drain
+        // battery/network or hammer the node while hidden.
+        stopPolling();
         if (views != null) for (BaseView v : views) v.onStop();
     }
 
     @Override protected void onResume() {
         super.onResume();
-        // Re-activate the visible tab (restarts its poll + refreshes) after returning to the foreground.
+        // Foregrounded: (re)start the block poll and re-activate the visible tab (restarts its poll + refreshes).
+        startPolling();
         if (views != null && currentTab >= 0 && currentTab < views.length) views[currentTab].onShown();
     }
 
     @Override protected void onDestroy() {
         super.onDestroy();
-        // Stop view callbacks BEFORE closing the node/DB so no straggler poll reopens a closed HistoryDb.
+        // Stop the block poll and view callbacks BEFORE closing the node/DB so no straggler poll reopens a closed HistoryDb.
+        stopPolling();
         if (views != null) for (BaseView v : views) v.onDestroy();
         if (node != null) node.onDestroy();
         if (history != null) history.close();

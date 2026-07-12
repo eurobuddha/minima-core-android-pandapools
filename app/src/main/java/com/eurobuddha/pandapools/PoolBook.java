@@ -73,7 +73,9 @@ public class PoolBook {
             // carry the ACTUAL tracked covenant script (any fee) — derivePools runscripts it to (a) confirm it
             // compiles and (b) get its address. A non-parsing script (an old JSONObject.quote '\/' corruption)
             // is filtered out there so a permanently-unspendable pool can't masquerade as live.
-            params.putIfAbsent(opk + "|" + tok + "|" + kmin, new String[]{opk, oadr, tok, kmin, sc});
+            // lowercase the dedup key so the same pool seen via Source 1 (scripts regex) and Source 2 (coins
+            // state) with differing hex case collapses to one entry (hex equality is case-insensitive).
+            params.putIfAbsent((opk + "|" + tok + "|" + kmin).toLowerCase(), new String[]{opk, oadr, tok, kmin, sc});
         }
     }
 
@@ -88,7 +90,7 @@ public class PoolBook {
                     JSONObject c = coins.optJSONObject(i);
                     String tok = state(c, 2), oadr = state(c, 3), opk = state(c, 4), kmin = state(c, 5);
                     if (tok == null || oadr == null || opk == null || kmin == null) continue;
-                    params.putIfAbsent(opk + "|" + tok + "|" + kmin, new String[]{opk, oadr, tok, kmin});
+                    params.putIfAbsent((opk + "|" + tok + "|" + kmin).toLowerCase(), new String[]{opk, oadr, tok, kmin});
                 }
                 finishScan(params, cb);
             }
@@ -189,8 +191,12 @@ public class PoolBook {
 
     private void done(List<Pool> pools, Listener cb) {
         List<Pool> funded = new ArrayList<>();
+        java.util.HashSet<String> seenAddr = new java.util.HashSet<>();
         for (Pool p : pools) {
             if (!p.funded()) continue;
+            // backstop the key-level dedup: if two params ever derive the SAME covenant address, keep one —
+            // a duplicate would double-count depth and (worse) let buildRouted add the same coinid twice.
+            if (p.address != null && !seenAddr.add(p.address.toLowerCase())) continue;
             funded.add(p);
             // Track-on-discovery: permanently track a newly-seen registry pool's contract so it stays
             // GTC-visible + swappable on THIS node forever, like our own pools (the shared beacon can lapse;

@@ -58,6 +58,8 @@ public class WalletView extends BaseView {
     @Override public void refresh() { loadBalances(); }
     @Override public void onShown() { loadAddress(); loadBalances(); }
     @Override public void onNewBlock() { loadBalances(); }
+    @Override public void onStop() { container.removeCallbacks(refreshTask); }
+    @Override public void onDestroy() { container.removeCallbacks(refreshTask); }
 
     private void loadAddress() {
         if (act.node() == null) return;

@@ -85,7 +85,11 @@ public class NodeApi {
     private static boolean isTooLong(JSONObject j) {
         if (j == null || j.optBoolean("status", true)) return false;
         Object r = j.opt("response");
-        return r instanceof String && ((String) r).toLowerCase().contains("too long");
+        if (!(r instanceof String)) return false;
+        String s = ((String) r).toLowerCase();
+        // match the current wording ("Result too long!") and the size cap itself, so a reworded message
+        // still trips the guard as long as the byte-cap marker is present.
+        return s.contains("too long") || s.contains("max(256000)");
     }
 
     public void cmd(String command, Cb cb) {
@@ -112,19 +116,26 @@ public class NodeApi {
                     mPending.remove(timeout);
                     if (dead()) return;   // cleaned up above; just don't touch dead views
 
-                    // "enabled":false only appears on the gating reply; real command
-                    // responses omit the key, so default true.
-                    if (!zResponse.optBoolean("enabled", true)) {
-                        if (mPairing != null) mPairing.onEnabled(false);
-                        if (cb != null) cb.onError(ERR_NOT_ENABLED);
-                        return;
+                    // Contain any exception a callback throws (most often JSON parsing of a large/odd reply)
+                    // so it can't reach the main Looper and crash the whole app. On failure route to onError
+                    // so the caller resets its loading state / shows a message instead of dying.
+                    try {
+                        // "enabled":false only appears on the gating reply; real command
+                        // responses omit the key, so default true.
+                        if (!zResponse.optBoolean("enabled", true)) {
+                            if (mPairing != null) mPairing.onEnabled(false);
+                            if (cb != null) cb.onError(ERR_NOT_ENABLED);
+                            return;
+                        }
+                        // The node CAPS any reply at 256,000 bytes: an over-limit command returns a
+                        // {"status":false,"response":"Result too long! MAX(256000)"} stub with NO data. Route it to
+                        // onError(ERR_TOO_LONG) so a reader can shrink/retry or message — instead of parsing the
+                        // stub's String `response` as an empty array and silently showing nothing.
+                        if (isTooLong(zResponse)) { if (cb != null) cb.onError(ERR_TOO_LONG); return; }
+                        if (cb != null) cb.onResult(zResponse);
+                    } catch (Throwable t) {
+                        if (cb != null) { try { cb.onError("Bad node reply"); } catch (Throwable ignore) {} }
                     }
-                    // The node CAPS any reply at 256,000 bytes: an over-limit command returns a
-                    // {"status":false,"response":"Result too long! MAX(256000)"} stub with NO data. Route it to
-                    // onError(ERR_TOO_LONG) so a reader can shrink/retry or message — instead of parsing the
-                    // stub's String `response` as an empty array and silently showing nothing.
-                    if (isTooLong(zResponse)) { if (cb != null) cb.onError(ERR_TOO_LONG); return; }
-                    if (cb != null) cb.onResult(zResponse);
                 });
             }
         });
