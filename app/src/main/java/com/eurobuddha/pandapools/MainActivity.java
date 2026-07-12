@@ -1,6 +1,7 @@
 package com.eurobuddha.pandapools;
 
 import android.content.Intent;
+import android.net.Uri;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -8,7 +9,11 @@ import android.view.View;
 import android.widget.Button;
 import android.widget.TextView;
 
+import androidx.activity.result.ActivityResultLauncher;
+import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.appcompat.app.AppCompatActivity;
+
+import java.util.function.Consumer;
 import androidx.core.graphics.Insets;
 import androidx.core.view.ViewCompat;
 import androidx.core.view.WindowCompat;
@@ -49,11 +54,26 @@ public class MainActivity extends AppCompatActivity {
     private boolean blockPollActive = false;
     private final Runnable pollTask = this::pollBlock;
     private boolean retrackedOwn = false;   // Layer-2 re-track runs once per session
+    // Storage Access Framework pickers for the pool backup file (Increment 2): no storage permission and
+    // no FileProvider — the user chooses where to save / which file to restore.
+    private ActivityResultLauncher<String> saveDocLauncher;
+    private ActivityResultLauncher<String[]> openDocLauncher;
+    private Consumer<Uri> pendingSave, pendingOpen;
 
     @Override protected void onCreate(Bundle b) {
         super.onCreate(b);
         Design.load(this);
         setContentView(R.layout.activity_main);
+
+        // Register the SAF pickers early — registerForActivityResult must run before the Activity is started.
+        saveDocLauncher = registerForActivityResult(new ActivityResultContracts.CreateDocument("application/json"), uri -> {
+            Consumer<Uri> cb = pendingSave; pendingSave = null;
+            if (cb != null) cb.accept(uri);
+        });
+        openDocLauncher = registerForActivityResult(new ActivityResultContracts.OpenDocument(), uri -> {
+            Consumer<Uri> cb = pendingOpen; pendingOpen = null;
+            if (cb != null) cb.accept(uri);
+        });
 
         ((TextView) findViewById(R.id.brandTitle)).setText("PandaPools");
         String ver = "?";
@@ -199,6 +219,19 @@ public class MainActivity extends AppCompatActivity {
     public NodeApi node() { return node; }
     public HistoryDb history() { return history; }
     public PoolRepository pools() { return poolRepo; }
+
+    /** SAF "create document" picker to SAVE a backup; the callback gets the chosen URI (null if cancelled). */
+    public void pickSaveFile(String suggestedName, Consumer<Uri> onPicked) {
+        pendingSave = onPicked;
+        try { saveDocLauncher.launch(suggestedName); }
+        catch (Exception e) { pendingSave = null; if (onPicked != null) onPicked.accept(null); }
+    }
+    /** SAF "open document" picker to RESTORE a backup; the callback gets the chosen URI (null if cancelled). */
+    public void pickOpenFile(Consumer<Uri> onPicked) {
+        pendingOpen = onPicked;
+        try { openDocLauncher.launch(new String[]{"application/json", "text/plain", "*/*"}); }
+        catch (Exception e) { pendingOpen = null; if (onPicked != null) onPicked.accept(null); }
+    }
     public Handler ui() { return ui; }
     public int chainBlock() { return chainBlock; }
     public int currentTab() { return currentTab; }

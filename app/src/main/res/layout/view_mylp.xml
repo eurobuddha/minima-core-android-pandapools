@@ -53,6 +53,17 @@
             android:textSize="15sp"
             android:letterSpacing="0.06"
             android:padding="15dp"
+            android:layout_marginBottom="10dp" />
+
+        <TextView
+            android:id="@+id/lpRecoveryBtn"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="BACK UP / RESTORE POOLS"
+            android:gravity="center"
+            android:textSize="12sp"
+            android:letterSpacing="0.06"
+            android:padding="12dp"
             android:layout_marginBottom="16dp" />
 
         <TextView

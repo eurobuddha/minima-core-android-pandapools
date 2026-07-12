@@ -36,7 +36,9 @@ public class MyLpView extends BaseView {
     private static final String USDT_TOKENID = "0x7D39745FBD29049BE29850B55A18BF550E4D442F930F86266E34193D89042A90";
 
     private final PoolManager mgr;
+    private final Recovery recovery;
     private final Set<String> myKeys = new HashSet<>();
+    private final List<Pool> myPools = new ArrayList<>();   // currently-owned funded pools (for fresh coin export)
     private boolean busy = false;
 
     // Receives the shared PoolRepository's scan result (one scan for the whole app). render() filters to the
@@ -61,11 +63,16 @@ public class MyLpView extends BaseView {
         super(a, R.layout.view_mylp);
         a.pools().subscribe(poolListener);
         mgr = new PoolManager(a.node());
+        recovery = new Recovery(a.node());
 
         Ui.card(find(R.id.lpSummaryCard));
         TextView create = find(R.id.lpCreateBtn);
         Ui.primaryButton(create);
         create.setOnClickListener(v -> showCreateDialog());
+        TextView recoveryBtn = find(R.id.lpRecoveryBtn);
+        Ui.outlineButton(recoveryBtn);
+        recoveryBtn.setTextColor(Design.accent());
+        recoveryBtn.setOnClickListener(v -> showRecoveryDialog());
 
         ((TextView) find(R.id.lpSummaryLabel)).setTextColor(Design.dim());
         ((TextView) find(R.id.lpSummaryValue)).setTextColor(Design.heading());
@@ -117,6 +124,7 @@ public class MyLpView extends BaseView {
             // clobbered by a reconstructed one.
             if (OwnPoolStore.script(act, p.address) == null) OwnPoolStore.record(act, p);
         }
+        myPools.clear(); myPools.addAll(mine);   // for a backup's fresh coinexport (these carry live coinids)
 
         // Has a pending create just gone live (discovered with funded reserves)? Announce it + stop tracking.
         boolean pendingLive = false;
@@ -659,6 +667,92 @@ public class MyLpView extends BaseView {
                 })
                 .setNegativeButton("Cancel", null)
                 .show();
+    }
+
+    // ---- backup & restore (recovery) ----
+
+    private void showRecoveryDialog() {
+        String[] items = { "Back up my pools to a file", "Restore pools from a file", "How recovery works" };
+        new AlertDialog.Builder(act)
+                .setTitle("Pool recovery")
+                .setItems(items, (d, w) -> { if (w == 0) doBackup(); else if (w == 1) doRestore(); else showRecoveryGuide(); })
+                .setNegativeButton("Close", null)
+                .show();
+    }
+
+    private void doBackup() {
+        status("Preparing backup…");
+        recovery.backup(act, new ArrayList<>(myPools), new Recovery.BackupCb() {
+            @Override public void onBackup(String json) {
+                act.pickSaveFile("pandapools-backup.json", uri -> {
+                    if (uri == null) { status("Backup cancelled."); return; }
+                    if (writeUri(uri, json)) {
+                        status("Backup saved ✓");
+                        info("Backup saved", "Your pool recovery file is saved. Keep it somewhere safe (a cloud drive, "
+                                + "another device). To recover on a new or wiped node: open PandaPools there → My LP → "
+                                + "Back up / Restore → Restore.");
+                    } else status("Could not write the backup file.");
+                });
+            }
+            @Override public void onError(String msg) { status(msg); }
+        });
+    }
+
+    private void doRestore() {
+        act.pickOpenFile(uri -> {
+            if (uri == null) { status("Restore cancelled."); return; }
+            String json = readUri(uri);
+            if (json == null || json.isEmpty()) { status("Could not read that file."); return; }
+            status("Restoring pools…");
+            final StringBuilder log = new StringBuilder();
+            recovery.restore(act, json, new Recovery.RestoreCb() {
+                @Override public void onProgress(String line) { log.append(line).append('\n'); status("Restoring… " + line); }
+                @Override public void onDone(int restored, int total) {
+                    if (total == 0) {
+                        status("That file isn't a PandaPools backup.");
+                        info("Nothing restored", "That file isn't a readable PandaPools backup — pick the "
+                                + "pandapools-backup.json you saved from Back up.");
+                        return;
+                    }
+                    status("Restore complete ✓  " + restored + " of " + total + " pool(s).");
+                    info("Restore complete", restored + " of " + total + " pool(s) recovered and re-tracked.\n\n"
+                            + log.toString().trim() + "\n\nThey'll appear below as the node confirms their coins.");
+                    loadKeys();              // ownership set may now include restored pools
+                    act.pools().refresh();   // pull them into discovery
+                }
+            });
+        });
+    }
+
+    private void showRecoveryGuide() {
+        info("How pool recovery works",
+                "Your pools live on-chain and are controlled by your seed. This app keeps a local recipe for every "
+                + "pool you own and re-tracks them on every launch, so a re-synced node rediscovers them automatically.\n\n"
+                + "• BELT & BRACES — nothing to do: your pools reappear after a node re-sync.\n\n"
+                + "• SUSPENDERS — tap ‘Back up my pools’ and keep the file safe (a cloud drive, another device). On a NEW "
+                + "or WIPED device, install PandaPools, pair your node, then ‘Restore pools from a file’ — it re-tracks each "
+                + "pool and re-imports its coins.\n\n"
+                + "• STRING (last resort) — even with only your seed: reinstall Minima and restore your seed (or resync from "
+                + "an archive node), then Restore this backup. The covenant is signed by your seed key, so your funds are "
+                + "always reclaimable.");
+    }
+
+    private boolean writeUri(android.net.Uri uri, String content) {
+        try (java.io.OutputStream os = act.getContentResolver().openOutputStream(uri, "w")) {
+            if (os == null) return false;
+            os.write(content.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            return true;
+        } catch (Exception e) { return false; }
+    }
+
+    private String readUri(android.net.Uri uri) {
+        try (java.io.InputStream is = act.getContentResolver().openInputStream(uri)) {
+            if (is == null) return null;
+            java.io.ByteArrayOutputStream bo = new java.io.ByteArrayOutputStream();
+            byte[] buf = new byte[8192]; int n;
+            while ((n = is.read(buf)) > 0) bo.write(buf, 0, n);
+            return new String(bo.toByteArray(), java.nio.charset.StandardCharsets.UTF_8);
+        } catch (Exception e) { return null; }
     }
 
     // ---- small view helpers ----
