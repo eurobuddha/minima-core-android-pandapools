@@ -101,7 +101,9 @@ public class PoolBook {
      *  so Source 1 picks it up next scan. LpStore is exactly the set keep-alive can re-anchor — nothing lost. */
     private void gatherOwned(final Listener cb) {
         final java.util.Set<String> addrs = LpStore.addresses(ctx);
-        if (addrs.isEmpty()) { cb.onPools(new ArrayList<>()); return; }
+        // No own pools? Still scan the shared registry for OTHER creators' pools (a fresh/other node with an
+        // empty LpStore must not skip discovery).
+        if (addrs.isEmpty()) { gatherRegistry(new ArrayList<>(), cb); return; }
         final List<Pool> pools = new ArrayList<>();
         final AtomicInteger pending = new AtomicInteger(addrs.size());
         for (final String addr : addrs) {
