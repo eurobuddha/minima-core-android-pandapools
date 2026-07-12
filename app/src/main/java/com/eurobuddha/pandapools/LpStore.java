@@ -53,6 +53,41 @@ public final class LpStore {
         prefs(c).edit().remove(key(address)).apply();
     }
 
+    /** Backfill this OWNED pool's covenant params (opk/oadr/tok/kmin) onto its existing snapshot, so discovery
+     *  can rebuild it locally WITHOUT any node `scripts` dump (which crashes a busy/broken node). Only updates
+     *  an entry that already exists — never creates a params-only record (which would confuse get()/mine()). */
+    public static void putParams(Context c, String address, String opk, String oadr, String tok, String kmin) {
+        if (c == null || address == null || opk == null || oadr == null || tok == null || kmin == null) return;
+        try {
+            String s = prefs(c).getString(key(address), null);
+            if (s == null) return;
+            JSONObject o = new JSONObject(s);
+            o.put("opk", opk); o.put("oadr", oadr); o.put("tok", tok); o.put("kmin", kmin);
+            prefs(c).edit().putString(key(address), o.toString()).apply();
+        } catch (Exception ignore) {}
+    }
+
+    /** This owned pool's covenant params {opk, oadr, tok, kmin}, or null if not yet backfilled. */
+    public static String[] params(Context c, String address) {
+        if (c == null || address == null) return null;
+        String s = prefs(c).getString(key(address), null);
+        if (s == null) return null;
+        try {
+            JSONObject o = new JSONObject(s);
+            if (!o.has("opk") || !o.has("oadr") || !o.has("tok") || !o.has("kmin")) return null;
+            return new String[]{ o.getString("opk"), o.getString("oadr"), o.getString("tok"), o.getString("kmin") };
+        } catch (Exception e) { return null; }
+    }
+
+    /** Every pool address this device has a snapshot for — i.e. the pools it OWNS (create/migrate).
+     *  Beacon-independent, so callers enumerate their own pools WITHOUT a full `scripts`/`keys` node dump
+     *  (which overflows the IPC Binder on a busy node). Lowercase — the storage-key form. */
+    public static java.util.Set<String> addresses(Context c) {
+        if (c == null) return java.util.Collections.emptySet();
+        try { return new java.util.HashSet<>(prefs(c).getAll().keySet()); }
+        catch (Exception e) { return java.util.Collections.emptySet(); }
+    }
+
     public static Snapshot get(Context c, String address) {
         if (c == null || address == null) return null;
         String s = prefs(c).getString(key(address), null);
@@ -67,6 +102,12 @@ public final class LpStore {
     private static void put(Context c, String address, BigDecimal m, BigDecimal t, BigDecimal fk, int block) {
         try {
             JSONObject o = new JSONObject();
+            // preserve any backfilled covenant params so a snapshot rewrite (migrate/deposit) never drops them
+            String existing = prefs(c).getString(key(address), null);
+            if (existing != null) {
+                JSONObject e = new JSONObject(existing);
+                for (String p : new String[]{"opk", "oadr", "tok", "kmin"}) if (e.has(p)) o.put(p, e.getString(p));
+            }
             o.put("m", m.toPlainString());
             o.put("t", t.toPlainString());
             o.put("fk", fk.toPlainString());

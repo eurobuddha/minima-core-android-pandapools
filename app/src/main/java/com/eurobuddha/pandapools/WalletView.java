@@ -73,7 +73,11 @@ public class WalletView extends BaseView {
     private void loadBalances() {
         if (loading || act.node() == null) return;
         loading = true;
-        act.node().cmd("balance", new NodeApi.Cb() {
+        // BOUNDED to MINIMA. The plain `balance` returns EVERY token you hold with full metadata (~290KB on
+        // a busy node) and overflows Android's IPC Binder limit → crash. This view is refreshed for ALL tabs
+        // on pairing + every block, so the plain call crash-loops the app on open. Full token holdings need a
+        // node-side response-chunking fix; until then the wallet shows MINIMA. (Flagged for discussion.)
+        act.node().cmd("balance tokenid:0x00", new NodeApi.Cb() {
             @Override public void onResult(JSONObject j) {
                 loading = false;
                 balances.clear();

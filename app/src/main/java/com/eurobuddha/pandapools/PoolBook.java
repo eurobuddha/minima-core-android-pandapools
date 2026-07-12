@@ -1,5 +1,7 @@
 package com.eurobuddha.pandapools;
 
+import android.content.Context;
+
 import org.json.JSONArray;
 import org.json.JSONObject;
 
@@ -29,8 +31,17 @@ public class PoolBook {
     }
 
     private final NodeApi node;
+    private final Context ctx;   // for LpStore (this device's OWN pool addresses)
 
-    public PoolBook(NodeApi node) { this.node = node; }
+    // Bounded scan window for the SHARED sentinel (Source 2). The sentinel accumulates a beacon on EVERY
+    // re-anchor of EVERY pool, so an unbounded `coins address:SENTINEL` returns the node's entire tracked
+    // beacon history (~317KB on an established node) and overflows the IPC Binder → crash. Beacons re-announce
+    // every 18h (KEEPALIVE_INTERVAL), so ~2000 blocks (≈28h at 50s/block) surfaces every live pool's latest
+    // beacon with margin for a slightly-late keep-alive, while excluding the stale history. Own pools are also
+    // found locally via Source 1 (LpStore), so this bound never hides a pool this node can re-anchor.
+    private static final int SCAN_DEPTH = 256;
+
+    public PoolBook(Context ctx, NodeApi node) { this.ctx = ctx; this.node = node; }
 
     // Literal extractors for a PandaPools covenant — so a pool can be recovered from the node's TRACKED
     // contract scripts. A contract is spendable, so it is NEVER MMR-pruned (unlike the announce beacon,
@@ -51,14 +62,20 @@ public class PoolBook {
         });
     }
 
-    /** Source 1 (GTC): this node's OWN tracked pool contracts — never prune, so the creator's pools are
-     *  visible forever regardless of how old they are. */
+    /** Source 1 (GTC): this node's OWN pools — rebuilt PURELY LOCALLY from LpStore's backfilled covenant params
+     *  (opk/oadr/tok/kmin), so it stays visible independent of beacon age with ZERO node calls. We do NOT ask
+     *  the node for scripts: the bare {@code scripts} returns EVERY tracked contract (~317KB on an established
+     *  node) and even {@code scripts address:<addr>} returns the whole set on a node whose address filter is
+     *  broken — either overflows the IPC Binder and crash-loops the app on open. A pool created before params
+     *  were backfilled is still found via Source 2 (its live beacon), and derivePools then backfills its params
+     *  so Source 1 picks it up next scan. LpStore is exactly the set keep-alive can re-anchor — nothing lost. */
     private void gatherOwned(final Listener cb) {
         final Map<String, String[]> params = new LinkedHashMap<>();   // key opk|tok|kmin -> {opk,oadr,tok,kmin}
-        node.cmd("scripts", new NodeApi.Cb() {
-            @Override public void onResult(JSONObject j) { parseScripts(j, params); gatherRegistry(params, cb); }
-            @Override public void onError(String m) { gatherRegistry(params, cb); }
-        });
+        for (String addr : LpStore.addresses(ctx)) {
+            String[] p = LpStore.params(ctx, addr);   // null until backfilled → Source 2 covers it meanwhile
+            if (p != null) params.putIfAbsent(p[0] + "|" + p[2] + "|" + p[3], p);
+        }
+        gatherRegistry(params, cb);
     }
 
     private void parseScripts(JSONObject j, Map<String, String[]> params) {
@@ -77,14 +94,13 @@ public class PoolBook {
         }
     }
 
-    /** Source 2: the shared registry (announce beacons) — discovers OTHER creators' fresh pools. No depth
-     *  cap: the old `depth:200` (~2.7h) made pools vanish from view hours after creation. `megammr:true`
-     *  so a MegaMMR node (typical mobile node) also finds beacons that have aged out of its recent
-     *  chaintree window — it keeps the full unspent set but only returns untracked-address coins via the
-     *  MegaMMR pass. The flag is node-gated on IS_MEGAMMR, so it's ignored (harmless) on a non-MegaMMR
-     *  node. Without it a freshly-synced MegaMMR node discovers nothing. */
+    /** Source 2: the shared registry (announce beacons) — discovers OTHER creators' fresh pools. Scans the
+     *  recent chaintree window only. NOT `megammr:true`: on a MegaMMR node that returns the ENTIRE historical
+     *  beacon set — a ~290KB reply that overflows the IPC Binder limit and crash-loops the app on open. The
+     *  keep-alive service re-announces live pools into the recent window, so a bounded scan still finds every
+     *  actively-maintained pool. */
     private void gatherRegistry(final Map<String, String[]> params, final Listener cb) {
-        node.cmd("coins simplestate:true order:desc megammr:true address:" + PoolCovenant.SENTINEL, new NodeApi.Cb() {
+        node.cmd("coins simplestate:true order:desc depth:" + SCAN_DEPTH + " address:" + PoolCovenant.SENTINEL, new NodeApi.Cb() {
             @Override public void onResult(JSONObject j) {
                 Object resp = j.opt("response");
                 JSONArray coins = resp instanceof JSONArray ? (JSONArray) resp : new JSONArray();
@@ -142,6 +158,10 @@ public class PoolBook {
                             // covenant so done() can track it once it's confirmed funded (track-on-discovery).
                             if (tracked == null) pool.covenantScript = fscript;
                             synchronized (pools) { pools.add(pool); }
+                            // Self-heal: the first time we see an OWNED pool via ANY source, backfill its covenant
+                            // params so Source 1 can rebuild it locally (GTC) on the next scan without a node dump.
+                            if (LpStore.get(ctx, pool.address) != null && LpStore.params(ctx, pool.address) == null)
+                                LpStore.putParams(ctx, pool.address, opk, oadr, tok, kmin);
                         }
                     } catch (Exception ignore) {}
                     if (pending.decrementAndGet() == 0) fund(pools, cb);
@@ -151,16 +171,14 @@ public class PoolBook {
         }
     }
 
-    /** Scan each derived pool address for its two reserve coins. `megammr:true` so an as-yet-untracked
-     *  pool covenant's reserves are found on a MegaMMR node (which retains the full unspent set but only
-     *  returns untracked-address coins through the MegaMMR pass); ignored on non-MegaMMR nodes. A newly
-     *  discovered pool is then `newscript trackall`-ed in done(), so subsequent scans also see it via the
-     *  tracked-contract source (Source 1) without needing the MegaMMR pass. */
+    /** Scan each derived pool address for its two reserve coins (recent chaintree window; NOT `megammr:true`
+     *  — see gatherRegistry for why the MegaMMR pass overflows the IPC Binder). A discovered pool is
+     *  `newscript trackall`-ed in done(), so later scans see it via the tracked-contract source (Source 1). */
     private void fund(List<Pool> pools, Listener cb) {
         if (pools.isEmpty()) { cb.onPools(pools); return; }
         AtomicInteger pending = new AtomicInteger(pools.size());
         for (Pool pool : pools) {
-            node.cmd("coins megammr:true address:" + pool.address, new NodeApi.Cb() {
+            node.cmd("coins address:" + pool.address, new NodeApi.Cb() {
                 @Override public void onResult(JSONObject j) {
                     Object resp = j.opt("response");
                     JSONArray cs = resp instanceof JSONArray ? (JSONArray) resp : new JSONArray();

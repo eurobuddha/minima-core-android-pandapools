@@ -52,7 +52,6 @@ public class PoolService extends Service {
     private NodeApi node;
     private PoolBook book;
     private PoolManager mgr;
-    private final Set<String> myKeys = new HashSet<>();
     private boolean ticking = false;
     private long lastTickMs = 0;
     private String fgText;
@@ -67,7 +66,7 @@ public class PoolService extends Service {
         if (!startForegroundCompat()) { stopSelf(); return; }
         prefs = getSharedPreferences("pandapools_keepalive", MODE_PRIVATE);
         node = new NodeApi(this, enabled -> {});
-        book = new PoolBook(node);
+        book = new PoolBook(this, node);
         mgr = new PoolManager(node);
         HeartbeatReceiver.schedule(this);
         h.postDelayed(this::tick, 5_000);   // first pass shortly after start (let pairing settle)
@@ -122,26 +121,11 @@ public class PoolService extends Service {
         if (now - lastTickMs < TICK_MIN_GAP_MS) return;
         lastTickMs = now;
         ticking = true;
-        node.cmd("keys", new NodeApi.Cb() {
-            @Override public void onResult(JSONObject j) { parseKeys(j); scanAndKeepAlive(); }
-            @Override public void onError(String m) { ticking = false; }   // node down/unpaired — retry next heartbeat
-        });
-    }
-
-    /** Load this node's local public keys — a pool is OWNED iff its $OPK is one of them (same test as MyLpView). */
-    private void parseKeys(JSONObject j) {
-        myKeys.clear();
-        Object resp = j.opt("response");
-        JSONArray arr = null;
-        if (resp instanceof JSONArray) arr = (JSONArray) resp;
-        else if (resp instanceof JSONObject) arr = ((JSONObject) resp).optJSONArray("keys");
-        if (arr != null) for (int i = 0; i < arr.length(); i++) {
-            JSONObject k = arr.optJSONObject(i);
-            if (k != null) {
-                String pk = k.optString("publickey", k.optString("miniaddress", ""));
-                if (!pk.isEmpty()) myKeys.add(pk.toLowerCase());
-            }
-        }
+        // Ownership comes from LpStore (this device's own create/migrate record) — NOT a full `keys` fetch,
+        // which returns the node's entire key list (hundreds of KB on an established node) and overflows the
+        // IPC Binder → crash. Only a pool this device created has its $OPK key here anyway, so LpStore is
+        // exactly the set this node can re-anchor.
+        scanAndKeepAlive();
     }
 
     private void scanAndKeepAlive() {
@@ -161,7 +145,9 @@ public class PoolService extends Service {
         });
     }
 
-    private boolean isOwned(Pool p) { return p.opk != null && myKeys.contains(p.opk.toLowerCase()); }
+    /** Owned = this device created/migrated the pool, so LpStore has its snapshot AND its $OPK key is in
+     *  this node's keystore. A purely local check — no oversized IPC. */
+    private boolean isOwned(Pool p) { return p.address != null && LpStore.get(this, p.address) != null; }
 
     private static String prefKey(Pool p) {
         return "ka_" + (p.address == null ? "" : p.address.toLowerCase());
