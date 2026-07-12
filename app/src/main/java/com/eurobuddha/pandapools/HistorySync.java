@@ -21,7 +21,11 @@ public class HistorySync {
         void onDone(int totalNew, boolean ok);
     }
 
-    private static final int  START_MAX = 8;
+    // Start at ONE txpow per page. The adaptive halving below only helps when the node returns a catchable
+    // empty/dropped page — but an oversized `history` reply overflows the IPC Binder and CRASHES the process
+    // (no error to react to). On a MegaMMR node a single txpow is ~35KB, so max:8 (~280KB) crash-loops on open;
+    // max:1 can never overflow (barring a single >256KB txpow, which the max:1 skip path then steps over).
+    private static final int  START_MAX = 1;
     private static final long PAGE_DELAY_MS = 450;
     private static final int  MAX_FETCHES = 600;   // safety cap across pages + retries
     private static final int  MAX_SKIP = 3;        // consecutive max:1 failures before giving up

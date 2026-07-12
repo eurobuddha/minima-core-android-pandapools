@@ -53,13 +53,43 @@ public class PoolBook {
     private static final Pattern P_TOK  = Pattern.compile("GETINTOK\\(s\\) EQ (0x[0-9A-Fa-f]+)");
     private static final Pattern P_KMIN = Pattern.compile("GTE MAX\\(x\\*y ([0-9.]+)\\)");
 
-    /** Scan the registry → discover + fund every pool → callback on the UI thread. */
+    // Single-flight discovery. All five tabs call scan() on refresh/new-block; we run ONE shared scan and
+    // fan its result out to every caller. The node serves the FIRST `coins address:SENTINEL` cleanly but
+    // returns a bloated retained set to CONCURRENT duplicates of it — four parallel scans overflowed the IPC
+    // Binder (exactly 1 of 4 came back small, 3 huge); one serialized scan does not.
+    private static boolean sScanning = false;
+    private static final java.util.List<Listener> sWaiters = new java.util.ArrayList<>();
+
+    /** Scan the registry → discover + fund every pool → callback on the UI thread. Single-flight. */
     public void scan(Listener cb) {
-        // idempotent: ensure the node notifies on sentinel coins, then gather pools from both sources.
-        node.cmd("coinnotify action:add address:" + PoolCovenant.SENTINEL, new NodeApi.Cb() {
-            @Override public void onResult(JSONObject j) { gatherOwned(cb); }
-            @Override public void onError(String m) { gatherOwned(cb); }
+        synchronized (sWaiters) {
+            if (cb != null) sWaiters.add(cb);
+            if (sScanning) return;   // a scan is already running; this caller is served when it finishes
+            sScanning = true;
+        }
+        final Listener fanout = new Listener() {
+            @Override public void onPools(List<Pool> pools) { finishFanout(pools, null); }
+            @Override public void onError(String msg) { finishFanout(null, msg); }
+        };
+        // Un-track the shared sentinel first: a long-tracked address makes the node return its whole retained
+        // set for `coins address:` (hundreds of KB) instead of just the recent unpruned beacons.
+        node.cmd("coinnotify action:remove address:" + PoolCovenant.SENTINEL, new NodeApi.Cb() {
+            @Override public void onResult(JSONObject j) { gatherOwned(fanout); }
+            @Override public void onError(String m) { gatherOwned(fanout); }
         });
+    }
+
+    /** Deliver the single-flight result to every queued caller and release the guard. */
+    private static void finishFanout(List<Pool> pools, String err) {
+        java.util.List<Listener> ws;
+        synchronized (sWaiters) {
+            ws = new java.util.ArrayList<>(sWaiters);
+            sWaiters.clear();
+            sScanning = false;
+        }
+        for (Listener w : ws) {
+            if (pools != null) w.onPools(pools); else w.onError(err);
+        }
     }
 
     /** Source 1 (GTC): this node's OWN pools — rebuilt PURELY LOCALLY from LpStore's backfilled covenant params
@@ -70,12 +100,48 @@ public class PoolBook {
      *  were backfilled is still found via Source 2 (its live beacon), and derivePools then backfills its params
      *  so Source 1 picks it up next scan. LpStore is exactly the set keep-alive can re-anchor — nothing lost. */
     private void gatherOwned(final Listener cb) {
-        final Map<String, String[]> params = new LinkedHashMap<>();   // key opk|tok|kmin -> {opk,oadr,tok,kmin}
-        for (String addr : LpStore.addresses(ctx)) {
-            String[] p = LpStore.params(ctx, addr);   // null until backfilled → Source 2 covers it meanwhile
-            if (p != null) params.putIfAbsent(p[0] + "|" + p[2] + "|" + p[3], p);
+        final java.util.Set<String> addrs = LpStore.addresses(ctx);
+        if (addrs.isEmpty()) { cb.onPools(new ArrayList<>()); return; }
+        final List<Pool> pools = new ArrayList<>();
+        final AtomicInteger pending = new AtomicInteger(addrs.size());
+        for (final String addr : addrs) {
+            final String[] p = LpStore.params(ctx, addr);   // {opk,oadr,tok,kmin} for re-anchor, or null (legacy)
+            // BOUNDED per-pool read — ~1.6KB even on a MegaMMR node. We already KNOW the address (it is the
+            // LpStore key), so no shared-sentinel scan and no runscript re-derivation is needed.
+            node.cmd("coins address:" + addr, new NodeApi.Cb() {
+                @Override public void onResult(JSONObject j) {
+                    Pool pool = new Pool();
+                    pool.address = addr;
+                    if (p != null) { pool.opk = p[0]; pool.oadr = p[1]; pool.tok = p[2]; pool.kmin = p[3]; }
+                    Object resp = j.opt("response");
+                    JSONArray cs = resp instanceof JSONArray ? (JSONArray) resp : new JSONArray();
+                    for (int i = 0; i < cs.length(); i++) {
+                        JSONObject c = cs.optJSONObject(i);
+                        if (c == null || c.optBoolean("spent", false)) continue;
+                        String tid = c.optString("tokenid", "");
+                        if ("0x00".equals(tid)) {
+                            // largest MINIMA coin = the real reserve (a dust coin must never be mistaken for it)
+                            BigDecimal amt = new BigDecimal(c.optString("amount", "0"));
+                            if (pool.reserveM == null || amt.compareTo(pool.reserveM) > 0) {
+                                pool.reserveM = amt; pool.coinidM = c.optString("coinid", "");
+                            }
+                        } else if (pool.tok == null || pool.tok.isEmpty() || pool.tok.equalsIgnoreCase(tid)) {
+                            // a legacy pool (no stored params) adopts its token leg from the reserve coin
+                            BigDecimal amt = new BigDecimal(c.optString("tokenamount", c.optString("amount", "0")));
+                            if (pool.reserveT == null || amt.compareTo(pool.reserveT) > 0) {
+                                pool.reserveT = amt; pool.coinidT = c.optString("coinid", "");
+                                pool.tok = tid;
+                                pool.tokName = Util.tokenName(c.opt("token"), tid);
+                                pool.tokDecimals = Util.tokenDecimals(c.opt("token"));
+                            }
+                        }
+                    }
+                    synchronized (pools) { if (pool.funded()) pools.add(pool); }
+                    if (pending.decrementAndGet() == 0) cb.onPools(pools);
+                }
+                @Override public void onError(String m) { if (pending.decrementAndGet() == 0) cb.onPools(pools); }
+            });
         }
-        gatherRegistry(params, cb);
     }
 
     private void parseScripts(JSONObject j, Map<String, String[]> params) {
