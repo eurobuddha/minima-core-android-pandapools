@@ -147,7 +147,9 @@ public class PoolService extends Service {
 
     /** Owned = this device created/migrated the pool, so LpStore has its snapshot AND its $OPK key is in
      *  this node's keystore. A purely local check — no oversized IPC. */
-    private boolean isOwned(Pool p) { return p.address != null && LpStore.get(this, p.address) != null; }
+    // Ownership resolved in PoolBook from the node's wallet (checkaddress on the payout addr) — survives an
+    // app reinstall that wipes LpStore, so a re-installed owner keeps re-anchoring their pool.
+    private boolean isOwned(Pool p) { return p.owned; }
 
     private static String prefKey(Pool p) {
         return "ka_" + (p.address == null ? "" : p.address.toLowerCase());

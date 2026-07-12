@@ -297,7 +297,35 @@ public class PoolBook {
                 p.covenantScript = null;
             }
         }
-        cb.onPools(merged);
+        resolveOwnership(merged, cb);
+    }
+
+    /** Ownership from the NODE'S WALLET (survives app reinstalls, unlike the local LpStore record that a
+     *  reinstall wipes): a pool is MINE iff my wallet owns its payout address ($OADR) — which is minted from
+     *  the same `newaddress` as $OPK at create. Bounded per-pool `checkaddress`, NEVER the full `keys` dump
+     *  (that overflows the IPC Binder on a MegaMMR node). Same result as 8.7's keys check, but crash-safe. */
+    private void resolveOwnership(final List<Pool> pools, final Listener cb) {
+        if (pools.isEmpty()) { cb.onPools(pools); return; }
+        final AtomicInteger pending = new AtomicInteger(pools.size());
+        for (final Pool p : pools) {
+            if (p.oadr == null || p.oadr.isEmpty()) {
+                p.owned = LpStore.get(ctx, p.address) != null;   // no payout addr known → local fallback
+                if (pending.decrementAndGet() == 0) cb.onPools(pools);
+                continue;
+            }
+            node.cmd("checkaddress address:" + p.oadr, new NodeApi.Cb() {
+                @Override public void onResult(JSONObject j) {
+                    JSONObject r = j.optJSONObject("response");
+                    p.owned = (r != null && r.optBoolean("relevant", false))
+                            || LpStore.get(ctx, p.address) != null;   // wallet owns payout addr OR local record
+                    if (pending.decrementAndGet() == 0) cb.onPools(pools);
+                }
+                @Override public void onError(String m) {
+                    p.owned = LpStore.get(ctx, p.address) != null;    // fallback if the check fails
+                    if (pending.decrementAndGet() == 0) cb.onPools(pools);
+                }
+            });
+        }
     }
 
     // ---- helpers ----

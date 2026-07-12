@@ -13,6 +13,7 @@ public class Pool {
     public String address;      // derived covenant address (0x)
     public String mxaddress;    // Mx form
     public String opk, oadr, tok, kmin;   // announce params (owner pk, payout addr, tokenid, floor)
+    public boolean owned;                 // this node's wallet owns the payout addr (checkaddress) — survives app reinstall
     /** For a pool DISCOVERED via the shared registry (not one this node created): its covenant script, so
      *  discovery can `newscript trackall` it once it's confirmed funded — track-on-discovery, which makes a
      *  seen-but-not-created pool stay GTC-visible + swappable on this node forever. Null for own pools. */

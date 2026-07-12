@@ -73,7 +73,9 @@ public class MyLpView extends BaseView {
     // Ownership is the LOCAL LpStore record (this device's own create/migrate), NOT a full `keys` node dump
     // — which returns every public key on an established node and overflows the IPC Binder → crash. This is
     // exactly the set PoolService keeps alive, so MY LP and the keep-alive agree on what "mine" means.
-    private boolean mine(Pool p) { return p.address != null && LpStore.get(act, p.address) != null; }
+    // Ownership is resolved in PoolBook from the node's WALLET (checkaddress on the payout addr) so it
+    // survives an app reinstall that wipes LpStore — same as 8.7's keys check, but crash-safe.
+    private boolean mine(Pool p) { return p.owned; }
 
     // ---- discovery ----
 
