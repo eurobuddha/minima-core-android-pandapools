@@ -33,13 +33,13 @@ public class PoolBook {
     private final NodeApi node;
     private final Context ctx;   // for LpStore (this device's OWN pool addresses)
 
-    // Bounded scan window for the SHARED sentinel (Source 2). The sentinel accumulates a beacon on EVERY
-    // re-anchor of EVERY pool, so an unbounded `coins address:SENTINEL` returns the node's entire tracked
-    // beacon history (~317KB on an established node) and overflows the IPC Binder → crash. Beacons re-announce
-    // every 18h (KEEPALIVE_INTERVAL), so ~2000 blocks (≈28h at 50s/block) surfaces every live pool's latest
-    // beacon with margin for a slightly-late keep-alive, while excluding the stale history. Own pools are also
-    // found locally via Source 1 (LpStore), so this bound never hides a pool this node can re-anchor.
-    private static final int SCAN_DEPTH = 256;
+    // Bounded scan window for the SHARED sentinel (Source 2), used WITH megammr:false in gatherRegistry. The
+    // sentinel accumulates an unspendable beacon on every re-anchor of every pool; a MegaMMR node would return
+    // that ENTIRE history (~317KB → IPC-Binder overflow), so gatherRegistry excludes the MegaMMR set with
+    // megammr:false and scans only the recent chain. ~4000 blocks (≈55h at 50s/block) surfaces every live pool's
+    // latest beacon (re-anchor cadence is 18h) with wide margin, while the recent-chain reply stays a few KB.
+    // Own pools also come locally from LpStore (Source 1), so this bound never hides a pool this node re-anchors.
+    private static final int SCAN_DEPTH = 4000;
 
     public PoolBook(Context ctx, NodeApi node) { this.ctx = ctx; this.node = node; }
 
