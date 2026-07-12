@@ -79,9 +79,6 @@ public class NodeApi {
 
     public void cmd(String command, Cb cb) {
         if (mReleased) return;
-        // Diagnostic: log each command so an oversized-response crash (Binder TransactionTooLargeException on
-        // the node's reply, which never reaches us) can be traced to the exact command that triggered it.
-        try { android.util.Log.i("PPCMD", command.length() > 90 ? command.substring(0, 90) : command); } catch (Exception ignore) {}
         final boolean[] done = {false};
         final Runnable[] ref = new Runnable[1];
         final Runnable timeout = () -> {
@@ -111,10 +108,6 @@ public class NodeApi {
                         if (cb != null) cb.onError(ERR_NOT_ENABLED);
                         return;
                     }
-                    // Diagnostic: log each response that SUCCESSFULLY arrives + its size. A command with a
-                    // PPCMD (sent) but NO matching PPRESP before a crash is the one whose oversized reply
-                    // overflowed the Binder (that reply never reaches here).
-                    try { android.util.Log.i("PPRESP", (command.length() > 60 ? command.substring(0, 60) : command) + "  len=" + zResponse.toString().length()); } catch (Exception ignore2) {}
                     if (cb != null) cb.onResult(zResponse);
                 });
             }
