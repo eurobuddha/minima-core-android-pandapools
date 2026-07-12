@@ -130,7 +130,7 @@ public class PoolBook {
                         // ONLY surface a covenant that actually compiles. A non-parsing script can never
                         // execute → its coins are permanently unspendable, so it must not appear as a live,
                         // closeable or routable pool (it would just make every swap through it fail).
-                        if (resp.optBoolean("parseok", false)) {
+                        if (TxPost.truthy(resp, "parseok")) {   // type-tolerant, matching the fund-path guard in PoolManager.deriveAddress
                             JSONObject sc = resp.getJSONObject("script");
                             Pool pool = new Pool();
                             pool.opk = opk; pool.oadr = oadr; pool.tok = tok; pool.kmin = kmin;

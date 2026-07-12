@@ -102,6 +102,7 @@ public class SwapView extends BaseView {
 
     @Override public void refresh() { act.pools().requestNow(poolListener); }
     @Override public void onShown() { act.pools().requestNow(poolListener); }
+    @Override public boolean isBusy() { return posting; }
     @Override public void onDestroy() {
         act.pools().unsubscribe(poolListener);
         if (marketLine != null) marketLine.removeCallbacks(marketRepaint);

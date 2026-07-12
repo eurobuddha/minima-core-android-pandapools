@@ -87,7 +87,12 @@ public class MainActivity extends AppCompatActivity {
         pairingBanner = findViewById(R.id.pairingBanner);
         pairingBanner.setVisibility(View.GONE);
 
-        findViewById(R.id.designToggle).setOnClickListener(v -> { Design.next(); Design.set(this, Design.mode()); recreate(); });
+        findViewById(R.id.designToggle).setOnClickListener(v -> {
+            // Don't recreate() (which tears down NodeApi) while a tx is building/posting — it would strand
+            // the in-flight CmdChain (no callback, no txndelete). Ask the user to finish first.
+            if (anyViewBusy()) { android.widget.Toast.makeText(this, "Finish your transaction first, then switch theme.", android.widget.Toast.LENGTH_SHORT).show(); return; }
+            Design.next(); Design.set(this, Design.mode()); recreate();
+        });
         Button openNode = findViewById(R.id.openNodeBtn);
         if (openNode != null) openNode.setOnClickListener(v -> openMinimaCore());
 
@@ -223,6 +228,12 @@ public class MainActivity extends AppCompatActivity {
     private void stopPolling() {
         blockPollActive = false;
         ui.removeCallbacks(pollTask);
+    }
+
+    /** True while any tab has a transaction in flight — gates the theme recreate() (see designToggle). */
+    private boolean anyViewBusy() {
+        if (views != null) for (BaseView v : views) if (v.isBusy()) return true;
+        return false;
     }
 
     private void openMinimaCore() {

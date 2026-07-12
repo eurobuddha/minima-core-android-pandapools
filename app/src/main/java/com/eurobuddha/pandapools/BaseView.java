@@ -37,4 +37,8 @@ public abstract class BaseView {
 
     /** Called when the host Activity is destroyed. Cancel all callbacks / release refs here. Default: no-op. */
     public void onDestroy() {}
+
+    /** True while this tab has a transaction building/posting — so the host can defer a theme recreate()
+     *  (which would tear down NodeApi mid-CmdChain and strand the tx). Default: no-op. */
+    public boolean isBusy() { return false; }
 }

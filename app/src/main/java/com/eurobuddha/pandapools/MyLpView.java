@@ -60,6 +60,7 @@ public class MyLpView extends BaseView {
     private int pendingBlock;
     private String pendingLabel = "";
     private boolean pendingPolling = false;
+    private boolean stopped = false;   // true while backgrounded — blocks the fast pending-poll from re-arming
 
     public MyLpView(MainActivity a) {
         super(a, R.layout.view_mylp);
@@ -86,8 +87,9 @@ public class MyLpView extends BaseView {
     }
 
     @Override public void refresh() { act.pools().requestNow(poolListener); }
-    @Override public void onShown() { loadKeys(); act.pools().requestNow(poolListener); if (pendingCreate != null) startPendingPoll(); }
-    @Override public void onStop() { stopPendingPoll(); }
+    @Override public void onShown() { stopped = false; loadKeys(); act.pools().requestNow(poolListener); if (pendingCreate != null) startPendingPoll(); }
+    @Override public void onStop() { stopped = true; stopPendingPoll(); }
+    @Override public boolean isBusy() { return busy; }
     @Override public void onDestroy() { stopPendingPoll(); act.pools().unsubscribe(poolListener); }
 
     // ---- ownership ----
@@ -204,7 +206,7 @@ public class MyLpView extends BaseView {
     }
 
     private void startPendingPoll() {
-        if (pendingPolling) return;
+        if (pendingPolling || stopped) return;   // never arm while backgrounded (chainBlock is frozen → no escape)
         pendingPolling = true;
         act.ui().postDelayed(pendingPollTask, 9000);
     }
@@ -215,10 +217,10 @@ public class MyLpView extends BaseView {
     private final Runnable pendingPollTask = new Runnable() {
         @Override public void run() {
             pendingPolling = false;
-            if (pendingCreate == null) return;
+            if (stopped || pendingCreate == null) return;       // backgrounded → stop (onShown re-arms)
             if (act.chainBlock() - pendingBlock > 12) return;   // give up the FAST poll; the block-poll keeps trying
             if (!busy) act.pools().refresh();                   // shared scan → render resolves + repaints the pool
-            if (pendingCreate != null) { pendingPolling = true; act.ui().postDelayed(this, 9000); }
+            if (pendingCreate != null && !stopped) { pendingPolling = true; act.ui().postDelayed(this, 9000); }
         }
     };
 
