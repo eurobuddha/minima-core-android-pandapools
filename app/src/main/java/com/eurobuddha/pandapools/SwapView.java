@@ -28,13 +28,19 @@ import java.util.Map;
  */
 public class SwapView extends BaseView {
 
-    private final PoolBook book;
     private final PoolTxn txn;
 
     private final List<Pool> pairPools = new ArrayList<>();
     private String pairLabel = "token";
     private boolean minimaToToken = true;
-    private boolean scanning = false, posting = false;
+    private boolean posting = false;
+
+    // Receives the shared PoolRepository's scan result. Skip repaints WHILE POSTING so an in-flight swap's
+    // quote/inputs aren't reset under the user; doSwap re-scans via pools().refresh() when the post lands.
+    private final PoolBook.Listener poolListener = new PoolBook.Listener() {
+        @Override public void onPools(List<Pool> pools) { if (posting) return; renderPools(pools); }
+        @Override public void onError(String msg) { if (!posting) setBusy("Scan error: " + msg); }
+    };
 
     private EditText amount;
     private LinearLayout quotePanel, swapActivity;
@@ -49,7 +55,7 @@ public class SwapView extends BaseView {
 
     public SwapView(MainActivity a) {
         super(a, R.layout.view_swap);
-        book = new PoolBook(a.node());
+        a.pools().subscribe(poolListener);
         txn = new PoolTxn(a.node());
 
         poolLine   = find(R.id.swapPool);
@@ -94,22 +100,14 @@ public class SwapView extends BaseView {
         setBusy("Finding pools…");
     }
 
-    @Override public void refresh() { scan(); }
-    @Override public void onShown() { scan(); }
-    @Override public void onNewBlock() { if (!posting) scan(); }
-    @Override public void onDestroy() { if (marketLine != null) marketLine.removeCallbacks(marketRepaint); }
-
-    // ---- pool discovery ----
-
-    private void scan() {
-        if (scanning || act.node() == null) return;
-        scanning = true;
-        book.scan(new PoolBook.Listener() {
-            // NB: call the OUTER method, not this listener's onPools (same signature → would self-recurse)
-            @Override public void onPools(List<Pool> pools) { scanning = false; renderPools(pools); }
-            @Override public void onError(String msg) { scanning = false; setBusy("Scan error: " + msg); }
-        });
+    @Override public void refresh() { act.pools().requestNow(poolListener); }
+    @Override public void onShown() { act.pools().requestNow(poolListener); }
+    @Override public void onDestroy() {
+        act.pools().unsubscribe(poolListener);
+        if (marketLine != null) marketLine.removeCallbacks(marketRepaint);
     }
+
+    // ---- pool discovery (shared scan — see poolListener) ----
 
     private void renderPools(List<Pool> pools) {
         renderActivity();   // keep the inline recent-activity strip fresh on every scan
@@ -323,7 +321,7 @@ public class SwapView extends BaseView {
                     amount.setText("");
                     setStatus("Swap posted ✓  " + Util.shorten(txpowid) + " — reserves update in ~1–2 blocks.", Design.success());
                     swapBtn.setEnabled(true); swapBtn.setText("SWAP"); Ui.primaryButton(swapBtn);
-                    scan();
+                    act.pools().refresh();
                 });
             }
             @Override public void onFailed(String message) {

@@ -44,11 +44,19 @@ public class ActivityView extends BaseView {
 
     private final LinearLayout container;
     private final TextView personalTab, globalTab, refreshTv, statusTv;
-    private final PoolBook book;
     private final HistorySync sync;
     private boolean showGlobal = false;
-    private boolean scanning = false;
     private boolean polling = false;
+
+    // The shared pool scan feeds the global swap-feed: ingest each scan's reserves (GlobalFeed diffs them
+    // against the previous scan to detect swaps) and repaint if the ALL POOLS view is showing.
+    private final PoolBook.Listener poolListener = new PoolBook.Listener() {
+        @Override public void onPools(List<Pool> pools) {
+            GlobalFeed.ingest(act, pools);
+            if (showGlobal && visible()) scheduleRender();
+        }
+        @Override public void onError(String msg) {}
+    };
 
     public ActivityView(MainActivity a) {
         super(a, R.layout.view_activity);
@@ -57,7 +65,7 @@ public class ActivityView extends BaseView {
         globalTab   = find(R.id.actGlobal);
         refreshTv   = find(R.id.actRefresh);
         statusTv    = find(R.id.actStatus);
-        book = new PoolBook(a.node());
+        a.pools().subscribe(poolListener);
         sync = new HistorySync(a, a.history(), syncListener);
 
         refreshTv.setTextColor(Design.accent());
@@ -82,9 +90,9 @@ public class ActivityView extends BaseView {
 
     @Override public void refresh() { render(); }
     @Override public void onShown() { syncPersonal(); scanGlobal(); render(); startPoll(); }
-    @Override public void onNewBlock() { syncPersonal(); scanGlobal(); if (visible()) scheduleRender(); }
+    @Override public void onNewBlock() { syncPersonal(); if (visible()) scheduleRender(); }   // shared per-block scan (MainActivity) feeds the global feed
     @Override public void onStop() { stopPoll(); }
-    @Override public void onDestroy() { stopPoll(); }
+    @Override public void onDestroy() { stopPoll(); act.pools().unsubscribe(poolListener); }
 
     private boolean visible() { return act.currentTab() == MainActivity.TAB_ACTIVITY; }
     /** Coalesce bursty re-renders (per history page, per block) into one, and only while visible. */
@@ -95,17 +103,7 @@ public class ActivityView extends BaseView {
 
     private void syncPersonal() { if (act.node() != null && !sync.isRunning()) sync.start(); }
 
-    private void scanGlobal() {
-        if (scanning || act.node() == null) return;
-        scanning = true;
-        book.scan(new PoolBook.Listener() {
-            @Override public void onPools(List<Pool> pools) {
-                scanning = false; GlobalFeed.ingest(act, pools);
-                if (showGlobal && visible()) scheduleRender();
-            }
-            @Override public void onError(String msg) { scanning = false; }
-        });
-    }
+    private void scanGlobal() { act.pools().requestNow(poolListener); }
 
     private final HistorySync.Listener syncListener = new HistorySync.Listener() {
         @Override public void onProgress(int totalNew) { act.runOnUiThread(() -> { if (!showGlobal && visible()) scheduleRender(); }); }
@@ -128,7 +126,7 @@ public class ActivityView extends BaseView {
         @Override public void run() {
             polling = false;
             if (!visible()) return;   // left the tab / backgrounded → stop (onShown restarts it)
-            scanGlobal(); render();
+            render();                 // refresh the "Confirming n/3" countdown; the shared per-block scan feeds the global feed
             startPoll();
         }
     };

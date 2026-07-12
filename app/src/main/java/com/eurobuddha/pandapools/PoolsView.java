@@ -15,32 +15,26 @@ import java.util.List;
  *  price, and product growth. Read-only discovery — swapping lives in the Swap tab, LP in My LP. */
 public class PoolsView extends BaseView {
 
-    private final PoolBook book;
-    private boolean scanning = false;
+    // Receives the shared PoolRepository's scan result (one scan for the whole app, not one per tab).
+    private final PoolBook.Listener poolListener = new PoolBook.Listener() {
+        @Override public void onPools(List<Pool> pools) { render(pools); }
+        @Override public void onError(String msg) { status("Scan error: " + msg); }
+    };
 
     public PoolsView(MainActivity a) {
         super(a, R.layout.view_pools);
-        book = new PoolBook(a.node());
+        a.pools().subscribe(poolListener);
         TextView refresh = find(R.id.poolsRefresh);
         refresh.setTextColor(Design.accent());
-        refresh.setOnClickListener(v -> scan());
+        refresh.setOnClickListener(v -> refresh());
         ((TextView) find(R.id.poolsSummary)).setTextColor(Design.dim());
         ((TextView) find(R.id.poolsStatus)).setTextColor(Design.dim());
-    }
-
-    @Override public void refresh() { scan(); }
-    @Override public void onShown() { scan(); }
-    @Override public void onNewBlock() { scan(); }
-
-    private void scan() {
-        if (scanning || act.node() == null) return;
-        scanning = true;
         status("Scanning the pool registry…");
-        book.scan(new PoolBook.Listener() {
-            @Override public void onPools(List<Pool> pools) { scanning = false; render(pools); }
-            @Override public void onError(String msg) { scanning = false; status("Scan error: " + msg); }
-        });
     }
+
+    @Override public void refresh() { act.pools().requestNow(poolListener); }
+    @Override public void onShown() { act.pools().requestNow(poolListener); }
+    @Override public void onDestroy() { act.pools().unsubscribe(poolListener); }
 
     private void render(List<Pool> pools) {
         LinearLayout list = find(R.id.poolList);

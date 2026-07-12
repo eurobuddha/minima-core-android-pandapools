@@ -35,10 +35,20 @@ public class MyLpView extends BaseView {
     /** mxUSDT — the one pair with a live MEXC market feed, so its create price is forced to the market. */
     private static final String USDT_TOKENID = "0x7D39745FBD29049BE29850B55A18BF550E4D442F930F86266E34193D89042A90";
 
-    private final PoolBook book;
     private final PoolManager mgr;
     private final Set<String> myKeys = new HashSet<>();
-    private boolean scanning = false, busy = false;
+    private boolean busy = false;
+
+    // Receives the shared PoolRepository's scan result (one scan for the whole app). render() filters to the
+    // pools this node owns and drives the pending-create lifecycle.
+    private final PoolBook.Listener poolListener = new PoolBook.Listener() {
+        // Skip the per-block repaint WHILE a create/deposit/migrate/close is in flight — otherwise a block
+        // landing mid-transaction wipes the "Creating…" status (and can flash "No pools yet" before
+        // pendingCreate is armed), the worry-and-resubmit loop the pending-create lifecycle prevents. Each
+        // transaction completion re-scans with busy=false, so no update is lost.
+        @Override public void onPools(List<Pool> pools) { if (busy) return; render(pools); }
+        @Override public void onError(String msg) { status("Scan error: " + msg); }
+    };
     // A create that's been posted but not yet discovered on-chain — drives the persistent "confirming…"
     // card (so we never flash "No pools yet"), the duplicate-create guard, and a fast self-poll so the
     // pool paints itself the moment it's live (no tab-switch needed).
@@ -49,7 +59,7 @@ public class MyLpView extends BaseView {
 
     public MyLpView(MainActivity a) {
         super(a, R.layout.view_mylp);
-        book = new PoolBook(a.node());
+        a.pools().subscribe(poolListener);
         mgr = new PoolManager(a.node());
 
         Ui.card(find(R.id.lpSummaryCard));
@@ -65,11 +75,10 @@ public class MyLpView extends BaseView {
         loadKeys();
     }
 
-    @Override public void refresh() { scan(); }
-    @Override public void onShown() { loadKeys(); scan(); if (pendingCreate != null) startPendingPoll(); }
-    @Override public void onNewBlock() { if (!busy) scan(); }
+    @Override public void refresh() { act.pools().requestNow(poolListener); }
+    @Override public void onShown() { loadKeys(); act.pools().requestNow(poolListener); if (pendingCreate != null) startPendingPoll(); }
     @Override public void onStop() { stopPendingPoll(); }
-    @Override public void onDestroy() { stopPendingPoll(); }
+    @Override public void onDestroy() { stopPendingPoll(); act.pools().unsubscribe(poolListener); }
 
     // ---- ownership ----
 
@@ -89,24 +98,15 @@ public class MyLpView extends BaseView {
                         if (!pk.isEmpty()) myKeys.add(pk.toLowerCase());
                     }
                 }
-                scan();
+                act.pools().requestNow(poolListener);
             }
-            @Override public void onError(String m) { scan(); }
+            @Override public void onError(String m) { act.pools().requestNow(poolListener); }
         });
     }
 
     private boolean mine(Pool p) { return p.opk != null && myKeys.contains(p.opk.toLowerCase()); }
 
-    // ---- discovery ----
-
-    private void scan() {
-        if (scanning || act.node() == null) return;
-        scanning = true;
-        book.scan(new PoolBook.Listener() {
-            @Override public void onPools(List<Pool> pools) { scanning = false; render(pools); }
-            @Override public void onError(String msg) { scanning = false; status("Scan error: " + msg); }
-        });
-    }
+    // ---- discovery (shared scan — see poolListener) ----
 
     private void render(List<Pool> all) {
         List<Pool> mine = new ArrayList<>();
@@ -181,7 +181,7 @@ public class MyLpView extends BaseView {
             card.addView(kv("Seeding", trim(pendingCreate.reserveM) + " MINIMA  +  " + trim(pendingCreate.reserveT) + " " + pendingLabel));
         card.addView(kv("", "It will appear here automatically — no need to resubmit.  (Tap to dismiss.)"));
         // Escape hatch: dismissing clears the create-guard so a stalled node can never wedge new creates.
-        card.setOnClickListener(v -> { pendingCreate = null; stopPendingPoll(); status(""); scan(); });
+        card.setOnClickListener(v -> { pendingCreate = null; stopPendingPoll(); status(""); act.pools().requestNow(poolListener); });
         return card;
     }
 
@@ -199,7 +199,7 @@ public class MyLpView extends BaseView {
             pendingPolling = false;
             if (pendingCreate == null) return;
             if (act.chainBlock() - pendingBlock > 12) return;   // give up the FAST poll; the block-poll keeps trying
-            if (!busy) scan();                                  // scan → render resolves + repaints the pool itself
+            if (!busy) act.pools().refresh();                   // shared scan → render resolves + repaints the pool
             if (pendingCreate != null) { pendingPolling = true; act.ui().postDelayed(this, 9000); }
         }
     };
@@ -508,7 +508,7 @@ public class MyLpView extends BaseView {
                     status("Submitted ✓ " + Util.shorten(txpowid) + " — your pool is confirming on-chain (usually 1–3 blocks). "
                             + "It will appear below automatically; no need to resubmit.");
                     startPendingPoll();
-                    scan();
+                    act.pools().refresh();
                 });
             }
             @Override public void onFailed(String message) {
@@ -565,7 +565,7 @@ public class MyLpView extends BaseView {
                 LpStore.updateFeeBase(act, p.address, p.reserveM.add(fm), p.reserveT.add(ft));
                 ActivityLog.record(act, ActivityLog.DEPOSIT, "Add to MINIMA / " + p.tokenLabel() + "  ·  "
                         + trim(fm) + " MINIMA + " + trim(ft) + " " + p.tokenLabel(), txpowid, act.chainBlock());
-                act.runOnUiThread(() -> { busy = false; status("Liquidity added ✓ " + Util.shorten(txpowid) + " — confirming on-chain."); scan(); });
+                act.runOnUiThread(() -> { busy = false; status("Liquidity added ✓ " + Util.shorten(txpowid) + " — confirming on-chain."); act.pools().refresh(); });
             }
             @Override public void onFailed(String message) {
                 ActivityLog.recordFailed(act, ActivityLog.DEPOSIT, "Add to MINIMA / " + p.tokenLabel(), message);
@@ -610,7 +610,7 @@ public class MyLpView extends BaseView {
                 LpStore.remove(act, p.address);   // the old pool is gone — drop its stale snapshot
                 ActivityLog.record(act, ActivityLog.MIGRATE, "Migrate MINIMA / " + p.tokenLabel() + " pool  ·  new size "
                         + trim(pool.reserveM) + " MINIMA + " + trim(pool.reserveT) + " " + p.tokenLabel(), txpowid, act.chainBlock());
-                act.runOnUiThread(() -> { busy = false; status("Migrated ✓ " + Util.shorten(txpowid) + " — confirming on-chain."); scan(); });
+                act.runOnUiThread(() -> { busy = false; status("Migrated ✓ " + Util.shorten(txpowid) + " — confirming on-chain."); act.pools().refresh(); });
             }
             @Override public void onFailed(String message) {
                 ActivityLog.recordFailed(act, ActivityLog.MIGRATE, "Migrate MINIMA / " + p.tokenLabel() + " pool", message);
@@ -635,7 +635,7 @@ public class MyLpView extends BaseView {
                         @Override public void onPosted(String txpowid) {
                             LpStore.remove(act, p.address);   // pool closed — drop its snapshot
                             ActivityLog.record(act, ActivityLog.CLOSE, closeSummary, txpowid, act.chainBlock());
-                            act.runOnUiThread(() -> { busy = false; status("Pool closed ✓ " + Util.shorten(txpowid) + " — funds returning to your wallet (confirming on-chain)."); scan(); });
+                            act.runOnUiThread(() -> { busy = false; status("Pool closed ✓ " + Util.shorten(txpowid) + " — funds returning to your wallet (confirming on-chain)."); act.pools().refresh(); });
                         }
                         @Override public void onFailed(String message) {
                             ActivityLog.recordFailed(act, ActivityLog.CLOSE, closeSummary, message);

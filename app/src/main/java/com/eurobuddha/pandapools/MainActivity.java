@@ -35,6 +35,7 @@ public class MainActivity extends AppCompatActivity {
 
     private NodeApi node;
     private HistoryDb history;
+    private PoolRepository poolRepo;   // ONE shared pool scanner for all tabs (kills the per-tab scan herd)
     private final Handler ui = new Handler(Looper.getMainLooper());
     private View pairingBanner;
     private TextView blockNo;
@@ -74,6 +75,7 @@ public class MainActivity extends AppCompatActivity {
         // already exist.
         node = new NodeApi(this, enabled -> ui.post(() -> setPaired(enabled)));
         history = new HistoryDb(this);
+        poolRepo = new PoolRepository(node);   // must exist before the views (they subscribe in their ctors)
 
         // tabs — Swap · Pools · My LP · Wallet (available balances) · Activity (personal + global history)
         views = new BaseView[]{ new SwapView(this), new PoolsView(this), new MyLpView(this),
@@ -136,6 +138,9 @@ public class MainActivity extends AppCompatActivity {
                     blockNo.setText("#" + blk);
                     if (blk != chainBlock) {
                         chainBlock = blk;
+                        // ONE shared registry scan per block (single-flight) — its result is multicast to
+                        // every tab. Drives the pool refresh centrally so it doesn't depend on any one view.
+                        if (poolRepo != null) poolRepo.refresh();
                         if (views != null) for (BaseView v : views) v.onNewBlock();
                     }
                 } catch (Exception ignore) {}
@@ -170,6 +175,7 @@ public class MainActivity extends AppCompatActivity {
 
     public NodeApi node() { return node; }
     public HistoryDb history() { return history; }
+    public PoolRepository pools() { return poolRepo; }
     public Handler ui() { return ui; }
     public int chainBlock() { return chainBlock; }
     public int currentTab() { return currentTab; }
