@@ -137,9 +137,9 @@ public class PoolBook {
                         }
                     }
                     synchronized (pools) { if (pool.funded()) pools.add(pool); }
-                    if (pending.decrementAndGet() == 0) cb.onPools(pools);
+                    if (pending.decrementAndGet() == 0) gatherRegistry(pools, cb);
                 }
-                @Override public void onError(String m) { if (pending.decrementAndGet() == 0) cb.onPools(pools); }
+                @Override public void onError(String m) { if (pending.decrementAndGet() == 0) gatherRegistry(pools, cb); }
             });
         }
     }
@@ -165,9 +165,15 @@ public class PoolBook {
      *  beacon set — a ~290KB reply that overflows the IPC Binder limit and crash-loops the app on open. The
      *  keep-alive service re-announces live pools into the recent window, so a bounded scan still finds every
      *  actively-maintained pool. */
-    private void gatherRegistry(final Map<String, String[]> params, final Listener cb) {
-        node.cmd("coins simplestate:true order:desc depth:" + SCAN_DEPTH + " address:" + PoolCovenant.SENTINEL, new NodeApi.Cb() {
+    /** Source 2: discover OTHER creators' pools from the shared registry. {@code megammr:false} forces the
+     *  RECENT-chain search only, EXCLUDING the MegaMMR unspent set — where the announce beacons (dust at the
+     *  made-up, unspendable sentinel address) accumulate forever and return hundreds of KB that overflow the
+     *  IPC Binder on a MegaMMR node. Own pools are already built from LpStore, so an empty/failed scan here
+     *  never hides your own pools. */
+    private void gatherRegistry(final List<Pool> own, final Listener cb) {
+        node.cmd("coins simplestate:true order:desc megammr:false depth:" + SCAN_DEPTH + " address:" + PoolCovenant.SENTINEL, new NodeApi.Cb() {
             @Override public void onResult(JSONObject j) {
+                Map<String, String[]> params = new LinkedHashMap<>();
                 Object resp = j.opt("response");
                 JSONArray coins = resp instanceof JSONArray ? (JSONArray) resp : new JSONArray();
                 for (int i = 0; i < coins.length(); i++) {
@@ -176,15 +182,11 @@ public class PoolBook {
                     if (tok == null || oadr == null || opk == null || kmin == null) continue;
                     params.putIfAbsent(opk + "|" + tok + "|" + kmin, new String[]{opk, oadr, tok, kmin});
                 }
-                finishScan(params, cb);
+                if (params.isEmpty()) { cb.onPools(own); return; }
+                derivePools(own, new ArrayList<>(params.values()), cb);
             }
-            @Override public void onError(String m) { finishScan(params, cb); }   // still show owned pools
+            @Override public void onError(String m) { cb.onPools(own); }   // registry unreachable → own pools only
         });
-    }
-
-    private void finishScan(Map<String, String[]> params, Listener cb) {
-        if (params.isEmpty()) { cb.onPools(new ArrayList<>()); return; }
-        derivePools(new ArrayList<>(params.values()), cb);
     }
 
     private static String group(Pattern p, String s) {
@@ -192,47 +194,41 @@ public class PoolBook {
         return m.find() ? m.group(1) : null;
     }
 
-    /** For each announce, re-derive the pool address via runscript, then scan its reserves. */
-    private void derivePools(List<String[]> params, Listener cb) {
-        List<Pool> pools = new ArrayList<>();
+    /** For each beacon, re-derive the pool address via runscript, skip ones already shown as OWN pools, then
+     *  scan the rest for reserves. */
+    private void derivePools(final List<Pool> own, List<String[]> params, final Listener cb) {
+        final java.util.Set<String> have = new java.util.HashSet<>();
+        for (Pool p : own) if (p.address != null) have.add(p.address.toLowerCase());
+        final List<Pool> others = new ArrayList<>();
         AtomicInteger pending = new AtomicInteger(params.size());
         for (String[] p : params) {
             final String opk = p[0], oadr = p[1], tok = p[2], kmin = p[3];
-            final String tracked = p.length > 4 ? p[4] : null;   // the ACTUAL tracked covenant script (any fee), if known
             String script;
-            if (tracked != null && !tracked.isEmpty()) {
-                script = tracked;
-            } else {
-                try { script = PoolCovenant.script(opk, oadr, tok, kmin); }
-                catch (Exception e) { if (pending.decrementAndGet() == 0) fund(pools, cb); continue; }
-            }
+            try { script = PoolCovenant.script(opk, oadr, tok, kmin); }
+            catch (Exception e) { if (pending.decrementAndGet() == 0) fund(own, others, cb); continue; }
             final String fscript = script;
             node.cmd("runscript script:" + jsonStr(script), new NodeApi.Cb() {
                 @Override public void onResult(JSONObject j) {
                     try {
                         JSONObject resp = j.getJSONObject("response");
                         // ONLY surface a covenant that actually compiles. A non-parsing script can never
-                        // execute → its coins are permanently unspendable, so it must not appear as a live,
-                        // closeable or routable pool (it would just make every swap through it fail).
+                        // execute → its coins are permanently unspendable, so it must not appear as a live pool.
                         if (resp.optBoolean("parseok", false)) {
                             JSONObject sc = resp.getJSONObject("script");
-                            Pool pool = new Pool();
-                            pool.opk = opk; pool.oadr = oadr; pool.tok = tok; pool.kmin = kmin;
-                            pool.address = sc.getString("address");
-                            pool.mxaddress = sc.optString("mxaddress", "");
-                            // registry-discovered (not already one of our tracked contracts) → remember its
-                            // covenant so done() can track it once it's confirmed funded (track-on-discovery).
-                            if (tracked == null) pool.covenantScript = fscript;
-                            synchronized (pools) { pools.add(pool); }
-                            // Self-heal: the first time we see an OWNED pool via ANY source, backfill its covenant
-                            // params so Source 1 can rebuild it locally (GTC) on the next scan without a node dump.
-                            if (LpStore.get(ctx, pool.address) != null && LpStore.params(ctx, pool.address) == null)
-                                LpStore.putParams(ctx, pool.address, opk, oadr, tok, kmin);
+                            String addr = sc.getString("address");
+                            if (!have.contains(addr.toLowerCase())) {   // not one of our own pools already shown
+                                Pool pool = new Pool();
+                                pool.opk = opk; pool.oadr = oadr; pool.tok = tok; pool.kmin = kmin;
+                                pool.address = addr;
+                                pool.mxaddress = sc.optString("mxaddress", "");
+                                pool.covenantScript = fscript;   // remember for track-on-discovery in done()
+                                synchronized (others) { others.add(pool); }
+                            }
                         }
                     } catch (Exception ignore) {}
-                    if (pending.decrementAndGet() == 0) fund(pools, cb);
+                    if (pending.decrementAndGet() == 0) fund(own, others, cb);
                 }
-                @Override public void onError(String m) { if (pending.decrementAndGet() == 0) fund(pools, cb); }
+                @Override public void onError(String m) { if (pending.decrementAndGet() == 0) fund(own, others, cb); }
             });
         }
     }
@@ -240,10 +236,10 @@ public class PoolBook {
     /** Scan each derived pool address for its two reserve coins (recent chaintree window; NOT `megammr:true`
      *  — see gatherRegistry for why the MegaMMR pass overflows the IPC Binder). A discovered pool is
      *  `newscript trackall`-ed in done(), so later scans see it via the tracked-contract source (Source 1). */
-    private void fund(List<Pool> pools, Listener cb) {
-        if (pools.isEmpty()) { cb.onPools(pools); return; }
-        AtomicInteger pending = new AtomicInteger(pools.size());
-        for (Pool pool : pools) {
+    private void fund(final List<Pool> own, final List<Pool> others, final Listener cb) {
+        if (others.isEmpty()) { cb.onPools(own); return; }
+        AtomicInteger pending = new AtomicInteger(others.size());
+        for (Pool pool : others) {
             node.cmd("coins address:" + pool.address, new NodeApi.Cb() {
                 @Override public void onResult(JSONObject j) {
                     Object resp = j.opt("response");
@@ -271,18 +267,18 @@ public class PoolBook {
                             }
                         }
                     }
-                    if (pending.decrementAndGet() == 0) done(pools, cb);
+                    if (pending.decrementAndGet() == 0) done(own, others, cb);
                 }
-                @Override public void onError(String m) { if (pending.decrementAndGet() == 0) done(pools, cb); }
+                @Override public void onError(String m) { if (pending.decrementAndGet() == 0) done(own, others, cb); }
             });
         }
     }
 
-    private void done(List<Pool> pools, Listener cb) {
-        List<Pool> funded = new ArrayList<>();
-        for (Pool p : pools) {
+    private void done(List<Pool> own, List<Pool> others, Listener cb) {
+        List<Pool> merged = new ArrayList<>(own);   // own pools (from LpStore) always kept
+        for (Pool p : others) {
             if (!p.funded()) continue;
-            funded.add(p);
+            merged.add(p);
             // Track-on-discovery: permanently track a newly-seen registry pool's contract so it stays
             // GTC-visible + swappable on THIS node forever, like our own pools (the shared beacon can lapse;
             // a tracked contract never prunes). Fire-and-forget + idempotent; the next scan then finds it via
@@ -295,7 +291,7 @@ public class PoolBook {
                 p.covenantScript = null;
             }
         }
-        cb.onPools(funded);
+        cb.onPools(merged);
     }
 
     // ---- helpers ----
