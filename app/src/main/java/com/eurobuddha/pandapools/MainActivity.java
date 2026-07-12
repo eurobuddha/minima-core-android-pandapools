@@ -48,6 +48,7 @@ public class MainActivity extends AppCompatActivity {
     // every tab (battery + node load) while hidden. Started in onResume, stopped in onStop.
     private boolean blockPollActive = false;
     private final Runnable pollTask = this::pollBlock;
+    private boolean retrackedOwn = false;   // Layer-2 re-track runs once per session
 
     @Override protected void onCreate(Bundle b) {
         super.onCreate(b);
@@ -126,7 +127,29 @@ public class MainActivity extends AppCompatActivity {
 
     private void setPaired(boolean paired) {
         pairingBanner.setVisibility(paired ? View.GONE : View.VISIBLE);
-        if (paired && views != null) for (BaseView v : views) v.refresh();
+        if (paired) {
+            retrackOwnPools();   // Layer 2: re-track own pools so a wiped/re-synced node rediscovers them
+            if (views != null) for (BaseView v : views) v.refresh();
+        }
+    }
+
+    /**
+     * Layer 2 (recovery): re-register every OwnPoolStore recipe's covenant with the node, so a re-synced or
+     * freshly-wiped node starts tracking the owner's pools again — after which the normal Source-1 scan
+     * (tracked contracts) finds them and the reserves become spendable (close/migrate). {@code newscript}
+     * re-add is idempotent, so this is harmless on a node that already tracks them; runs once per session.
+     * Each completion kicks a shared refresh so a recovered pool repaints promptly.
+     */
+    private void retrackOwnPools() {
+        if (retrackedOwn || node == null) return;
+        retrackedOwn = true;
+        for (Pool p : OwnPoolStore.all(this)) {
+            if (p.covenantScript == null || p.covenantScript.isEmpty()) continue;
+            node.cmd("newscript trackall:true script:" + Util.scriptArg(p.covenantScript), new NodeApi.Cb() {
+                @Override public void onResult(JSONObject j) { if (poolRepo != null) poolRepo.refresh(); }
+                @Override public void onError(String m) {}
+            });
+        }
     }
 
     private void pollBlock() {

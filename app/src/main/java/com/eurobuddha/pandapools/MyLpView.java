@@ -110,7 +110,13 @@ public class MyLpView extends BaseView {
 
     private void render(List<Pool> all) {
         List<Pool> mine = new ArrayList<>();
-        for (Pool p : all) if (mine(p)) mine.add(p);
+        for (Pool p : all) if (mine(p)) {
+            mine.add(p);
+            // backfill a recovery recipe for an owned pool the first time we see it (e.g. one created
+            // before this feature). Only when missing, so the exact create/migrate script is never
+            // clobbered by a reconstructed one.
+            if (OwnPoolStore.script(act, p.address) == null) OwnPoolStore.record(act, p);
+        }
 
         // Has a pending create just gone live (discovered with funded reserves)? Announce it + stop tracking.
         boolean pendingLive = false;
@@ -500,6 +506,7 @@ public class MyLpView extends BaseView {
             @Override public void onCreated(Pool pool, String txpowid) {
                 pool.tokName = tokenName;   // nice label for the confirming card
                 LpStore.record(act, pool.address, pool.reserveM, pool.reserveT, act.chainBlock());
+                OwnPoolStore.record(act, pool);   // durable recovery recipe (exact covenant script)
                 ActivityLog.record(act, ActivityLog.CREATE, "Create MINIMA / " + tokenName + " pool  ·  "
                         + trim(pool.reserveM) + " MINIMA + " + trim(pool.reserveT) + " " + tokenName, txpowid, act.chainBlock());
                 act.runOnUiThread(() -> {
@@ -607,7 +614,10 @@ public class MyLpView extends BaseView {
             @Override public void onCreated(Pool pool, String txpowid) {
                 pool.tokName = p.tokName;
                 LpStore.record(act, pool.address, pool.reserveM, pool.reserveT, act.chainBlock());
-                LpStore.remove(act, p.address);   // the old pool is gone — drop its stale snapshot
+                OwnPoolStore.record(act, pool);   // recipe for the new pool
+                LpStore.remove(act, p.address);   // the old pool's display snapshot is stale — drop it
+                // KEEP the old pool's recovery recipe until the migrate CONFIRMS: if the tx never lands the
+                // old pool is still live and must stay recoverable. Harmless once it does (emptied covenant).
                 ActivityLog.record(act, ActivityLog.MIGRATE, "Migrate MINIMA / " + p.tokenLabel() + " pool  ·  new size "
                         + trim(pool.reserveM) + " MINIMA + " + trim(pool.reserveT) + " " + p.tokenLabel(), txpowid, act.chainBlock());
                 act.runOnUiThread(() -> { busy = false; status("Migrated ✓ " + Util.shorten(txpowid) + " — confirming on-chain."); act.pools().refresh(); });
@@ -633,7 +643,11 @@ public class MyLpView extends BaseView {
                             + trim(p.reserveM) + " MINIMA + " + trim(p.reserveT) + " " + p.tokenLabel() + " back to wallet";
                     mgr.close(p, new PoolManager.Result() {
                         @Override public void onPosted(String txpowid) {
-                            LpStore.remove(act, p.address);   // pool closed — drop its snapshot
+                            LpStore.remove(act, p.address);   // pool closed — drop its display snapshot
+                            // KEEP the OwnPoolStore recovery recipe here: a posted-but-unconfirmed close that
+                            // never lands would otherwise strip the recipe from a STILL-LIVE pool (exactly the
+                            // wiped-node case this feature backstops). A stale recipe is a harmless no-op —
+                            // re-track on an emptied covenant tracks nothing, and only funded() pools render.
                             ActivityLog.record(act, ActivityLog.CLOSE, closeSummary, txpowid, act.chainBlock());
                             act.runOnUiThread(() -> { busy = false; status("Pool closed ✓ " + Util.shorten(txpowid) + " — funds returning to your wallet (confirming on-chain)."); act.pools().refresh(); });
                         }

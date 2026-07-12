@@ -68,6 +68,7 @@ public class PoolManager {
                                 Pool p = new Pool();
                                 p.address = address; p.mxaddress = mx; p.opk = opk; p.oadr = oadr;
                                 p.tok = tokenid; p.kmin = kmin; p.tokDecimals = tokDecimals;
+                                p.covenantScript = script;   // exact covenant → OwnPoolStore recipe for recovery
                                 p.reserveM = x0; p.reserveT = y0c;
                                 buildCreate(p, x0, y0c, tokenid, cb);
                             }
@@ -196,6 +197,7 @@ public class PoolManager {
                         Pool np = new Pool();
                         np.address = a2; np.mxaddress = mx2; np.opk = p.opk; np.oadr = p.oadr;
                         np.tok = p.tok; np.kmin = kmin2; np.tokDecimals = p.tokDecimals;
+                        np.covenantScript = script2;   // exact covenant → OwnPoolStore recipe for recovery
                         np.reserveM = newX; np.reserveT = newYc;
                         buildMigrate(p, np, newX, newYc, cb);
                     }
