@@ -77,14 +77,11 @@ public class PoolBook {
         }
     }
 
-    /** Source 2: the shared registry (announce beacons) — discovers OTHER creators' fresh pools. No depth
-     *  cap: the old `depth:200` (~2.7h) made pools vanish from view hours after creation. `megammr:true`
-     *  so a MegaMMR node (typical mobile node) also finds beacons that have aged out of its recent
-     *  chaintree window — it keeps the full unspent set but only returns untracked-address coins via the
-     *  MegaMMR pass. The flag is node-gated on IS_MEGAMMR, so it's ignored (harmless) on a non-MegaMMR
-     *  node. Without it a freshly-synced MegaMMR node discovers nothing. */
+    /** Source 2: the shared registry (announce beacons) — discovers OTHER creators' fresh pools by scanning
+     *  the sentinel address. This is the plain 8.7/8.8 scan; the `megammr:true` backfill variant added in 8.9
+     *  destabilised discovery and has been removed. */
     private void gatherRegistry(final Map<String, String[]> params, final Listener cb) {
-        node.cmd("coins simplestate:true order:desc megammr:true address:" + PoolCovenant.SENTINEL, new NodeApi.Cb() {
+        node.cmd("coins simplestate:true order:desc address:" + PoolCovenant.SENTINEL, new NodeApi.Cb() {
             @Override public void onResult(JSONObject j) {
                 Object resp = j.opt("response");
                 JSONArray coins = resp instanceof JSONArray ? (JSONArray) resp : new JSONArray();
@@ -151,16 +148,14 @@ public class PoolBook {
         }
     }
 
-    /** Scan each derived pool address for its two reserve coins. `megammr:true` so an as-yet-untracked
-     *  pool covenant's reserves are found on a MegaMMR node (which retains the full unspent set but only
-     *  returns untracked-address coins through the MegaMMR pass); ignored on non-MegaMMR nodes. A newly
-     *  discovered pool is then `newscript trackall`-ed in done(), so subsequent scans also see it via the
-     *  tracked-contract source (Source 1) without needing the MegaMMR pass. */
+    /** Scan each derived pool address for its two reserve coins (plain 8.7/8.8 per-address scan; the
+     *  `megammr:true` variant added in 8.9 has been removed). A newly discovered pool is `newscript
+     *  trackall`-ed in done(), so subsequent scans also see it via the tracked-contract source (Source 1). */
     private void fund(List<Pool> pools, Listener cb) {
         if (pools.isEmpty()) { cb.onPools(pools); return; }
         AtomicInteger pending = new AtomicInteger(pools.size());
         for (Pool pool : pools) {
-            node.cmd("coins megammr:true address:" + pool.address, new NodeApi.Cb() {
+            node.cmd("coins address:" + pool.address, new NodeApi.Cb() {
                 @Override public void onResult(JSONObject j) {
                     Object resp = j.opt("response");
                     JSONArray cs = resp instanceof JSONArray ? (JSONArray) resp : new JSONArray();
