@@ -270,6 +270,44 @@ public class PoolManager {
         ownerSignPost(txid, p.opk, cmds, cb);
     }
 
+    // ===================================================================== RE-ANNOUNCE (Layer 5)
+
+    /**
+     * Post ONE fresh announce beacon for an existing pool so fresh nodes keep rediscovering it after the
+     * original beacon pruned. This spends NO covenant coin — it's a plain owner-wallet send of the dust
+     * beacon to the SENTINEL (with the pool params in state), change back. No owner signature needed (the
+     * covenant isn't touched); adds no spend authority. Callers only fire this for a pool whose beacon has
+     * actually FADED from the recent sentinel window, so beacons don't pile up.
+     */
+    public void reannounce(final Pool p, final Result cb) {
+        if (p == null || p.address == null || isEmpty(p.opk) || isEmpty(p.tok) || isEmpty(p.oadr) || isEmpty(p.kmin)) {
+            cb.onFailed("incomplete pool record"); return;
+        }
+        selectCoins(Util.MINIMA_TOKENID, ANNOUNCE_DUST, p.address, new SelCb() {
+            @Override public void ok(List<Coin> mfunds, BigDecimal msum) {
+                String txid = "ppann_" + tag();
+                List<String> cmds = new ArrayList<>();
+                cmds.add("txncreate id:" + txid);
+                for (Coin c : mfunds) cmds.add("txninput id:" + txid + " coinid:" + c.coinid);
+                cmds.add("txnoutput id:" + txid + " amount:" + amt(ANNOUNCE_DUST) + " address:" + PoolCovenant.SENTINEL + " storestate:true");
+                String chg = mfunds.isEmpty() ? p.oadr : mfunds.get(0).address;
+                BigDecimal change = msum.subtract(ANNOUNCE_DUST);
+                if (change.signum() > 0)
+                    cmds.add("txnoutput id:" + txid + " amount:" + amt(change) + " address:" + chg + " storestate:false");
+                addAnnounceState(cmds, txid, p);
+                cmds.add("txnsign id:" + txid + " publickey:auto");   // only the funding coins are signed; no covenant coin, no $OPK
+                cmds.add("txnbasics id:" + txid);
+                TxPost.checkThenPost(node, txid, cmds, new TxPost.Done() {
+                    @Override public void ok(String txpowid) { cb.onPosted(txpowid); }
+                    @Override public void fail(String message) { cb.onFailed(message); }
+                });
+            }
+            @Override public void none() { cb.onFailed("no spare MINIMA to re-announce"); }
+        });
+    }
+
+    private static boolean isEmpty(String s) { return s == null || s.isEmpty(); }
+
     // ===================================================================== helpers
 
     private void ownerSignPost(String txid, String opk, List<String> cmds, Result cb) {

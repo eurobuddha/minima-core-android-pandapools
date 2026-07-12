@@ -37,9 +37,11 @@ public class MyLpView extends BaseView {
 
     private final PoolManager mgr;
     private final Recovery recovery;
+    private final ReAnnouncer reannouncer;
     private final Set<String> myKeys = new HashSet<>();
     private final List<Pool> myPools = new ArrayList<>();   // currently-owned funded pools (for fresh coin export)
     private boolean busy = false;
+    private boolean reannounceChecked = false;              // Layer 5 faded-beacon check runs once per session
 
     // Receives the shared PoolRepository's scan result (one scan for the whole app). render() filters to the
     // pools this node owns and drives the pending-create lifecycle.
@@ -64,6 +66,7 @@ public class MyLpView extends BaseView {
         a.pools().subscribe(poolListener);
         mgr = new PoolManager(a.node());
         recovery = new Recovery(a.node());
+        reannouncer = new ReAnnouncer(a.node());
 
         Ui.card(find(R.id.lpSummaryCard));
         TextView create = find(R.id.lpCreateBtn);
@@ -125,6 +128,7 @@ public class MyLpView extends BaseView {
             if (OwnPoolStore.script(act, p.address) == null) OwnPoolStore.record(act, p);
         }
         myPools.clear(); myPools.addAll(mine);   // for a backup's fresh coinexport (these carry live coinids)
+        maybeReannounce();                        // Layer 5: refresh any faded registry beacon (once/session)
 
         // Has a pending create just gone live (discovered with funded reserves)? Announce it + stop tracking.
         boolean pendingLive = false;
@@ -667,6 +671,20 @@ public class MyLpView extends BaseView {
                 })
                 .setNegativeButton("Cancel", null)
                 .show();
+    }
+
+    // ---- network discoverability (Layer 5) ----
+
+    /** Once per session, re-publish the announce beacon for any owned pool whose beacon has faded from the
+     *  recent registry window — keeps the pool findable by fresh nodes. One tiny owner-wallet tx per faded
+     *  pool (no covenant coin spent); silently does nothing if nothing faded or there's no spare MINIMA. */
+    private void maybeReannounce() {
+        if (reannounceChecked || myPools.isEmpty() || act.node() == null) return;
+        reannounceChecked = true;
+        reannouncer.refreshFaded(new ArrayList<>(myPools), posted -> {
+            if (posted > 0) status("Re-published " + posted + " pool" + (posted == 1 ? "" : "s")
+                    + " to the registry so fresh nodes can find " + (posted == 1 ? "it" : "them") + ".");
+        });
     }
 
     // ---- backup & restore (recovery) ----

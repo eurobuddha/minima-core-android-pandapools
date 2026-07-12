@@ -214,7 +214,9 @@ public class PoolBook {
     }
 
     // ---- helpers ----
-    private static String state(JSONObject coin, int port) {
+    /** Read a beacon coin's state port (map or array form). Package-visible so {@link ReAnnouncer} can
+     *  read the sentinel beacons with the same logic. */
+    static String state(JSONObject coin, int port) {
         if (coin == null) return null;
         JSONObject sm = coin.optJSONObject("state");
         if (sm != null) { String v = sm.optString(String.valueOf(port), ""); return v.isEmpty() ? null : v; }

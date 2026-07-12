@@ -12,6 +12,9 @@ import android.widget.TextView;
 import androidx.activity.result.ActivityResultLauncher;
 import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.appcompat.app.AppCompatActivity;
+import androidx.work.ExistingPeriodicWorkPolicy;
+import androidx.work.PeriodicWorkRequest;
+import androidx.work.WorkManager;
 
 import java.util.function.Consumer;
 import androidx.core.graphics.Insets;
@@ -112,6 +115,19 @@ public class MainActivity extends AppCompatActivity {
         });
 
         // The block poll is started from onResume (and cancelled in onStop), so it never runs while hidden.
+
+        scheduleReannounceWork();   // Layer 5: keep pools discoverable while the app is closed/away
+    }
+
+    /** Schedule the Doze-safe periodic beacon re-announce (WorkManager persists it across reboot; KEEP so
+     *  we don't reschedule on every launch). Loose cadence — a beacon lasts ~a day. */
+    private void scheduleReannounceWork() {
+        try {
+            PeriodicWorkRequest req = new PeriodicWorkRequest.Builder(
+                    ReAnnounceWorker.class, 6, java.util.concurrent.TimeUnit.HOURS).build();
+            WorkManager.getInstance(getApplicationContext())
+                    .enqueueUniquePeriodicWork("pp_reannounce", ExistingPeriodicWorkPolicy.KEEP, req);
+        } catch (Throwable ignore) {}
     }
 
     /**

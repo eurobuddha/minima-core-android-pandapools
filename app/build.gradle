@@ -10,8 +10,8 @@ android {
         applicationId "com.eurobuddha.pandapools"
         minSdk 28
         targetSdk 35
-        versionCode 906
-        versionName "0.9.6"
+        versionCode 907
+        versionName "0.9.7"
 
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -63,6 +63,9 @@ dependencies {
 
     // SVG token icons (Android's BitmapFactory can't rasterise SVG; many Minima tokens use SVG urls)
     implementation 'com.caverock:androidsvg-aar:1.4'
+
+    // Doze-safe periodic background work (Layer-5 beacon re-announce while the owner is away)
+    implementation 'androidx.work:work-runtime:2.9.1'
 
     implementation files('libs/minimaapi.aar')
 }
