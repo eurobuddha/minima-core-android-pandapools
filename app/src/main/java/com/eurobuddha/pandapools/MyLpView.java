@@ -311,44 +311,49 @@ public class MyLpView extends BaseView {
                     + " of ~3) — wait for it to go live before creating another.");
             return;
         }
-        // gather the wallet's tokens (name + tokenid + decimals) to pick from
-        act.node().cmd("balance", new NodeApi.Cb() {
-            @Override public void onResult(JSONObject j) {
-                List<String[]> toks = new ArrayList<>();   // {tokenid, label, decimals, name, tokenSendable}
-                BigDecimal[] minimaAvail = { BigDecimal.ZERO };
-                JSONArray arr = j.optJSONArray("response");
-                if (arr != null) for (int i = 0; i < arr.length(); i++) {
-                    JSONObject t = arr.optJSONObject(i);
-                    if (t == null) continue;
-                    String tid = t.optString("tokenid", "");
-                    BigDecimal sendable = Util.decOr(t.optString("sendable", "0"), BigDecimal.ZERO);
-                    if (Util.isMinima(tid)) { minimaAvail[0] = sendable; continue; }   // MINIMA is the other leg
-                    if (tid.isEmpty() || sendable.signum() <= 0) continue;
-                    String name = Util.tokenName(t.opt("token"), tid);
-                    int dec = Util.tokenDecimals(t.opt("token"));
-                    toks.add(new String[]{tid, name + "  ·  " + trim(sendable) + " avail", String.valueOf(dec),
-                            name, sendable.toPlainString()});
-                }
-                if (toks.isEmpty()) { info("No tokens to pool", "Your wallet holds no custom tokens. Receive some (e.g. mxUSDT) first, then create a MINIMA/token pool."); return; }
-                String[] labels = new String[toks.size()];
-                for (int i = 0; i < toks.size(); i++) labels[i] = toks.get(i)[1];
-                final BigDecimal mAvail = minimaAvail[0];
-                new AlertDialog.Builder(act)
-                        .setTitle("Pool MINIMA with…")
-                        .setItems(labels, (d, w) -> {
-                            String[] t = toks.get(w);
-                            int dec = Integer.parseInt(t[2]);
-                            BigDecimal tokAvail = Util.decOr(t[4], BigDecimal.ZERO);
-                            if (t[0].equalsIgnoreCase(USDT_TOKENID))
-                                createFormPriced(t[0], dec, t[3], tokAvail, mAvail);   // market-price-forced
-                            else
-                                createFormManual(t[0], dec, t[3]);                     // creator sets the price
-                        })
-                        .setNegativeButton("Cancel", null)
-                        .show();
+        // A pool is always MINIMA + one token, and we offer MINIMA/USDT. Read ONLY those two balances with
+        // bounded `balance tokenid:X` calls — never the all-token `balance`, which returns every token you hold
+        // (~290KB on a MegaMMR node) and overflows the IPC Binder.
+        act.node().cmd("balance tokenid:" + Util.MINIMA_TOKENID, new NodeApi.Cb() {
+            @Override public void onResult(JSONObject jm) {
+                final BigDecimal mAvail = sendableFor(jm, Util.MINIMA_TOKENID);
+                act.node().cmd("balance tokenid:" + USDT_TOKENID, new NodeApi.Cb() {
+                    @Override public void onResult(JSONObject jt) {
+                        BigDecimal tAvail = sendableFor(jt, USDT_TOKENID);
+                        if (tAvail.signum() <= 0) {
+                            info("No USDT to pool", "Your wallet holds no mxUSDT. Receive some first, then create a MINIMA / USDT pool.");
+                            return;
+                        }
+                        int dec = decimalsFor(jt, USDT_TOKENID);
+                        createFormPriced(USDT_TOKENID, dec, "USDT", tAvail, mAvail);   // market-price-forced
+                    }
+                    @Override public void onError(String m) { info("Error", "Could not read your USDT balance: " + m); }
+                });
             }
-            @Override public void onError(String m) { info("Error", "Could not read your balance: " + m); }
+            @Override public void onError(String m) { info("Error", "Could not read your MINIMA balance: " + m); }
         });
+    }
+
+    /** Sendable amount for a single token from a bounded {@code balance tokenid:X} reply. */
+    private static BigDecimal sendableFor(JSONObject j, String tokenid) {
+        JSONArray arr = j.optJSONArray("response");
+        if (arr != null) for (int i = 0; i < arr.length(); i++) {
+            JSONObject b = arr.optJSONObject(i);
+            if (b != null && tokenid.equalsIgnoreCase(b.optString("tokenid", "")))
+                return Util.decOr(b.optString("sendable", "0"), BigDecimal.ZERO);
+        }
+        return BigDecimal.ZERO;
+    }
+
+    /** Token decimals from a bounded {@code balance tokenid:X} reply (defaults to 6 for USDT). */
+    private static int decimalsFor(JSONObject j, String tokenid) {
+        JSONArray arr = j.optJSONArray("response");
+        if (arr != null) for (int i = 0; i < arr.length(); i++) {
+            JSONObject b = arr.optJSONObject(i);
+            if (b != null && tokenid.equalsIgnoreCase(b.optString("tokenid", "")))
+                return Util.tokenDecimals(b.opt("token"));
+        }
+        return 6;
     }
 
     /**
