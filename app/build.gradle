@@ -1,0 +1,68 @@
+plugins {
+    alias(libs.plugins.android.application)
+}
+
+android {
+    namespace 'com.eurobuddha.pandapools'
+    compileSdk 36
+
+    defaultConfig {
+        applicationId "com.eurobuddha.pandapools"
+        minSdk 28
+        targetSdk 35
+        versionCode 809
+        versionName "0.8.9"
+
+        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+    }
+
+    signingConfigs {
+        // Dedicated PandaPools release key. Credentials are read from ~/.gradle/gradle.properties
+        // (outside any repo) so the keystore path and passwords are NEVER committed. On a machine
+        // without those props this config stays empty and release falls back to debug signing,
+        // so the project still builds for local/CI sideload use.
+        release {
+            def ksFile = project.findProperty('PANDAPOOLS_RELEASE_STORE_FILE')
+            if (ksFile != null) {
+                storeFile file(ksFile)
+                storePassword project.findProperty('PANDAPOOLS_RELEASE_STORE_PASSWORD')
+                keyAlias project.findProperty('PANDAPOOLS_RELEASE_KEY_ALIAS')
+                keyPassword project.findProperty('PANDAPOOLS_RELEASE_KEY_PASSWORD')
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            // HELD at debug signing for store parity: the published catalog is debug-signed, and a key
+            // change forces every existing user to uninstall+reinstall (and re-pair their MINIMA_ID with
+            // the node). The dedicated signingConfigs.release above stays defined for a future, deliberate
+            // migration — flip this back to the ternary when you're ready to switch keys. See the plan.
+            signingConfig signingConfigs.debug
+        }
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_11
+        targetCompatibility JavaVersion.VERSION_11
+    }
+}
+
+dependencies {
+
+    implementation libs.appcompat
+    implementation libs.material
+    implementation libs.activity
+    implementation libs.constraintlayout
+
+    // Tabbed wallet UI
+    implementation 'androidx.viewpager:viewpager:1.0.0'
+    // QR code generation for the Receive screen
+    implementation 'com.google.zxing:core:3.5.3'
+
+    // SVG token icons (Android's BitmapFactory can't rasterise SVG; many Minima tokens use SVG urls)
+    implementation 'com.caverock:androidsvg-aar:1.4'
+
+    implementation files('libs/minimaapi.aar')
+}

@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- PandaPools mark: a panda face with accent eyes, centred in the adaptive-icon safe zone. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp"
+    android:viewportWidth="108" android:viewportHeight="108">
+
+    <!-- ears (drawn behind the face) -->
+    <path android:fillColor="#2A2A38" android:pathData="M22,38 a12,12 0 1,1 24,0 a12,12 0 1,1 -24,0 Z" />
+    <path android:fillColor="#2A2A38" android:pathData="M62,38 a12,12 0 1,1 24,0 a12,12 0 1,1 -24,0 Z" />
+
+    <!-- face -->
+    <path android:fillColor="#F7F7F4" android:pathData="M26,58 a28,28 0 1,1 56,0 a28,28 0 1,1 -56,0 Z" />
+
+    <!-- eye patches -->
+    <path android:fillColor="#16161F" android:pathData="M34,55 a9.5,9.5 0 1,1 19,0 a9.5,9.5 0 1,1 -19,0 Z" />
+    <path android:fillColor="#16161F" android:pathData="M55,55 a9.5,9.5 0 1,1 19,0 a9.5,9.5 0 1,1 -19,0 Z" />
+
+    <!-- accent eyes -->
+    <path android:fillColor="#F7931A" android:pathData="M40,55 a3.6,3.6 0 1,1 7.2,0 a3.6,3.6 0 1,1 -7.2,0 Z" />
+    <path android:fillColor="#F7931A" android:pathData="M60.8,55 a3.6,3.6 0 1,1 7.2,0 a3.6,3.6 0 1,1 -7.2,0 Z" />
+
+    <!-- nose -->
+    <path android:fillColor="#16161F" android:pathData="M50.4,67 a3.6,3.6 0 1,1 7.2,0 a3.6,3.6 0 1,1 -7.2,0 Z" />
+
+</vector>

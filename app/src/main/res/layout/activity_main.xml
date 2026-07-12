@@ -1,0 +1,116 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:id="@+id/main"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:background="@color/ux_bg"
+    tools:context=".MainActivity">
+
+    <!-- Header -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:paddingStart="16dp"
+        android:paddingEnd="16dp"
+        android:paddingTop="14dp"
+        android:paddingBottom="10dp">
+
+        <LinearLayout
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:orientation="vertical">
+            <TextView
+                android:id="@+id/brandTitle"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="PandaPools"
+                android:textColor="@color/ux_accent"
+                android:textStyle="bold"
+                android:textSize="17sp" />
+            <TextView
+                android:id="@+id/brandSub"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="LIQUIDITY POOLS"
+                android:textColor="@color/ux_subtext"
+                android:textSize="9sp"
+                android:letterSpacing="0.15" />
+        </LinearLayout>
+
+        <TextView
+            android:id="@+id/designToggle"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="◐ STYLE"
+            android:textColor="@color/ux_accent"
+            android:textSize="11sp"
+            android:letterSpacing="0.08"
+            android:padding="6dp"
+            android:layout_marginEnd="6dp" />
+
+        <TextView
+            android:id="@+id/blockNo"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="#—"
+            android:textColor="@color/ux_subtext"
+            android:textSize="13sp" />
+    </LinearLayout>
+
+    <!-- Pairing banner: shown until the user enables this app in Minima Core -->
+    <LinearLayout
+        android:id="@+id/pairingBanner"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:background="@color/ux_banner"
+        android:padding="16dp"
+        android:visibility="gone">
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="PandaPools is not enabled yet"
+            android:textColor="@color/ux_accent"
+            android:textStyle="bold"
+            android:textSize="15sp" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:text="Open Minima Core → Apps and enable &quot;PandaPools&quot;, then come back."
+            android:textColor="@color/ux_subtext"
+            android:textSize="13sp" />
+
+        <Button
+            android:id="@+id/openNodeBtn"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:text="Open Minima Core" />
+    </LinearLayout>
+
+    <com.google.android.material.tabs.TabLayout
+        android:id="@+id/tabs"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        app:tabMode="scrollable"
+        app:tabGravity="fill"
+        app:tabIndicatorColor="@color/ux_accent"
+        app:tabSelectedTextColor="@color/ux_accent"
+        app:tabTextColor="@color/ux_subtext" />
+
+    <androidx.viewpager.widget.ViewPager
+        android:id="@+id/pager"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1" />
+
+</LinearLayout>
