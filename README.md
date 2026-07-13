@@ -1,31 +1,32 @@
-# Minima UTXO Wallet (native Android)
+# PandaPools — Android
 
-A native Android port of the **utxoWallet** MiniDapp — a [Minima](https://minima.global) wallet with
-**explicit UTXO (coin) selection**: pick exactly which coins you spend, construct the whole transaction,
-and review before signing.
+A native Android **constant-product AMM** for [Minima](https://minima.global). Swap MINIMA against a token across aggregated micro-pools, provide liquidity, and earn the **0.5 % swap fee** — trustlessly, on-chain, no custodian. The app talks to a local Minima Core node on-device via the `minimaapi` broadcast-Intent IPC.
 
-Native Java, talking to a local **Minima Core** node over the node's **broadcast‑Intent IPC**
-(`minimaapi`) — no MDS, no RPC, no browser.
+It shares the **same mainnet registry and 0.5 % covenant** as the [PandaPools MiniDapp](https://github.com/eurobuddha/pandapools-mds), so both trade the **same live pools**.
+
+> ⚠️ **Development software — use at your own risk.** PandaPools is experimental, actively-developed software provided **AS IS**, without warranty of any kind. It builds and posts real on-chain transactions that move real funds; despite extensive testing and code review, bugs may exist. Test with small amounts first, keep your seed backed up, and only risk what you can afford to lose. Nothing here is financial advice.
 
 ## Features
-- **Wallet** — every address (coins‑first), single‑tokenid multi‑select, tap‑to‑copy.
-- **Send** — full UTXO construction: pick inputs, recipient, **editable change address**, burn, confirm.
-- **Tools** — Split / Consolidate / Distribute (multi‑batch) / Untrack, from the selection bar.
-- **Balances** — rich token cards (icon, sendable/locked, decimals, description).
-- **Receive** — address + QR.
-- **History** — sent + received, classified client‑side from the node's `history` (bounded + lazy so it
-  never overloads the node), with explorer links on confirmed txpowids.
-- Dark + orange theme.
+
+- **Swap** — trades are routed across every pool for a pair (water-filling by best price) and settle in one transaction; all-or-nothing.
+- **Provide liquidity** — create a pool or add to one; LPs earn the 0.5 % fee, which accrues inside the pool (K grows). No LP token.
+- **Five tabs** — Swap · Pools · My LP · Wallet · Activity (personal history + a live all-pools activity feed).
+- **5-layer pool recovery** — durable recipe persistence, re-track-on-launch, backup/restore, and faded-beacon re-announce, so you can always find and withdraw your pools — even after a node resync or on a new device.
+
+## Design
+
+Pools are two reserve coins at a **unique covenant address** (the covenant's params are hardcoded literals, so the address is its script hash) plus a discovery beacon at a shared sentinel. The covenant enforces the constant-product invariant with a **KMIN product floor** that defeats a dust-pairing drain unique to the UTXO/2-coin model. All fund math is exact (grain-floored, pool-favourable rounding), and every post is gated on the covenant's own `txncheck` verdict. See the MiniDapp repo's README for a fuller design write-up.
 
 ## Build
-Requires a **JDK 17/21** (the Android Studio JBR works):
 
-```sh
-JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew assembleDebug
+Standard Android Gradle build (the release variant is debug-signed for install parity):
+
+```bash
+./gradlew assembleRelease
 ```
 
-Install, then enable **Minima UTXO** in Minima Core → Apps to authorize the IPC.
+The build is pinned to Android Studio's bundled JBR 21 (`org.gradle.java.home` in `gradle.properties`). Distributed via the [PandaApps](https://github.com/eurobuddha/minima-core-apks) store.
 
-## Releases
-Versioned APKs + changelog: **[eurobuddha/minima-core-apks](https://github.com/eurobuddha/minima-core-apks)**
-(tags `minima-utxo-wallet-v<version>`).
+## License
+
+[MIT](LICENSE) © 2026 eurobuddha for this app's original code. It bundles Apache-2.0 components from Minima (`minimaapi.aar`, and other Minima Core parts) which retain their own license — see [NOTICE](NOTICE).

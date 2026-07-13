@@ -1,0 +1,13 @@
+PandaPools (Android)
+Copyright 2026 eurobuddha
+
+This application's own source code is licensed under the MIT License (see LICENSE).
+
+It bundles and links components from Minima, which are licensed under the
+Apache License 2.0 and retain that license:
+
+  • app/libs/minimaapi.aar — the Minima broadcast-Intent IPC library
+    (talks to the local Minima Core node on-device).
+  • Any other Minima Core components included at build time.
+
+Upstream: https://github.com/minima-global/Minima  (Apache-2.0)
