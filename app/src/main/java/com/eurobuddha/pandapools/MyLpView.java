@@ -42,6 +42,7 @@ public class MyLpView extends BaseView {
     private final List<Pool> myPools = new ArrayList<>();   // currently-owned funded pools (for fresh coin export)
     private boolean busy = false;
     private boolean reannounceChecked = false;              // Layer 5 faded-beacon check runs once per session
+    private BigDecimal usdtAnchor;                          // tier-2 create anchor: aggregate live USDT-pool spot (Σt/Σm), null if none
 
     // Receives the shared PoolRepository's scan result (one scan for the whole app). render() filters to the
     // pools this node owns and drives the pending-create lifecycle.
@@ -131,6 +132,15 @@ public class MyLpView extends BaseView {
         }
         myPools.clear(); myPools.addAll(mine);   // for a backup's fresh coinexport (these carry live coinids)
         maybeReannounce(all);                     // Layer 5 gossip: refresh faded beacons for ALL funded pools (once/session)
+
+        // tier-2 create anchor: the aggregate spot of ALL live USDT pools (Σ reserveT / Σ reserveM). Arbitrage
+        // keeps this near true market, so a new pool opened at it sits in line with the on-chain market. Used
+        // to price a create when MEXC is unreachable.
+        BigDecimal aggM = BigDecimal.ZERO, aggT = BigDecimal.ZERO;
+        for (Pool p : all) if (p != null && p.funded() && USDT_TOKENID.equalsIgnoreCase(p.tok)) {
+            aggM = aggM.add(p.reserveM); aggT = aggT.add(p.reserveT);
+        }
+        usdtAnchor = aggM.signum() > 0 ? aggT.divide(aggM, MC) : null;
 
         // Has a pending create just gone live (discovered with funded reserves)? Announce it + stop tracking.
         boolean pendingLive = false;
@@ -345,6 +355,44 @@ public class MyLpView extends BaseView {
 
     // ---- create pool ----
 
+    /** Tokens with a live external market feed (currently only mxUSDT). Only these can be pooled, so a pool
+     *  can never be opened at a mispriceable ratio while any reference price exists. */
+    private static boolean isMarketFed(String tokenid) {
+        return tokenid != null && tokenid.equalsIgnoreCase(USDT_TOKENID);
+    }
+
+    private static final class Anchor { final BigDecimal price; final String source; Anchor(BigDecimal p, String s) { price = p; source = s; } }
+
+    /** The opening-price anchor, best-first: (1) a fresh MEXC mid; (2) the aggregate spot of live USDT pools;
+     *  else null (no reference → tier-3 manual bootstrap). */
+    private Anchor resolveAnchor() {
+        BigDecimal m = PriceOracle.cachedMid();
+        if (PriceOracle.fresh() && m != null && m.signum() > 0) return new Anchor(m, "MEXC market");
+        if (usdtAnchor != null && usdtAnchor.signum() > 0) return new Anchor(usdtAnchor, "live pools");
+        return null;
+    }
+
+    /** Route a chosen (market-fed) token to the priced form when an anchor exists, else try a fresh MEXC fetch,
+     *  and only fall to the manual bootstrap form when there is genuinely no reference price at all. */
+    private void dispatchCreate(String tokenid, int decimals, String tokenName, BigDecimal tokAvail, BigDecimal minimaAvail) {
+        Anchor a = resolveAnchor();
+        if (a != null) { createFormPriced(tokenid, decimals, tokenName, tokAvail, minimaAvail, a.price, a.source); return; }
+        // no cached MEXC and no live pool → try a one-shot MEXC fetch before deciding priced-vs-manual
+        status("Checking market price…");
+        PriceOracle.fetch(new PriceOracle.Cb() {
+            @Override public void onPrice(BigDecimal mid) {
+                if (act.isFinishing() || act.isDestroyed()) return;
+                status("");
+                createFormPriced(tokenid, decimals, tokenName, tokAvail, minimaAvail, mid, "MEXC market");
+            }
+            @Override public void onError(String msg) {
+                if (act.isFinishing() || act.isDestroyed()) return;
+                status("");
+                createFormManual(tokenid, decimals, tokenName);   // tier-3: no MEXC AND no live pool — user sets the first price
+            }
+        });
+    }
+
     private void showCreateDialog() {
         // Guard: don't let a second create start while one is still confirming — that's the worry-and-resubmit
         // loop that stranded funds before.
@@ -367,25 +415,27 @@ public class MyLpView extends BaseView {
                     BigDecimal sendable = Util.decOr(t.optString("sendable", "0"), BigDecimal.ZERO);
                     if (Util.isMinima(tid)) { minimaAvail[0] = sendable; continue; }   // MINIMA is the other leg
                     if (tid.isEmpty() || sendable.signum() <= 0) continue;
+                    if (!isMarketFed(tid)) continue;   // ONLY market-fed pairs (mxUSDT) — no mispriceable pools
                     String name = Util.tokenName(t.opt("token"), tid);
                     int dec = Util.tokenDecimals(t.opt("token"));
                     toks.add(new String[]{tid, name + "  ·  " + trim(sendable) + " avail", String.valueOf(dec),
                             name, sendable.toPlainString()});
                 }
-                if (toks.isEmpty()) { info("No tokens to pool", "Your wallet holds no custom tokens. Receive some (e.g. mxUSDT) first, then create a MINIMA/token pool."); return; }
+                if (toks.isEmpty()) { info("Get mxUSDT first", "PandaPools creates MINIMA / USDT pools — the pair with a live market price, so a pool always opens at the true rate. Your wallet holds no mxUSDT; receive some first, then create a pool."); return; }
                 String[] labels = new String[toks.size()];
                 for (int i = 0; i < toks.size(); i++) labels[i] = toks.get(i)[1];
                 final BigDecimal mAvail = minimaAvail[0];
+                // One market-fed token → skip the picker and go straight in; otherwise let the user choose.
+                if (toks.size() == 1) {
+                    String[] t = toks.get(0);
+                    dispatchCreate(t[0], Integer.parseInt(t[2]), t[3], Util.decOr(t[4], BigDecimal.ZERO), mAvail);
+                    return;
+                }
                 new AlertDialog.Builder(act)
                         .setTitle("Pool MINIMA with…")
                         .setItems(labels, (d, w) -> {
                             String[] t = toks.get(w);
-                            int dec = Integer.parseInt(t[2]);
-                            BigDecimal tokAvail = Util.decOr(t[4], BigDecimal.ZERO);
-                            if (t[0].equalsIgnoreCase(USDT_TOKENID))
-                                createFormPriced(t[0], dec, t[3], tokAvail, mAvail);   // market-price-forced
-                            else
-                                createFormManual(t[0], dec, t[3]);                     // creator sets the price
+                            dispatchCreate(t[0], Integer.parseInt(t[2]), t[3], Util.decOr(t[4], BigDecimal.ZERO), mAvail);
                         })
                         .setNegativeButton("Cancel", null)
                         .show();
@@ -395,11 +445,14 @@ public class MyLpView extends BaseView {
     }
 
     /**
-     * Price-FORCED create for the MINIMA/USDT pair: the user enters only the USDT (dollar) amount, and the
-     * required MINIMA is dictated by the live MEXC market price so the pool always opens balanced and at
-     * the true market — no lopsided, no mispriced pool. Blocked unless a FRESH price is available.
+     * Price-ANCHORED create for the MINIMA/USDT pair: the user enters only the USDT (dollar) amount, and the
+     * required MINIMA is DERIVED from the anchor price ({@code initPrice}/{@code initSource} = tier-1 MEXC or
+     * tier-2 live-pool aggregate) so the pool always opens at the true market — no lopsided, no mispriced pool.
+     * The ↻ button upgrades the anchor to a fresh MEXC mid; a MEXC hiccup never blocks (the pool-price anchor
+     * carries it). Confirms before posting.
      */
-    private void createFormPriced(String tokenid, int decimals, String tokenName, BigDecimal tokAvail, BigDecimal minimaAvail) {
+    private void createFormPriced(String tokenid, int decimals, String tokenName, BigDecimal tokAvail,
+                                  BigDecimal minimaAvail, BigDecimal initPrice, String initSource) {
         LinearLayout box = dialogBox();
         EditText usdtAmt = field(box, tokenName + " to provide  (≈ US$)", "e.g. 1.90");
         TextView info = new TextView(act);
@@ -407,17 +460,16 @@ public class MyLpView extends BaseView {
         info.setPadding(0, Ui.dp(act, 12), 0, 0);
         box.addView(info);
 
-        final BigDecimal[] price = { PriceOracle.cachedMid() };
+        final BigDecimal[] price = { initPrice };
+        final String[] source = { initSource };
 
         final Runnable update = () -> {
             BigDecimal p = price[0];
             if (p == null || p.signum() <= 0) { info.setText("Fetching MINIMA/USDT market price…"); return; }
-            boolean stale = !PriceOracle.fresh();
-            // most USDT the MINIMA balance can balance at market, and the smaller of that vs USDT held
+            // most USDT the MINIMA balance can balance at the anchor price, and the smaller of that vs USDT held
             BigDecimal usdtCap = minimaAvail.multiply(p).min(tokAvail).setScale(decimals, RoundingMode.DOWN);
             StringBuilder sb = new StringBuilder();
-            sb.append("Market: ").append(trim8(p)).append(" USDT/MINIMA (").append(PriceOracle.SOURCE)
-              .append(stale ? " · STALE" : "").append(")\n");
+            sb.append("Price: ").append(trim8(p)).append(" USDT/MINIMA (").append(source[0]).append(")\n");
             sb.append("You have: ").append(trim(minimaAvail)).append(" MINIMA · ").append(trim(tokAvail)).append(" ").append(tokenName).append("\n");
             BigDecimal u = parse(usdtAmt.getText().toString());
             if (u == null || u.signum() <= 0) {
@@ -430,7 +482,6 @@ public class MyLpView extends BaseView {
                     sb.append("\n⚠ Not enough MINIMA — reduce USDT to ≤ ").append(trim(usdtCap)).append(".");
                 if (u.compareTo(tokAvail) > 0)
                     sb.append("\n⚠ You only have ").append(trim(tokAvail)).append(" ").append(tokenName).append(".");
-                if (stale) sb.append("\n⚠ Price is stale — tap ↻ before creating.");
             }
             info.setText(sb.toString());
         };
@@ -447,12 +498,11 @@ public class MyLpView extends BaseView {
         final PriceOracle.Cb fetchCb = new PriceOracle.Cb() {
             @Override public void onPrice(BigDecimal mid) {
                 if (act.isFinishing() || act.isDestroyed()) return;   // dialog/activity gone — don't touch views
-                price[0] = mid; update.run();
+                price[0] = mid; source[0] = "MEXC market"; update.run();
             }
             @Override public void onError(String msg) {
                 if (act.isFinishing() || act.isDestroyed()) return;
-                if (price[0] == null) info.setText("Couldn't get the market price: " + msg + "\nTap ↻ to retry.");
-                else update.run();
+                update.run();   // keep the current anchor (pool/prior) — a MEXC hiccup must not block a create
             }
         };
 
@@ -461,30 +511,60 @@ public class MyLpView extends BaseView {
             Button refresh = dlg.getButton(AlertDialog.BUTTON_NEUTRAL);
             create.setOnClickListener(v -> {
                 BigDecimal p = price[0];
-                if (p == null || p.signum() <= 0 || !PriceOracle.fresh()) { toast("Market price unavailable/stale — tap ↻ and retry."); return; }
+                if (p == null || p.signum() <= 0) { toast("No price yet — tap ↻ and retry."); return; }
                 BigDecimal u = parse(usdtAmt.getText().toString());
                 if (u == null || u.signum() <= 0) { toast("Enter the USDT amount."); return; }
                 BigDecimal minima = u.divide(p, 6, RoundingMode.UP);
                 if (minima.compareTo(minimaAvail) > 0 || u.compareTo(tokAvail) > 0) { toast("Not enough balance for that amount."); return; }
                 dlg.dismiss();
-                doCreate(tokenid, decimals, tokenName, minima, u);
+                confirmCreate(tokenid, decimals, tokenName, minima, u, p, source[0], false);
             });
             refresh.setOnClickListener(v -> { info.setText("Refreshing price…"); PriceOracle.fetch(fetchCb); });
             update.run();
         });
         dlg.show();
-        PriceOracle.fetch(fetchCb);   // initial fetch
+        PriceOracle.fetch(fetchCb);   // try to upgrade to a live MEXC mid
     }
 
-    /** Manual create for a token with NO market feed: the creator sets the opening price themselves. */
+    /** Final confirmation before posting — states the amounts, the opening price, and which anchor set it
+     *  (so a fat-fingered USD amount or a bootstrap price can't slip through un-noticed). */
+    private void confirmCreate(String tokenid, int decimals, String tokenName, BigDecimal minima, BigDecimal usdt,
+                               BigDecimal price, String source, boolean bootstrap) {
+        String priceLine = bootstrap
+                ? "⚠ No market price available — YOU are setting the opening price."
+                : "Opens at " + trim8(price) + " USDT/MINIMA  (matches " + source + " ✓)";
+        String msg = "MINIMA / " + tokenName + " pool\n\n"
+                + trim(minima) + " MINIMA  +  " + trim(usdt) + " " + tokenName + "\n"
+                + priceLine + "\n\n"
+                + "The 0.5% swap fee goes to liquidity providers.";
+        new AlertDialog.Builder(act)
+                .setTitle("Create this pool?")
+                .setMessage(msg)
+                .setPositiveButton("Create", (d, w) -> doCreate(tokenid, decimals, tokenName, minima, usdt))
+                .setNegativeButton("Back", null)
+                .show();
+    }
+
+    /** Tier-3 BOOTSTRAP create — reached ONLY when there is no MEXC price AND no live MINIMA/USDT pool to anchor
+     *  to (the very first pool). The creator sets the opening price; gated behind an explicit acknowledgement +
+     *  the confirm step, because nothing can check the ratio. This is the only free-ratio path in the app. */
     private void createFormManual(String tokenid, int decimals, String tokenName) {
         LinearLayout box = dialogBox();
+        TextView intro = text("No market price is available (MEXC is unreachable and there are no live MINIMA / "
+                + tokenName + " pools to match). You are setting the OPENING PRICE yourself — set it to the true "
+                + "market rate, or arbitrageurs will correct it at your expense.", Design.dim(), 12, false);
+        intro.setPadding(0, 0, 0, Ui.dp(act, 4));
+        box.addView(intro);
         EditText mAmt = field(box, "MINIMA to deposit", "e.g. 100");
         EditText tAmt = field(box, tokenName + " to deposit", "e.g. 0.56");
         TextView preview = new TextView(act);
         preview.setTextColor(Design.dim()); preview.setTextSize(13);
         preview.setPadding(0, Ui.dp(act, 10), 0, 0);
         box.addView(preview);
+        final android.widget.CheckBox ack = new android.widget.CheckBox(act);
+        ack.setText("I understand I'm setting the opening price with no market to check it against.");
+        ack.setTextColor(Design.dim()); ack.setTextSize(12);
+        box.addView(ack);
 
         Runnable update = () -> {
             BigDecimal x = parse(mAmt.getText().toString());
@@ -493,25 +573,29 @@ public class MyLpView extends BaseView {
             if (!PoolCovenant.sizeOk(x, y)) { preview.setText("Amounts too large (x × y must be < 2^64)."); return; }
             BigDecimal yc = y.setScale(decimals, RoundingMode.DOWN);   // the actual on-grain reserve
             BigDecimal price = yc.divide(x, MC);
-            String kmin = PoolCovenant.kmin(x, yc);
             preview.setText("Opening price:  " + trim8(price) + " " + tokenName + " / MINIMA\n"
-                    + "Product floor (KMIN):  " + kmin + "\n"
-                    + "⚠ You are setting this token's opening price. Match its real market price, or "
-                    + "arbitrageurs will correct it at your expense.");
+                    + "Product floor (KMIN):  " + PoolCovenant.kmin(x, yc));
         };
         watch(mAmt, update); watch(tAmt, update); update.run();
 
-        new AlertDialog.Builder(act)
+        final AlertDialog dlg = new AlertDialog.Builder(act)
                 .setTitle("Create MINIMA / " + tokenName + " pool")
                 .setView(box)
-                .setPositiveButton("Create", (d, w) -> {
-                    BigDecimal x = parse(mAmt.getText().toString());
-                    BigDecimal y = parse(tAmt.getText().toString());
-                    if (x == null || y == null) { toast("Enter both amounts."); return; }
-                    doCreate(tokenid, decimals, tokenName, x, y);
-                })
+                .setPositiveButton("Create", null)
                 .setNegativeButton("Cancel", null)
-                .show();
+                .create();
+        dlg.setOnShowListener(d -> dlg.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+            BigDecimal x = parse(mAmt.getText().toString());
+            BigDecimal y = parse(tAmt.getText().toString());
+            if (x == null || y == null || x.signum() <= 0 || y.signum() <= 0) { toast("Enter both amounts."); return; }
+            if (!PoolCovenant.sizeOk(x, y)) { toast("Amounts too large (x × y must be < 2^64)."); return; }
+            if (!ack.isChecked()) { toast("Tick the box to confirm you're setting the price."); return; }
+            BigDecimal yc = y.setScale(decimals, RoundingMode.DOWN);
+            BigDecimal price = yc.divide(x, MC);
+            dlg.dismiss();
+            confirmCreate(tokenid, decimals, tokenName, x, y, price, "manual", true);
+        }));
+        dlg.show();
     }
 
     private void doCreate(String tokenid, int decimals, String tokenName, BigDecimal x, BigDecimal y) {

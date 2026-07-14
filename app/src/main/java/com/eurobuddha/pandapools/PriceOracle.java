@@ -3,6 +3,7 @@ package com.eurobuddha.pandapools;
 import android.os.Handler;
 import android.os.Looper;
 
+import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.ByteArrayOutputStream;
@@ -25,11 +26,17 @@ import java.util.concurrent.Executors;
 public final class PriceOracle {
 
     public static final String SOURCE = "MEXC";
+    // PRIMARY: order-book depth — the effective bid/ask is the level where cumulative notional reaches
+    // DEPTH_MIN_USDT, so dust at the top-of-book (trivially movable on a thin market) can't set the opening
+    // price of a pool. FALLBACK: top-of-book bookTicker (weaker, still spread-checked).
+    private static final String DEPTH_URL = "https://api.mexc.com/api/v3/depth?symbol=MINIMAUSDT&limit=20";
     private static final String BOOK_URL = "https://api.mexc.com/api/v3/ticker/bookTicker?symbol=MINIMAUSDT";
-    /** A price older than this is treated as stale — a create must not proceed on a stale price. */
+    private static final double DEPTH_MIN_USDT = 25;   // effective bid/ask = level where cumulative notional ≥ this
+    private static final double MAX_SPREAD     = 0.20; // reject a book wider than this (too thin to quote)
+    /** A price older than this is treated as stale — a create must not use a stale MEXC price (it falls back
+     *  to the live-pool anchor instead). */
     public static final long FRESH_MS = 5 * 60_000L;
     private static final MathContext MC = new MathContext(20, RoundingMode.HALF_UP);
-    private static final BigDecimal TWO = new BigDecimal("2");
 
     public interface Cb { void onPrice(BigDecimal mid); void onError(String message); }
 
@@ -50,15 +57,26 @@ public final class PriceOracle {
         return lastMid != null && lastMid.signum() > 0 && (System.currentTimeMillis() - lastMs) <= FRESH_MS;
     }
 
-    /** One-shot async fetch of the MINIMA/USDT mid; the callback fires on the UI thread. */
+    /** One-shot async fetch of the MINIMA/USDT mid (robust: depth effective-level + spread check, bookTicker
+     *  fallback); the callback fires on the UI thread. */
     public static void fetch(Cb cb) {
         EXEC.execute(() -> {
             try {
-                JSONObject j = httpGet(BOOK_URL);
-                BigDecimal bid = new BigDecimal(j.getString("bidPrice"));
-                BigDecimal ask = new BigDecimal(j.getString("askPrice"));
-                if (bid.signum() <= 0 || ask.signum() <= 0) throw new Exception("no market price");
-                BigDecimal mid = bid.add(ask).divide(TWO, MC);
+                double b, a;
+                try {
+                    JSONObject depth = httpGet(DEPTH_URL);
+                    b = effectiveLevel(depth.optJSONArray("bids"));
+                    a = effectiveLevel(depth.optJSONArray("asks"));
+                } catch (Exception depthDown) {
+                    // depth endpoint unreachable → weaker top-of-book, still spread-checked below
+                    JSONObject book = httpGet(BOOK_URL);
+                    b = book.optDouble("bidPrice", 0);
+                    a = book.optDouble("askPrice", 0);
+                }
+                if (!(b > 0) || !(a > 0) || b > a) throw new Exception("thin/empty book");
+                if ((a - b) / a >= MAX_SPREAD) throw new Exception("market too thin to quote");
+                BigDecimal mid = new BigDecimal(Double.toString((a + b) / 2.0), MC);
+                if (mid.signum() <= 0) throw new Exception("bad price");
                 lastMid = mid; lastMs = System.currentTimeMillis();
                 UI.post(() -> cb.onPrice(mid));
             } catch (Exception e) {
@@ -66,6 +84,24 @@ public final class PriceOracle {
                 UI.post(() -> cb.onError(msg));
             }
         });
+    }
+
+    /** Price at which cumulative notional (price × qty) reaches DEPTH_MIN_USDT, or 0 if the side is too thin.
+     *  Rows are ["price","qty"] pairs, best level first. */
+    private static double effectiveLevel(JSONArray side) {
+        try {
+            if (side == null) return 0;
+            double cum = 0;
+            for (int i = 0; i < side.length(); i++) {
+                JSONArray row = side.getJSONArray(i);
+                double px = Double.parseDouble(row.getString(0));
+                double qty = Double.parseDouble(row.getString(1));
+                if (!(px > 0) || !(qty > 0)) return 0;
+                cum += px * qty;
+                if (cum >= DEPTH_MIN_USDT) return px;
+            }
+            return 0;
+        } catch (Exception e) { return 0; }
     }
 
     private static JSONObject httpGet(String u) throws Exception {
