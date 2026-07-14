@@ -16,6 +16,8 @@ import androidx.work.ExistingPeriodicWorkPolicy;
 import androidx.work.PeriodicWorkRequest;
 import androidx.work.WorkManager;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.function.Consumer;
 import androidx.core.graphics.Insets;
 import androidx.core.view.ViewCompat;
@@ -184,7 +186,19 @@ public class MainActivity extends AppCompatActivity {
     private void retrackOwnPools() {
         if (retrackedOwn || node == null) return;
         retrackedOwn = true;
-        for (Pool p : OwnPoolStore.all(this)) {
+        final List<Pool> own = OwnPoolStore.all(this);
+
+        // Fund-safety launch sweep: forward any funds stranded at owner addresses ($OADR) onward to default-64
+        // wallet addresses. No-op on a healthy node with nothing stranded; on a healthy node it also rescues
+        // funds a pre-fix close left at $OADR. (Owner-KEY regeneration is NOT done here — it would mint keys
+        // every session on a re-paired/different-seed node; it runs only on an explicit Restore instead.)
+        final List<String> oadrs = new ArrayList<>();
+        for (Pool p : own) if (p.oadr != null && !p.oadr.isEmpty()) oadrs.add(p.oadr);
+        new PoolManager(node).sweepOwnerFunds(oadrs, (addressesForwarded, coins) -> {
+            if (addressesForwarded > 0 && poolRepo != null) poolRepo.refresh();
+        });
+
+        for (Pool p : own) {
             if (p.covenantScript == null || p.covenantScript.isEmpty()) continue;
             node.cmd("newscript trackall:true script:" + Util.scriptArg(p.covenantScript), new NodeApi.Cb() {
                 @Override public void onResult(JSONObject j) { if (poolRepo != null) poolRepo.refresh(); }

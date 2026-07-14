@@ -14,13 +14,19 @@ import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * Layer 5 (network discoverability): keep a live announce beacon in the recent sentinel window for each
- * owned pool, so STRANGERS' fresh nodes keep rediscovering it after the original beacon pruned.
+ * Layer 5 (network discoverability): keep a live announce beacon in the recent sentinel window for pools,
+ * so STRANGERS' fresh nodes keep rediscovering them after the original beacon pruned.
+ *
+ * GOSSIP: a pool stays discoverable only while a live beacon sits in the recent window, and the beacon is
+ * unspendable dust that prunes (~a day). If re-announcing were owner-only, a pool created on a now-offline
+ * phone would go dark for everyone. So this re-announces EVERY funded pool the node knows (its own +
+ * any it has discovered/tracked), turning discovery into a self-healing mesh: as long as one active node
+ * knows a funded pool, its beacon stays alive for new users. Always-on nodes (desktop/MDS) are the anchors.
+ * Re-announcing another's pool is safe — {@link PoolManager#reannounce} spends no covenant coin and needs
+ * no owner signature; it just posts a dust beacon carrying the pool's public params (which the node holds).
  *
  * It re-announces ONLY a pool whose beacon has actually FADED from the recent window — so beacons never
- * pile up (the beacon is unspendable dust that can't be replaced, only re-posted when gone). Each
- * re-announce is one small owner-wallet send (see {@link PoolManager#reannounce}); it spends no covenant
- * coin and adds no spend authority.
+ * pile up — and shuffles + caps each run so many nodes don't all re-beacon the same pools at once.
  *
  * HARD GUARD: the sentinel scan here NEVER uses {@code megammr:true} — that query (pulling the whole
  * accumulated beacon pile) was the 0.8.10 crash, not the re-announce itself. Recent unpruned window only.
@@ -28,6 +34,10 @@ import java.util.concurrent.atomic.AtomicInteger;
 public class ReAnnouncer {
 
     public interface Listener { void onAnnounced(int posted); }
+
+    /** Per-run cap on how many faded beacons ONE node re-posts. Gossip is collective — shuffle + cap so we
+     *  don't all beacon the same pools at once; other nodes and later runs cover the rest. */
+    private static final int MAX_PER_RUN = 8;
 
     // Keys re-announced during THIS process — so a config-change recreate (e.g. theme toggle) can't
     // double-post a beacon before the first one confirms into the sentinel window. Cleared on process death,
@@ -72,6 +82,20 @@ public class ReAnnouncer {
                 private void tick() { if (pending.decrementAndGet() == 0) refreshFaded(new ArrayList<>(funded), cb); }
             });
         }
+    }
+
+    /**
+     * GOSSIP entry (background + foreground): run a full registry scan (Source-1 tracked ∪ Source-2 live
+     * beacons), then re-announce EVERY funded pool whose beacon has faded — not just this node's own. This
+     * is the self-healing mesh: any node that has discovered a pool helps keep it alive, so a pool created
+     * on a now-offline phone stays findable while it holds reserves and at least one active node knows it.
+     * {@link PoolBook#scan} returns the funded, deduped pool set; {@link #refreshFaded} filters to faded.
+     */
+    public void refreshFadedFromScan(final Listener cb) {
+        new PoolBook(node).scan(new PoolBook.Listener() {
+            @Override public void onPools(List<Pool> funded) { refreshFaded(funded, cb); }
+            @Override public void onError(String msg) { cb.onAnnounced(0); }
+        });
     }
 
     /** Largest coin per leg at the covenant address = the true reserve (dust can't masquerade). Mirrors
@@ -119,6 +143,13 @@ public class ReAnnouncer {
             faded.add(p);
         }
         if (faded.isEmpty()) { cb.onAnnounced(0); return; }
+
+        // Gossip is collective: shuffle + cap per run so many nodes don't all re-beacon the same faded pools
+        // at once. Whatever this run skips, another node or a later run covers.
+        if (faded.size() > MAX_PER_RUN) {
+            Collections.shuffle(faded);
+            faded = new ArrayList<>(faded.subList(0, MAX_PER_RUN));
+        }
 
         final AtomicInteger pending = new AtomicInteger(faded.size());
         final AtomicInteger posted = new AtomicInteger(0);

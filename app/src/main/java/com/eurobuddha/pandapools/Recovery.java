@@ -5,6 +5,7 @@ import android.content.Context;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -124,12 +125,25 @@ public class Recovery {
         } catch (Exception e) { cb.onProgress("That doesn't look like a PandaPools backup."); cb.onDone(0, 0); return; }
 
         final int total = pools.length();
+        // Owner keys ($OPK) are newaddress keys a seed-only restore doesn't bring back — regenerate them so
+        // restored pools are actually closeable/collectable, not just re-tracked. Gather them up front.
+        final List<String> opks = new ArrayList<>();
+        for (int i = 0; i < total; i++) {
+            JSONObject e = pools.optJSONObject(i);
+            if (e != null) { String o = e.optString("opk", ""); if (!o.isEmpty()) opks.add(o); }
+        }
         final AtomicInteger pending = new AtomicInteger(total);
         final AtomicInteger okCount = new AtomicInteger(0);
         for (int i = 0; i < total; i++) {
             final JSONObject e = pools.optJSONObject(i);
             restoreOne(ctx, e, cb, () -> { okCount.incrementAndGet(); }, () -> {
-                if (pending.decrementAndGet() == 0) cb.onDone(okCount.get(), total);
+                if (pending.decrementAndGet() == 0) {
+                    OwnerKeyRecovery.ensure(node, opks, regenerated -> {
+                        if (regenerated > 0) cb.onProgress("Regenerated " + regenerated
+                                + " owner key" + (regenerated == 1 ? "" : "s") + " so your pools are spendable.");
+                        cb.onDone(okCount.get(), total);
+                    });
+                }
             });
         }
     }

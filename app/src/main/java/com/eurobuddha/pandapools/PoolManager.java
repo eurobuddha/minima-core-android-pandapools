@@ -6,7 +6,11 @@ import org.json.JSONObject;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * The liquidity-provider (owner) transactions: CREATE a pool, ADD liquidity (grow-in-place), MIGRATE
@@ -23,6 +27,8 @@ public class PoolManager {
 
     public interface Result { void onPosted(String txpowid); void onFailed(String message); }
     public interface CreateResult { void onCreated(Pool pool, String txpowid); void onFailed(String message); }
+    public interface ForwardResult { void onForwarded(String txpowid, int coins); void onNothing(); void onFailed(String message); }
+    public interface SweepResult { void onSwept(int addressesForwarded, int coins); }
 
     /** The discovery beacon carries only dust — it is a rendezvous coin, not spendable liquidity. */
     private static final BigDecimal ANNOUNCE_DUST = new BigDecimal("0.000000001");
@@ -268,6 +274,92 @@ public class PoolManager {
         cmds.add("txnoutput id:" + txid + " amount:" + amt(p.reserveM) + " address:" + p.oadr + " storestate:false");
         cmds.add("txnoutput id:" + txid + " amount:" + amt(p.reserveT) + " address:" + p.oadr + tokArg + " storestate:false");
         ownerSignPost(txid, p.opk, cmds, cb);
+    }
+
+    // ===================================================================== FORWARD TO DEFAULT WALLET
+
+    /**
+     * Forward every sendable coin sitting at a pool owner address ($OADR) onward to a fresh DEFAULT-64
+     * wallet address ({@code getaddress}). The covenant pins the owner exit to $OADR, so a close can only
+     * land funds there; this second hop moves them into the 64 seed-derived default addresses that a
+     * seed-only restore always regenerates — so withdrawn funds are never stranded at a {@code newaddress}
+     * ($OADR) that a bare seed restore wouldn't reproduce. $OADR is {@code RETURN SIGNEDBY($OPK)} and the
+     * node holds $OPK, so {@code txnsign auto} covers it. Full amounts (zero burn, like the app's other txns);
+     * whole coins move, so token grain is exact. No-op ({@code onNothing}) if nothing sendable is there yet
+     * (e.g. a just-posted close still confirming) — callers retry.
+     */
+    public void forwardOwnerFunds(final String oadr, final ForwardResult cb) {
+        if (isEmpty(oadr)) { cb.onFailed("no owner address"); return; }
+        node.cmd("coins relevant:true sendable:true address:" + oadr, new NodeApi.Cb() {
+            @Override public void onResult(JSONObject j) {
+                JSONArray arr = j.optJSONArray("response");
+                if (arr == null || arr.length() == 0) { cb.onNothing(); return; }
+                final List<String> coinids = new ArrayList<>();
+                final Map<String, BigDecimal> byTok = new LinkedHashMap<>();   // tokenid -> summed human amount
+                for (int i = 0; i < arr.length(); i++) {
+                    JSONObject c = arr.optJSONObject(i);
+                    if (c == null || c.optBoolean("spent", false)) continue;
+                    String tid = c.optString("tokenid", "");
+                    String cid = c.optString("coinid", "");
+                    if (tid.isEmpty() || cid.isEmpty()) continue;
+                    BigDecimal a = "0x00".equals(tid)
+                            ? new BigDecimal(c.optString("amount", "0"))
+                            : new BigDecimal(c.optString("tokenamount", c.optString("amount", "0")));
+                    if (a.signum() <= 0) continue;
+                    coinids.add(cid);
+                    BigDecimal prev = byTok.get(tid);
+                    byTok.put(tid, prev == null ? a : prev.add(a));
+                }
+                if (coinids.isEmpty()) { cb.onNothing(); return; }
+                // fresh DEFAULT-64 wallet address to receive (getaddress, not newaddress)
+                node.cmd("getaddress", new NodeApi.Cb() {
+                    @Override public void onResult(JSONObject aj) {
+                        JSONObject r = aj.optJSONObject("response");
+                        String dest = r != null ? r.optString("address", "") : "";
+                        if (isEmpty(dest)) { cb.onFailed("could not get a wallet address"); return; }
+                        String txid = "ppfwd_" + tag();
+                        List<String> cmds = new ArrayList<>();
+                        cmds.add("txncreate id:" + txid);
+                        for (String cid : coinids) cmds.add("txninput id:" + txid + " coinid:" + cid);
+                        for (Map.Entry<String, BigDecimal> en : byTok.entrySet()) {
+                            String tokArg = "0x00".equals(en.getKey()) ? "" : " tokenid:" + en.getKey();
+                            cmds.add("txnoutput id:" + txid + " amount:" + amt(en.getValue()) + " address:" + dest + tokArg + " storestate:false");
+                        }
+                        cmds.add("txnsign id:" + txid + " publickey:auto");
+                        cmds.add("txnbasics id:" + txid);
+                        final int n = coinids.size();
+                        TxPost.checkThenPost(node, txid, cmds, new TxPost.Done() {
+                            @Override public void ok(String txpowid) { cb.onForwarded(txpowid, n); }
+                            @Override public void fail(String message) { cb.onFailed(message); }
+                        });
+                    }
+                    @Override public void onError(String m) { cb.onFailed(m); }
+                });
+            }
+            @Override public void onError(String m) { cb.onFailed(m); }
+        });
+    }
+
+    /**
+     * "Collect to wallet" sweep: forward stranded funds from a set of owner addresses to default-64 wallet
+     * addresses. Rescues funds that closed pools left at $OADR before this fix (and any close whose forward
+     * didn't complete). Best-effort per address; reports totals. Dedups addresses (migrate shares $OADR).
+     */
+    public void sweepOwnerFunds(final List<String> oadrs, final SweepResult cb) {
+        final LinkedHashSet<String> uniq = new LinkedHashSet<>();
+        for (String a : oadrs) if (a != null && !a.isEmpty()) uniq.add(a);
+        if (uniq.isEmpty()) { cb.onSwept(0, 0); return; }
+        final AtomicInteger pending = new AtomicInteger(uniq.size());
+        final AtomicInteger addrs = new AtomicInteger(0);
+        final AtomicInteger coins = new AtomicInteger(0);
+        for (String oadr : uniq) {
+            forwardOwnerFunds(oadr, new ForwardResult() {
+                @Override public void onForwarded(String txpowid, int n) { addrs.incrementAndGet(); coins.addAndGet(n); tick(); }
+                @Override public void onNothing() { tick(); }
+                @Override public void onFailed(String message) { tick(); }
+                private void tick() { if (pending.decrementAndGet() == 0) cb.onSwept(addrs.get(), coins.get()); }
+            });
+        }
     }
 
     // ===================================================================== RE-ANNOUNCE (Layer 5)

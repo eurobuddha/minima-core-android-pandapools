@@ -130,7 +130,7 @@ public class MyLpView extends BaseView {
             if (OwnPoolStore.script(act, p.address) == null) OwnPoolStore.record(act, p);
         }
         myPools.clear(); myPools.addAll(mine);   // for a backup's fresh coinexport (these carry live coinids)
-        maybeReannounce();                        // Layer 5: refresh any faded registry beacon (once/session)
+        maybeReannounce(all);                     // Layer 5 gossip: refresh faded beacons for ALL funded pools (once/session)
 
         // Has a pending create just gone live (discovered with funded reserves)? Announce it + stop tracking.
         boolean pendingLive = false;
@@ -655,6 +655,7 @@ public class MyLpView extends BaseView {
                     busy = true; status("Closing pool…");
                     final String closeSummary = "Withdraw MINIMA / " + p.tokenLabel() + "  ·  "
                             + trim(p.reserveM) + " MINIMA + " + trim(p.reserveT) + " " + p.tokenLabel() + " back to wallet";
+                    final String closeOadr = p.oadr;
                     mgr.close(p, new PoolManager.Result() {
                         @Override public void onPosted(String txpowid) {
                             LpStore.remove(act, p.address);   // pool closed — drop its display snapshot
@@ -663,7 +664,14 @@ public class MyLpView extends BaseView {
                             // wiped-node case this feature backstops). A stale recipe is a harmless no-op —
                             // re-track on an emptied covenant tracks nothing, and only funded() pools render.
                             ActivityLog.record(act, ActivityLog.CLOSE, closeSummary, txpowid, act.chainBlock());
-                            act.runOnUiThread(() -> { busy = false; status("Pool closed ✓ " + Util.shorten(txpowid) + " — funds returning to your wallet (confirming on-chain)."); act.pools().refresh(); });
+                            act.runOnUiThread(() -> {
+                                busy = false;
+                                status("Pool closed ✓ " + Util.shorten(txpowid) + " — moving funds to a wallet address (confirming on-chain)…");
+                                act.pools().refresh();
+                                // Second hop: once the covenant→$OADR sweep confirms, forward it to a default-64
+                                // wallet address so the withdrawn funds survive a seed-only restore.
+                                collectAfterClose(closeOadr, 8);
+                            });
                         }
                         @Override public void onFailed(String message) {
                             ActivityLog.recordFailed(act, ActivityLog.CLOSE, closeSummary, message);
@@ -675,15 +683,50 @@ public class MyLpView extends BaseView {
                 .show();
     }
 
+    /** After a close, the covenant→$OADR sweep is unconfirmed for ~a block; once it lands, forward those
+     *  funds onward to a default-64 wallet address (so they survive a seed-only restore). Retries on the UI
+     *  handler until the coins are sendable, or we run out of tries — the launch-time sweep is the backstop. */
+    private void collectAfterClose(final String oadr, final int triesLeft) {
+        if (oadr == null || oadr.isEmpty() || triesLeft <= 0 || act.node() == null) return;
+        act.ui().postDelayed(() -> {
+            if (act.node() == null) return;
+            mgr.forwardOwnerFunds(oadr, new PoolManager.ForwardResult() {
+                @Override public void onForwarded(String txpowid, int coins) {
+                    act.runOnUiThread(() -> { status("Withdrawn funds moved to your wallet ✓ " + Util.shorten(txpowid)); act.pools().refresh(); });
+                }
+                @Override public void onNothing() { collectAfterClose(oadr, triesLeft - 1); }   // close not confirmed yet — retry
+                @Override public void onFailed(String message) { collectAfterClose(oadr, triesLeft - 1); }
+            });
+        }, 20000);
+    }
+
+    /** Manual "Collect to wallet": forward any funds still sitting at this node's pool owner addresses
+     *  ($OADR) onward to default-64 wallet addresses. Rescues funds a pre-fix close left stranded. */
+    private void doCollect() {
+        List<String> oadrs = new ArrayList<>();
+        for (Pool p : OwnPoolStore.all(act)) if (p.oadr != null && !p.oadr.isEmpty()) oadrs.add(p.oadr);
+        if (oadrs.isEmpty()) { status("No pools on record to collect from."); return; }
+        status("Collecting withdrawn funds to your wallet…");
+        mgr.sweepOwnerFunds(oadrs, (addressesForwarded, coins) -> act.runOnUiThread(() -> {
+            if (addressesForwarded > 0) {
+                status("Moved withdrawn funds from " + addressesForwarded + " pool"
+                        + (addressesForwarded == 1 ? "" : "s") + " to your wallet ✓");
+                act.pools().refresh();
+            } else status("Nothing to collect — no spendable funds are waiting at your pool payout addresses.");
+        }));
+    }
+
     // ---- network discoverability (Layer 5) ----
 
-    /** Once per session, re-publish the announce beacon for any owned pool whose beacon has faded from the
-     *  recent registry window — keeps the pool findable by fresh nodes. One tiny owner-wallet tx per faded
-     *  pool (no covenant coin spent); silently does nothing if nothing faded or there's no spare MINIMA. */
-    private void maybeReannounce() {
-        if (reannounceChecked || myPools.isEmpty() || act.node() == null) return;
+    /** Once per session, GOSSIP: re-publish the announce beacon for ANY funded pool this node knows (its own
+     *  + any it has discovered) whose beacon has faded from the recent registry window — so pools created on
+     *  now-offline nodes stay findable by fresh nodes. One tiny dust tx per faded pool (no covenant coin
+     *  spent, no owner signature); shuffled + capped in {@link ReAnnouncer}; silently does nothing if nothing
+     *  faded or there's no spare MINIMA. {@code allFunded} is the full deduped funded scan result. */
+    private void maybeReannounce(List<Pool> allFunded) {
+        if (reannounceChecked || allFunded == null || allFunded.isEmpty() || act.node() == null) return;
         reannounceChecked = true;
-        reannouncer.refreshFaded(new ArrayList<>(myPools), posted -> {
+        reannouncer.refreshFaded(new ArrayList<>(allFunded), posted -> {
             if (posted > 0) status("Re-published " + posted + " pool" + (posted == 1 ? "" : "s")
                     + " to the registry so fresh nodes can find " + (posted == 1 ? "it" : "them") + ".");
         });
@@ -692,10 +735,12 @@ public class MyLpView extends BaseView {
     // ---- backup & restore (recovery) ----
 
     private void showRecoveryDialog() {
-        String[] items = { "Back up my pools to a file", "Restore pools from a file", "How recovery works" };
+        String[] items = { "Collect withdrawn funds to my wallet", "Back up my pools to a file", "Restore pools from a file", "How recovery works" };
         new AlertDialog.Builder(act)
                 .setTitle("Pool recovery")
-                .setItems(items, (d, w) -> { if (w == 0) doBackup(); else if (w == 1) doRestore(); else showRecoveryGuide(); })
+                .setItems(items, (d, w) -> {
+                    if (w == 0) doCollect(); else if (w == 1) doBackup(); else if (w == 2) doRestore(); else showRecoveryGuide();
+                })
                 .setNegativeButton("Close", null)
                 .show();
     }
