@@ -42,6 +42,18 @@ public final class PoolCovenant {
     /** "PANDAPOOLS" in hex — the shared registry sentinel address. */
     public static final String SENTINEL = "0x50414E4441504F4F4C53";
 
+    /**
+     * Hard depth bound (blocks back from tip) for EVERY {@code coins address:SENTINEL} scan. The sentinel is an
+     * unspendable address, so announce beacons accumulate in the unpruned window (anchor + keep-fresh + every
+     * node's re-announce). An UNBOUNDED scan returned ~312 KB on a busy phone → the node's RESPONSE broadcast
+     * exceeded the Binder transaction limit → the OS killed the app ("can't deliver broadcast", the uncatchable
+     * IPC crash — see [[minima-ipc-gotchas]]). Measured live: this depth keeps every currently-live pool (their
+     * freshest beacon is <400 blocks old) while capping the reply to a few tens of KB — a large margin under the
+     * ~256 KB danger. The bound is self-stabilising: re-announce only fires once a beacon has faded out of THIS
+     * window, so the window holds ~one beacon per pool per active node, not the whole multi-day history.
+     */
+    public static final int SENTINEL_SCAN_DEPTH = 400;
+
     private PoolCovenant() {}
 
     /** Fill the template with a pool's four literals. Returns the one-line KISS script. */

@@ -7,12 +7,16 @@ import org.json.JSONObject;
  * Bounded, ADAPTIVE, IPC-safe sync of the node's relevant history into {@link HistoryDb} — a verbatim port
  * of the standalone History app's sync.
  *
- * The node refuses any command whose response exceeds 256,000 bytes ("results too long"). Contract-heavy
- * txpows (pool swaps included) are large, so a fixed page can blow past that — and the over-limit reply
- * comes back empty/dropped. So we page SMALL and shrink on demand: start at max:8, and on any
- * over-limit/empty/errored page, halve the page (8→4→2→1) and retry the same offset. Two modes: a one-time
- * BACKFILL (pages to the end of what the node retains) and the steady-state INCREMENTAL sync (pages only
- * until the first already-stored txpowid). Both stop on a short page (end of history).
+ * Contract-heavy txpows (pool swaps included) are large — ~40 KB each was measured on-device — so even a small
+ * page can blow past the IPC broadcast limit. CRITICAL: over the native broadcast IPC an oversized reply is NOT
+ * a catchable "too long" stub — the node broadcasts the raw parcel, the Binder transaction fails, and the OS
+ * force-kills the app ("can't deliver broadcast") BEFORE any onError/onResult runs. So the adaptive shrink below
+ * can only rescue a CATCHABLE empty/errored page; it can NOT rescue an over-limit first page. The load-bearing
+ * safety is therefore the FIRST page size: it must be small enough never to overflow. A single txpow (max:1) is
+ * ~40 KB — a large margin under the ~256 KB danger — so we START at 1 (a fixed max:8 first page ≈ 340 KB was the
+ * 0.9.14 crash-on-open; see [[minima-ipc-gotchas]]). Two modes: a one-time BACKFILL (pages to the end of what the
+ * node retains) and the steady-state INCREMENTAL sync (pages only until the first already-stored txpowid). Both
+ * stop on a short page (end of history).
  */
 public class HistorySync {
 
@@ -21,7 +25,9 @@ public class HistorySync {
         void onDone(int totalNew, boolean ok);
     }
 
-    private static final int  START_MAX = 8;
+    // ONE txpow per page. The overflow is uncatchable (see class note), so the first page must never exceed the
+    // IPC limit — a single ~40 KB txpow is safe; a multi-txpow first page is not. Do NOT raise this.
+    private static final int  START_MAX = 1;
     private static final long PAGE_DELAY_MS = 450;
     private static final int  MAX_FETCHES = 600;   // safety cap across pages + retries
     private static final int  MAX_SKIP = 3;        // consecutive max:1 failures before giving up

@@ -32,11 +32,9 @@ public class PoolBook {
 
     public PoolBook(NodeApi node) { this.node = node; }
 
-    // Literal extractors for a PandaPools covenant — so a pool can be recovered from the node's TRACKED
-    // contract scripts. A contract is spendable, so it is NEVER MMR-pruned (unlike the announce beacon,
-    // a dust coin at the made-up sentinel address, which is effectively unspendable and does prune). The
-    // covenant is registered with `newscript trackall` at creation, so the creator's pools stay enumerable
-    // here FOREVER (good-til-cancelled), independent of the beacon's age.
+    // Literal extractors for a PandaPools covenant, so a pool can be recovered from the node's TRACKED contract
+    // scripts (Source 1 = GTC). A tracked contract never prunes (unlike the sentinel beacon), so pools the node
+    // already tracks stay enumerable here regardless of beacon/reserve age — which is why we still read `scripts`.
     private static final Pattern P_OPK  = Pattern.compile("SIGNEDBY\\((0x[0-9A-Fa-f]+)\\)");
     private static final Pattern P_OADR = Pattern.compile("VERIFYOUT\\(@INPUT (0x[0-9A-Fa-f]+) @AMOUNT");
     private static final Pattern P_TOK  = Pattern.compile("GETINTOK\\(s\\) EQ (0x[0-9A-Fa-f]+)");
@@ -44,17 +42,18 @@ public class PoolBook {
 
     /** Scan the registry → discover + fund every pool → callback on the UI thread. */
     public void scan(Listener cb) {
-        // idempotent: ensure the node notifies on sentinel coins, then gather pools from both sources.
-        node.cmd("coinnotify action:add address:" + PoolCovenant.SENTINEL, new NodeApi.Cb() {
-            @Override public void onResult(JSONObject j) { gatherOwned(cb); }
-            @Override public void onError(String m) { gatherOwned(cb); }
-        });
+        // Straight to discovery. We deliberately do NOT `coinnotify action:add` the sentinel: coinnotify is a
+        // transient NOTIFYCOIN listener (the node's own help: "without adding it to scripts... do this every
+        // startup") and PandaPools polls rather than consuming NOTIFYCOIN, so it did nothing useful here — while
+        // risking retention of the unspendable sentinel's ever-growing beacon pile. Discovery reads the recent
+        // chain directly via the depth-bounded scan below (how the always-on nodes already find pools).
+        gatherOwned(cb);
     }
 
-    /** Source 1 (GTC): this node's OWN tracked pool contracts — never prune, so the creator's pools are
-     *  visible forever regardless of how old they are. */
+    /** Source 1 (GTC): this node's tracked pool contracts (own + already-discovered). A tracked contract never
+     *  prunes, so these pools stay visible + swappable regardless of beacon/reserve age. */
     private void gatherOwned(final Listener cb) {
-        final Map<String, String[]> params = new LinkedHashMap<>();   // key opk|tok|kmin -> {opk,oadr,tok,kmin}
+        final Map<String, String[]> params = new LinkedHashMap<>();   // key opk|tok|kmin -> {opk,oadr,tok,kmin,script}
         node.cmd("scripts", new NodeApi.Cb() {
             @Override public void onResult(JSONObject j) { parseScripts(j, params); gatherRegistry(params, cb); }
             @Override public void onError(String m) { gatherRegistry(params, cb); }
@@ -70,19 +69,18 @@ public class PoolBook {
             if (!sc.contains("VERIFYOUT(@INPUT @ADDRESS") || !sc.contains("GTE MAX(x*y")) continue;   // a PandaPools covenant
             String opk = group(P_OPK, sc), oadr = group(P_OADR, sc), tok = group(P_TOK, sc), kmin = group(P_KMIN, sc);
             if (opk == null || oadr == null || tok == null || kmin == null) continue;
-            // carry the ACTUAL tracked covenant script (any fee) — derivePools runscripts it to (a) confirm it
-            // compiles and (b) get its address. A non-parsing script (an old JSONObject.quote '\/' corruption)
-            // is filtered out there so a permanently-unspendable pool can't masquerade as live.
-            // lowercase the dedup key so the same pool seen via Source 1 (scripts regex) and Source 2 (coins
-            // state) with differing hex case collapses to one entry (hex equality is case-insensitive).
+            // carry the ACTUAL tracked covenant script (any fee) — derivePools runscripts it to confirm it
+            // compiles and to get its address; lowercase dedup key so Source 1 ∪ Source 2 collapse.
             params.putIfAbsent((opk + "|" + tok + "|" + kmin).toLowerCase(), new String[]{opk, oadr, tok, kmin, sc});
         }
     }
 
     /** Source 2: the shared registry (announce beacons) — discovers OTHER creators' fresh pools by scanning
-     *  the sentinel address's recent chaintree window. */
+     *  the sentinel address's recent chaintree window. HARD-BOUNDED by {@link PoolCovenant#SENTINEL_SCAN_DEPTH}:
+     *  an unbounded scan of the ever-growing sentinel pile overflows the IPC broadcast and force-kills the app. */
     private void gatherRegistry(final Map<String, String[]> params, final Listener cb) {
-        node.cmd("coins simplestate:true order:desc address:" + PoolCovenant.SENTINEL, new NodeApi.Cb() {
+        node.cmd("coins simplestate:true order:desc depth:" + PoolCovenant.SENTINEL_SCAN_DEPTH
+                + " address:" + PoolCovenant.SENTINEL, new NodeApi.Cb() {
             @Override public void onResult(JSONObject j) {
                 Object resp = j.opt("response");
                 JSONArray coins = resp instanceof JSONArray ? (JSONArray) resp : new JSONArray();
@@ -136,8 +134,8 @@ public class PoolBook {
                             pool.opk = opk; pool.oadr = oadr; pool.tok = tok; pool.kmin = kmin;
                             pool.address = sc.getString("address");
                             pool.mxaddress = sc.optString("mxaddress", "");
-                            // registry-discovered (not already one of our tracked contracts) → remember its
-                            // covenant so done() can track it once it's confirmed funded (track-on-discovery).
+                            // carry the reconstructed covenant for a registry-discovered pool so MyLpView can
+                            // stamp an OwnPoolStore recipe if it turns out to be ours (backfill on discovery).
                             if (tracked == null) pool.covenantScript = fscript;
                             synchronized (pools) { pools.add(pool); }
                         }
@@ -149,8 +147,7 @@ public class PoolBook {
         }
     }
 
-    /** Scan each derived pool address for its two reserve coins. A newly discovered pool is `newscript
-     *  trackall`-ed in done(), so subsequent scans also see it via the tracked-contract source (Source 1). */
+    /** Scan each derived pool address for its two reserve coins (largest per leg = the real reserve). */
     private void fund(List<Pool> pools, Listener cb) {
         if (pools.isEmpty()) { cb.onPools(pools); return; }
         AtomicInteger pending = new AtomicInteger(pools.size());
@@ -202,17 +199,13 @@ public class PoolBook {
             // a duplicate would double-count depth and (worse) let buildRouted add the same coinid twice.
             if (p.address != null && !seenAddr.add(p.address.toLowerCase())) continue;
             funded.add(p);
-            // Track-on-discovery: permanently track a newly-seen registry pool's contract so it stays
-            // GTC-visible + swappable on THIS node forever, like our own pools (the shared beacon can lapse;
-            // a tracked contract never prunes). Fire-and-forget + idempotent; the next scan then finds it via
-            // the tracked-contract source, so this fires only once per newly-discovered pool.
-            if (p.covenantScript != null && !p.covenantScript.isEmpty()) {
-                node.cmd("newscript trackall:true script:" + jsonStr(p.covenantScript), new NodeApi.Cb() {
-                    @Override public void onResult(JSONObject j) {}
-                    @Override public void onError(String m) {}
-                });
-                p.covenantScript = null;
-            }
+            // NOTE: track-on-discovery REMOVED. It used to `newscript trackall` every discovered pool, growing the
+            // node's tracked set — and hence the `scripts` reply (Source 1) — WITHOUT BOUND, until that reply
+            // eventually overflows the IPC broadcast and force-kills the app (see [[minima-ipc-gotchas]]). Pools
+            // already tracked stay tracked (so current GTC visibility is unchanged); newly-seen pools stay
+            // discoverable via their fresh Source-2 beacon, kept alive by keep-fresh + the gossip mesh. This
+            // freezes `scripts` growth without dropping any currently-visible pool. covenantScript is retained on
+            // the Pool so MyLpView can backfill an OwnPoolStore recovery recipe if the pool turns out to be ours.
         }
         cb.onPools(funded);
     }

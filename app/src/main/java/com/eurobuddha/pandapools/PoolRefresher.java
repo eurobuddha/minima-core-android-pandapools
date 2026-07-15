@@ -2,14 +2,14 @@ package com.eurobuddha.pandapools;
 
 import android.content.Context;
 
+import org.json.JSONArray;
 import org.json.JSONObject;
 
+import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -68,27 +68,55 @@ public class PoolRefresher {
     }
 
     /**
-     * Background (no UI): read the tip, discover funded pools via a full scan ({@link PoolBook#scan} populates
-     * {@code reserveBlock}), keep only the ones this node OWNS ({@link OwnPoolStore}), and refresh the aging ones.
+     * Background (no UI): read the tip, then build the owned funded-pool list straight from {@link OwnPoolStore}
+     * — a per-covenant {@code coins address:<pool>} reserve scan per recipe (~1.6 KB each, safe on any node) —
+     * and refresh the aging ones. We deliberately do NOT run a full {@link PoolBook#scan} here: keep-fresh only
+     * ever touches OUR pools (it spends covenant coins + needs $OPK), and the sentinel scan is the IPC-overflow
+     * risk this release fixes. A stored recipe IS ours, so no sentinel/scripts/keys lookup is needed.
      */
     public void refreshAgingFromScan(final Context ctx, final Listener cb) {
         node.cmd("block", new NodeApi.Cb() {
             @Override public void onResult(JSONObject bj) {
                 final int tip = parseBlock(bj);
-                final Set<String> own = ownAddresses(ctx);
-                if (tip <= 0 || own.isEmpty()) { cb.onRefreshed(0); return; }
-                new PoolBook(node).scan(new PoolBook.Listener() {
-                    @Override public void onPools(List<Pool> all) {
-                        List<Pool> mine = new ArrayList<>();
-                        for (Pool p : all)
-                            if (p != null && p.address != null && own.contains(p.address.toLowerCase())) mine.add(p);
-                        refreshAging(mine, tip, cb);
+                final List<Pool> recipes = OwnPoolStore.all(ctx);
+                if (tip <= 0 || recipes.isEmpty()) { cb.onRefreshed(0); return; }
+                final List<Pool> mine = Collections.synchronizedList(new ArrayList<>());
+                final AtomicInteger pending = new AtomicInteger(recipes.size());
+                for (final Pool r : recipes) {
+                    if (r == null || r.address == null) {
+                        if (pending.decrementAndGet() == 0) refreshAging(new ArrayList<>(mine), tip, cb);
+                        continue;
                     }
-                    @Override public void onError(String m) { cb.onRefreshed(0); }
-                });
+                    node.cmd("coins address:" + r.address, new NodeApi.Cb() {
+                        @Override public void onResult(JSONObject j) { fillReserves(r, j); if (r.funded()) mine.add(r); tick(); }
+                        @Override public void onError(String m) { tick(); }
+                        private void tick() { if (pending.decrementAndGet() == 0) refreshAging(new ArrayList<>(mine), tip, cb); }
+                    });
+                }
             }
             @Override public void onError(String m) { cb.onRefreshed(0); }
         });
+    }
+
+    /** Largest coin per leg at the covenant address = the true reserve (a forged dust coin can't masquerade); also
+     *  record the newest kept-coin block so {@link Pool#reserveAge} is right. Mirrors {@link PoolBook}'s fund logic. */
+    private static void fillReserves(Pool p, JSONObject j) {
+        Object resp = j.opt("response");
+        JSONArray cs = resp instanceof JSONArray ? (JSONArray) resp : new JSONArray();
+        int mBlk = 0, tBlk = 0;
+        for (int i = 0; i < cs.length(); i++) {
+            JSONObject c = cs.optJSONObject(i);
+            if (c == null || c.optBoolean("spent", false)) continue;
+            String tid = c.optString("tokenid", "");
+            if ("0x00".equals(tid)) {
+                BigDecimal amt = new BigDecimal(c.optString("amount", "0"));
+                if (p.reserveM == null || amt.compareTo(p.reserveM) > 0) { p.reserveM = amt; p.coinidM = c.optString("coinid", ""); mBlk = c.optInt("created", 0); }
+            } else if (p.tok != null && p.tok.equalsIgnoreCase(tid)) {
+                BigDecimal amt = new BigDecimal(c.optString("tokenamount", c.optString("amount", "0")));
+                if (p.reserveT == null || amt.compareTo(p.reserveT) > 0) { p.reserveT = amt; p.coinidT = c.optString("coinid", ""); tBlk = c.optInt("created", 0); }
+            }
+        }
+        p.reserveBlock = Math.max(mBlk, tBlk);
     }
 
     private void post(List<Pool> aging, final Listener cb) {
@@ -104,12 +132,6 @@ public class PoolRefresher {
                 private void tick() { if (pending.decrementAndGet() == 0) cb.onRefreshed(posted.get()); }
             });
         }
-    }
-
-    private static Set<String> ownAddresses(Context ctx) {
-        Set<String> s = new HashSet<>();
-        for (Pool r : OwnPoolStore.all(ctx)) if (r != null && r.address != null) s.add(r.address.toLowerCase());
-        return s;
     }
 
     private static int parseBlock(JSONObject j) {

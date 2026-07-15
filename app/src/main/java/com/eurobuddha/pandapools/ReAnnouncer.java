@@ -58,8 +58,12 @@ public class ReAnnouncer {
      */
     public void refreshFaded(final List<Pool> fundedOwn, final Listener cb) {
         if (fundedOwn == null || fundedOwn.isEmpty()) { cb.onAnnounced(0); return; }
-        // recent-window sentinel scan — NEVER megammr:true (see class note)
-        node.cmd("coins simplestate:true order:desc address:" + PoolCovenant.SENTINEL, new NodeApi.Cb() {
+        // recent-window sentinel scan — NEVER megammr:true (see class note) AND hard-bounded by depth (the
+        // unspendable sentinel's pile is unbounded; an unbounded scan overflows the IPC broadcast → app killed).
+        // Using the same window as discovery keeps the present-check self-stabilising: a beacon counts as faded
+        // exactly when it leaves this window, so re-announce refreshes it and the window holds ~one beacon/pool.
+        node.cmd("coins simplestate:true order:desc depth:" + PoolCovenant.SENTINEL_SCAN_DEPTH
+                + " address:" + PoolCovenant.SENTINEL, new NodeApi.Cb() {
             @Override public void onResult(JSONObject j) { announce(present(j), fundedOwn, cb); }
             @Override public void onError(String m) { cb.onAnnounced(0); }   // can't tell what's live → do nothing
         });
@@ -85,7 +89,7 @@ public class ReAnnouncer {
     }
 
     /**
-     * GOSSIP entry (background + foreground): run a full registry scan (Source-1 tracked ∪ Source-2 live
+     * GOSSIP entry (background + foreground): run a full registry scan (Source-1 OwnPoolStore ∪ Source-2 live
      * beacons), then re-announce EVERY funded pool whose beacon has faded — not just this node's own. This
      * is the self-healing mesh: any node that has discovered a pool helps keep it alive, so a pool created
      * on a now-offline phone stays findable while it holds reserves and at least one active node knows it.

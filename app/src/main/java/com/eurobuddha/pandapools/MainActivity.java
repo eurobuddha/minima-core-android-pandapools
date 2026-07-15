@@ -56,6 +56,7 @@ public class MainActivity extends AppCompatActivity {
     private boolean blockPollActive = false;
     private final Runnable pollTask = this::pollBlock;
     private boolean retrackedOwn = false;   // Layer-2 re-track runs once per session
+    private boolean untrackedSentinel = false;   // one-time sentinel-untrack cleanup runs once per session
     // Storage Access Framework pickers for the pool backup file (Increment 2): no storage permission and
     // no FileProvider — the user chooses where to save / which file to restore.
     private ActivityResultLauncher<String> saveDocLauncher;
@@ -205,9 +206,27 @@ public class MainActivity extends AppCompatActivity {
     private void setPaired(boolean paired) {
         pairingBanner.setVisibility(paired ? View.GONE : View.VISIBLE);
         if (paired) {
+            untrackSentinelOnce();   // clean up any legacy sentinel tracking BEFORE the first scan runs
             retrackOwnPools();   // Layer 2: re-track own pools so a wiped/re-synced node rediscovers them
             if (views != null) for (BaseView v : views) v.refresh();
         }
+    }
+
+    /**
+     * One-time cleanup: stop tracking the unspendable PANDAPOOLS sentinel. Builds up to 0.9.13 ran
+     * {@code coinnotify action:add} on it every scan; the sentinel's dust beacons never spend, so a busy node's
+     * returned set for {@code coins address:SENTINEL} grew until the RESPONSE broadcast overflowed the Binder
+     * limit and the OS killed the app (the uncatchable "can't deliver broadcast" IPC crash). Discovery no longer
+     * needs it — a plain depth-bounded scan of the recent chain finds live pools. Idempotent + harmless if the
+     * sentinel was never tracked; runs once per session.
+     */
+    private void untrackSentinelOnce() {
+        if (untrackedSentinel || node == null) return;
+        untrackedSentinel = true;
+        node.cmd("coinnotify action:remove address:" + PoolCovenant.SENTINEL, new NodeApi.Cb() {
+            @Override public void onResult(JSONObject j) {}
+            @Override public void onError(String m) {}
+        });
     }
 
     /**
