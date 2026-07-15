@@ -5,6 +5,18 @@
     <!-- Token icon graphics may live at remote/IPFS URLs -->
     <uses-permission android:name="android.permission.INTERNET" />
 
+    <!-- Doze-proof pool keep-alive (ported from minimaSwap): a foreground service woken by an exact allow-while-idle
+         alarm keeps pools refreshed before the cascade edge even while the app is closed. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" android:maxSdkVersion="32" />
+
     <!-- Android 11+ package visibility: needed to launch the node app and to deliver
          our targeted (setPackage) IPC broadcasts to it -->
     <queries>
@@ -31,6 +43,27 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- Resident host for the pool keep-alive. specialUse on API 34+ (uncapped, unlike dataSync's ~6h/day
+             Android-14 budget); dataSync fallback on 29-33. stopWithTask=false so swiping the app doesn't kill it. -->
+        <service
+            android:name=".PoolKeepAliveService"
+            android:exported="false"
+            android:stopWithTask="false"
+            android:foregroundServiceType="specialUse|dataSync">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Keeps the user's liquidity pools discoverable + tradeable on-chain (refreshes their reserves before they age out of the cascade) while the app is closed" />
+        </service>
+
+        <!-- exported=false is correct for both: protected system broadcasts reach non-exported receivers. -->
+        <receiver android:name=".BootReceiver" android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
+        <receiver android:name=".HeartbeatReceiver" android:exported="false" />
     </application>
 
 </manifest>

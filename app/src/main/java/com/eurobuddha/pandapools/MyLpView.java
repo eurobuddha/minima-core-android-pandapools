@@ -609,6 +609,7 @@ public class MyLpView extends BaseView {
                 pool.tokName = tokenName;   // nice label for the confirming card
                 LpStore.record(act, pool.address, pool.reserveM, pool.reserveT, act.chainBlock());
                 OwnPoolStore.record(act, pool);   // durable recovery recipe (exact covenant script)
+                act.ensureKeepAlive();            // first pool → bring up the Doze-proof keep-alive (idempotent)
                 ActivityLog.record(act, ActivityLog.CREATE, "Create MINIMA / " + tokenName + " pool  ·  "
                         + trim(pool.reserveM) + " MINIMA + " + trim(pool.reserveT) + " " + tokenName, txpowid, act.chainBlock());
                 act.runOnUiThread(() -> {
@@ -717,6 +718,7 @@ public class MyLpView extends BaseView {
                 pool.tokName = p.tokName;
                 LpStore.record(act, pool.address, pool.reserveM, pool.reserveT, act.chainBlock());
                 OwnPoolStore.record(act, pool);   // recipe for the new pool
+                act.ensureKeepAlive();            // ensure the keep-alive is up (idempotent)
                 LpStore.remove(act, p.address);   // the old pool's display snapshot is stale — drop it
                 // KEEP the old pool's recovery recipe until the migrate CONFIRMS: if the tx never lands the
                 // old pool is still live and must stay recoverable. Harmless once it does (emptied covenant).

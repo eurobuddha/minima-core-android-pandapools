@@ -12,9 +12,6 @@ import android.widget.TextView;
 import androidx.activity.result.ActivityResultLauncher;
 import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.appcompat.app.AppCompatActivity;
-import androidx.work.ExistingPeriodicWorkPolicy;
-import androidx.work.PeriodicWorkRequest;
-import androidx.work.WorkManager;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -123,21 +120,55 @@ public class MainActivity extends AppCompatActivity {
 
         // The block poll is started from onResume (and cancelled in onStop), so it never runs while hidden.
 
-        scheduleReannounceWork();   // Layer 5: keep pools discoverable while the app is closed/away
+        ensureKeepAlive();   // keep pools discoverable while the app is closed/away — Doze-proof (ported from minimaSwap)
     }
 
-    /** Schedule the Doze-safe periodic upkeep (WorkManager persists it across reboot). Now does two things per
-     *  run: keep MY pools' reserves fresh in the cascade (owner recreate, before the ~1700-block edge) + gossip
-     *  faded beacons. Cadence ~4h so even a Doze-delayed run catches a reserve before it passes REFRESH_BLOCKS
-     *  (1200) + one interval (~288 blk) = ~1488 < 1700. UPDATE (not KEEP) so this new cadence replaces the old
-     *  6h schedule left by a pre-0.9.12 install. */
-    private void scheduleReannounceWork() {
+    /**
+     * Bring up the Doze-proof keep-alive stack (ported from minimaSwap, which runs its market with 0 overnight
+     * offline windows). A plain WorkManager job is throttled by Samsung Doze and doesn't run overnight — which is
+     * why PandaPools' beacons/reserves went dark. Instead: a foreground service ({@link PoolKeepAliveService}) hosts
+     * the process, an exact-alarm {@link HeartbeatReceiver} wakes it every ~15 min under Doze to run the keep-fresh
+     * + re-announce, {@link PoolWatchWorker} relaunches it if killed, {@link BootReceiver} re-arms after reboot, and
+     * we ask for a battery-optimisation exemption (the single biggest cause of overnight death). All idempotent.
+     *
+     * Gated to LP nodes (owns ≥1 pool): a pure swapper has nothing to keep alive, so it gets NO foreground service,
+     * notification, wakelocks or battery-nag. Public + idempotent so {@link MyLpView} can (re)invoke it the moment
+     * the first pool is created — before that, OwnPoolStore is empty and this is a no-op.
+     */
+    public void ensureKeepAlive() {
+        if (OwnPoolStore.all(this).isEmpty()) return;   // not an LP node → nothing to keep alive
+        ensureNotificationPermission();
+        try { androidx.core.content.ContextCompat.startForegroundService(this, new Intent(this, PoolKeepAliveService.class)); } catch (Exception ignored) {}
+        try { PoolWatchWorker.schedule(this); } catch (Exception ignored) {}
+        try { HeartbeatReceiver.schedule(this); } catch (Exception ignored) {}
+        requestBatteryExemption();
+    }
+
+    /** API 33+: the ongoing keep-alive FGS notification is suppressed unless POST_NOTIFICATIONS is granted, so the
+     *  user gets no indication the keeper is running. Request it (mirrors minimaSwap). */
+    private void ensureNotificationPermission() {
         try {
-            PeriodicWorkRequest req = new PeriodicWorkRequest.Builder(
-                    ReAnnounceWorker.class, 4, java.util.concurrent.TimeUnit.HOURS).build();
-            WorkManager.getInstance(getApplicationContext())
-                    .enqueueUniquePeriodicWork("pp_reannounce", ExistingPeriodicWorkPolicy.UPDATE, req);
-        } catch (Throwable ignore) {}
+            if (android.os.Build.VERSION.SDK_INT >= 33
+                    && androidx.core.content.ContextCompat.checkSelfPermission(this, android.Manifest.permission.POST_NOTIFICATIONS)
+                        != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                androidx.core.app.ActivityCompat.requestPermissions(this, new String[]{ android.Manifest.permission.POST_NOTIFICATIONS }, 1);
+            }
+        } catch (Exception ignored) {}
+    }
+
+    /** Ask to be exempt from battery optimisation so keep-alive runs while the app is closed. Re-nag at most weekly
+     *  until granted (asking once and giving up is a leading cause of the overnight market disappearing). */
+    private void requestBatteryExemption() {
+        try {
+            android.os.PowerManager pm = (android.os.PowerManager) getSystemService(POWER_SERVICE);
+            if (pm == null || pm.isIgnoringBatteryOptimizations(getPackageName())) return;
+            android.content.SharedPreferences sp = getSharedPreferences("pandapools", MODE_PRIVATE);
+            long last = sp.getLong("batt_asked_at", 0), now = System.currentTimeMillis();
+            if (last != 0 && now - last < 7L * 24 * 60 * 60_000L) return;   // asked recently — don't nag every launch
+            sp.edit().putLong("batt_asked_at", now).apply();
+            startActivity(new Intent(android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                    android.net.Uri.parse("package:" + getPackageName())));
+        } catch (Exception ignored) {}
     }
 
     /**
