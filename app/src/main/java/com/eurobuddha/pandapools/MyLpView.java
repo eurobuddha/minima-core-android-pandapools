@@ -38,10 +38,12 @@ public class MyLpView extends BaseView {
     private final PoolManager mgr;
     private final Recovery recovery;
     private final ReAnnouncer reannouncer;
+    private final PoolRefresher refresher;
     private final Set<String> myKeys = new HashSet<>();
     private final List<Pool> myPools = new ArrayList<>();   // currently-owned funded pools (for fresh coin export)
     private boolean busy = false;
     private boolean reannounceChecked = false;              // Layer 5 faded-beacon check runs once per session
+    private boolean refreshChecked = false;                 // keep-fresh reserve check runs once per session
     private BigDecimal usdtAnchor;                          // tier-2 create anchor: aggregate live USDT-pool spot (Σt/Σm), null if none
 
     // Receives the shared PoolRepository's scan result (one scan for the whole app). render() filters to the
@@ -69,6 +71,7 @@ public class MyLpView extends BaseView {
         mgr = new PoolManager(a.node());
         recovery = new Recovery(a.node());
         reannouncer = new ReAnnouncer(a.node());
+        refresher = new PoolRefresher(a.node());
 
         Ui.card(find(R.id.lpSummaryCard));
         TextView create = find(R.id.lpCreateBtn);
@@ -132,6 +135,7 @@ public class MyLpView extends BaseView {
         }
         myPools.clear(); myPools.addAll(mine);   // for a backup's fresh coinexport (these carry live coinids)
         maybeReannounce(all);                     // Layer 5 gossip: refresh faded beacons for ALL funded pools (once/session)
+        maybeRefresh(mine);                       // keep-fresh: recreate MY aging reserves before they leave the cascade
 
         // tier-2 create anchor: the aggregate spot of ALL live USDT pools (Σ reserveT / Σ reserveM). Arbitrage
         // keeps this near true market, so a new pool opened at it sits in line with the on-chain market. Used
@@ -813,6 +817,19 @@ public class MyLpView extends BaseView {
         reannouncer.refreshFaded(new ArrayList<>(allFunded), posted -> {
             if (posted > 0) status("Re-published " + posted + " pool" + (posted == 1 ? "" : "s")
                     + " to the registry so fresh nodes can find " + (posted == 1 ? "it" : "them") + ".");
+        });
+    }
+
+    /** Once per session, KEEP-FRESH: for each of MY pools whose reserves are aging toward the ~1700-block cascade
+     *  edge, recreate them in place (owner grow-in-place, same amounts + a fresh beacon) so they stay young and
+     *  every light node keeps seeing them. Owner-signed, no fund movement, capped in {@link PoolRefresher}. Age is
+     *  unaffected (My LP age reads LpStore, not the coin). */
+    private void maybeRefresh(List<Pool> mine) {
+        if (refreshChecked || mine == null || mine.isEmpty() || act.node() == null || act.chainBlock() <= 0) return;
+        refreshChecked = true;
+        refresher.refreshAging(new ArrayList<>(mine), act.chainBlock(), posted -> {
+            if (posted > 0) status("Refreshed " + posted + " pool" + (posted == 1 ? "" : "s")
+                    + " so " + (posted == 1 ? "it stays" : "they stay") + " visible to other devices.");
         });
     }
 

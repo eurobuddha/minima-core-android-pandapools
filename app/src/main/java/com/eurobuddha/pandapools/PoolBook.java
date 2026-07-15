@@ -159,6 +159,7 @@ public class PoolBook {
                 @Override public void onResult(JSONObject j) {
                     Object resp = j.opt("response");
                     JSONArray cs = resp instanceof JSONArray ? (JSONArray) resp : new JSONArray();
+                    final int[] mBlk = {0}, tBlk = {0};   // created block of the kept coin per leg (for reserve age)
                     for (int i = 0; i < cs.length(); i++) {
                         JSONObject c = cs.optJSONObject(i);
                         if (c == null || c.optBoolean("spent", false)) continue;
@@ -171,6 +172,7 @@ public class PoolBook {
                             if (pool.reserveM == null || amt.compareTo(pool.reserveM) > 0) {
                                 pool.reserveM = amt;
                                 pool.coinidM = c.optString("coinid", "");
+                                mBlk[0] = c.optInt("created", 0);
                             }
                         } else if (pool.tok.equalsIgnoreCase(tid)) {
                             BigDecimal amt = new BigDecimal(c.optString("tokenamount", c.optString("amount", "0")));
@@ -179,9 +181,11 @@ public class PoolBook {
                                 pool.coinidT = c.optString("coinid", "");
                                 pool.tokName = Util.tokenName(c.opt("token"), tid);
                                 pool.tokDecimals = Util.tokenDecimals(c.opt("token"));
+                                tBlk[0] = c.optInt("created", 0);
                             }
                         }
                     }
+                    pool.reserveBlock = Math.max(mBlk[0], tBlk[0]);   // most-recent recreate = the pool's reserve age anchor
                     if (pending.decrementAndGet() == 0) done(pools, cb);
                 }
                 @Override public void onError(String m) { if (pending.decrementAndGet() == 0) done(pools, cb); }

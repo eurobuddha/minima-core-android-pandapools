@@ -398,6 +398,54 @@ public class PoolManager {
         });
     }
 
+    // ===================================================================== REFRESH (keep fresh in the cascade)
+
+    /**
+     * Owner-signed KEEP-FRESH: recreate the pool's two reserve coins IN PLACE — spend {@code coinidM}/{@code coinidT}
+     * and re-output the SAME amounts to the SAME covenant address (the covenant's owner grow-in-place branch),
+     * plus a fresh announce beacon — one transaction. New coin IDs (young → back inside the ~1700-block cascade →
+     * visible again to every light node's {@code coins address:X}, so cross-device discovery + swap routing work
+     * without megammr or any server), but the address, reserves, KMIN and identity are unchanged and NOTHING is
+     * burned (MINIMA: reserveM+funding in = reserveM+dust+change out; token: reserveT in = reserveT out).
+     *
+     * This is a {@code deposit(0,0)} + beacon. It spends the covenant coins so it needs {@code $OPK} — owner-only,
+     * unlike the node-wide beacon re-announce. The covenant's {@code GETOUTAMT GTE @AMOUNT} guard makes a mis-built
+     * refresh fail CLOSED (a reserve can only be recreated at the same address for >= its amount), so it can never
+     * lose or move funds. Callers fire it only when a pool's reserves are aging toward the cascade edge.
+     *
+     * Age is NOT reset by this: My LP age is {@code chainBlock - LpStore.block} (local, address-keyed), and this
+     * does not touch LpStore — so the displayed age keeps counting from the original create block.
+     */
+    public void refresh(final Pool p, final Result cb) {
+        if (p == null || !p.funded() || isEmpty(p.opk) || isEmpty(p.address) || isEmpty(p.tok) || isEmpty(p.oadr)
+                || isEmpty(p.coinidM) || isEmpty(p.coinidT)) { cb.onFailed("incomplete pool record"); return; }
+        final String tokArg = " tokenid:" + p.tok;
+        // a tiny MINIMA funding coin for the beacon dust (excludes the pool's own address — never a pool coin)
+        selectCoins(Util.MINIMA_TOKENID, ANNOUNCE_DUST, p.address, new SelCb() {
+            @Override public void ok(List<Coin> mfunds, BigDecimal msum) {
+                String txid = "pprefresh_" + tag();
+                List<String> cmds = new ArrayList<>();
+                cmds.add("txncreate id:" + txid);
+                cmds.add("txninput id:" + txid + " coinid:" + p.coinidM);   // 0 pool MINIMA (even)
+                cmds.add("txninput id:" + txid + " coinid:" + p.coinidT);   // 1 pool token  (odd)
+                for (Coin c : mfunds) cmds.add("txninput id:" + txid + " coinid:" + c.coinid);
+                // outputs 0/1 recreate the SAME reserves at the SAME address (owner grow branch; GTE holds at equality)
+                cmds.add("txnoutput id:" + txid + " amount:" + amt(p.reserveM) + " address:" + p.address + " storestate:false");
+                cmds.add("txnoutput id:" + txid + " amount:" + amt(p.reserveT) + " address:" + p.address + tokArg + " storestate:false");
+                // fresh discovery beacon (dust at the sentinel, params in state)
+                cmds.add("txnoutput id:" + txid + " amount:" + amt(ANNOUNCE_DUST) + " address:" + PoolCovenant.SENTINEL + " storestate:true");
+                // MINIMA change to the funding coin's own (non-owner) address — NOT $OADR (see buildCreate rationale)
+                String chg = mfunds.isEmpty() ? p.oadr : mfunds.get(0).address;
+                BigDecimal change = msum.subtract(ANNOUNCE_DUST);
+                if (change.signum() > 0)
+                    cmds.add("txnoutput id:" + txid + " amount:" + amt(change) + " address:" + chg + " storestate:false");
+                addAnnounceState(cmds, txid, p);
+                ownerSignPost(txid, p.opk, cmds, cb);   // txnsign auto (funding) + txnsign $OPK (owner grow branch)
+            }
+            @Override public void none() { cb.onFailed("no spare MINIMA to refresh the pool"); }
+        });
+    }
+
     private static boolean isEmpty(String s) { return s == null || s.isEmpty(); }
 
     // ===================================================================== helpers

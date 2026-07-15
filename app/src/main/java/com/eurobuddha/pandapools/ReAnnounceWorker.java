@@ -51,14 +51,18 @@ public class ReAnnounceWorker extends Worker {
             try {
                 NodeApi node = new NodeApi(app, null);   // applicationContext → callbacks always deliver (no Activity)
                 nodeRef.set(node);
-                new ReAnnouncer(node).refreshFadedFromScan(posted -> { destroy.run(); latch.countDown(); });
+                // Keep MY pools fresh in the cascade first (owner-signed reserve recreate — the thing that actually
+                // stops light nodes losing them), THEN gossip any faded beacons. Chained so the node is torn down
+                // and the latch released only after both complete.
+                new PoolRefresher(node).refreshAgingFromScan(app, r ->
+                        new ReAnnouncer(node).refreshFadedFromScan(posted -> { destroy.run(); latch.countDown(); }));
             } catch (Throwable t) {
                 destroy.run();
                 latch.countDown();
             }
         });
-        // Budget comfortably above the 180s write timeout so a genuinely-slow re-announce isn't abandoned.
-        try { latch.await(200, TimeUnit.SECONDS); } catch (InterruptedException ignore) {}
+        // Budget comfortably above the 180s write timeout, with headroom for two chained passes (refresh + gossip).
+        try { latch.await(300, TimeUnit.SECONDS); } catch (InterruptedException ignore) {}
         main.post(destroy);   // timeout path cleanup — idempotent, no-op if the callback already destroyed it
         return Result.success();   // always success — best-effort upkeep, never a retry storm
     }

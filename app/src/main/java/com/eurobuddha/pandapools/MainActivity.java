@@ -126,14 +126,17 @@ public class MainActivity extends AppCompatActivity {
         scheduleReannounceWork();   // Layer 5: keep pools discoverable while the app is closed/away
     }
 
-    /** Schedule the Doze-safe periodic beacon re-announce (WorkManager persists it across reboot; KEEP so
-     *  we don't reschedule on every launch). Loose cadence — a beacon lasts ~a day. */
+    /** Schedule the Doze-safe periodic upkeep (WorkManager persists it across reboot). Now does two things per
+     *  run: keep MY pools' reserves fresh in the cascade (owner recreate, before the ~1700-block edge) + gossip
+     *  faded beacons. Cadence ~4h so even a Doze-delayed run catches a reserve before it passes REFRESH_BLOCKS
+     *  (1200) + one interval (~288 blk) = ~1488 < 1700. UPDATE (not KEEP) so this new cadence replaces the old
+     *  6h schedule left by a pre-0.9.12 install. */
     private void scheduleReannounceWork() {
         try {
             PeriodicWorkRequest req = new PeriodicWorkRequest.Builder(
-                    ReAnnounceWorker.class, 6, java.util.concurrent.TimeUnit.HOURS).build();
+                    ReAnnounceWorker.class, 4, java.util.concurrent.TimeUnit.HOURS).build();
             WorkManager.getInstance(getApplicationContext())
-                    .enqueueUniquePeriodicWork("pp_reannounce", ExistingPeriodicWorkPolicy.KEEP, req);
+                    .enqueueUniquePeriodicWork("pp_reannounce", ExistingPeriodicWorkPolicy.UPDATE, req);
         } catch (Throwable ignore) {}
     }
 

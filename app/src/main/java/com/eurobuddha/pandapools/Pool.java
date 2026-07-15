@@ -32,9 +32,17 @@ public class Pool {
     public String coinidM;
     public BigDecimal reserveT;    // token reserve (y, scaled token units)
     public String coinidT;
+    /** Block at which the reserve coins were created (the YOUNGER leg — a swap/refresh recreates both, so both
+     *  are usually equal; take the max so age reflects the most recent recreate). Set when reserves are scanned;
+     *  0 = unknown. Used by the keep-fresh refresher to detect reserves aging toward the cascade edge. */
+    public int reserveBlock = 0;
 
     public boolean funded() { return reserveM != null && reserveT != null
             && reserveM.signum() > 0 && reserveT.signum() > 0; }
+
+    /** How many blocks old the reserves are (0 if unknown). A pool must be refreshed before this passes the
+     *  cascade length (~1700), or its reserves fall into the megammr-only archive and light nodes lose them. */
+    public int reserveAge(int chainBlock) { return reserveBlock > 0 && chainBlock > reserveBlock ? chainBlock - reserveBlock : 0; }
 
     /** Constant product K = x*y (the current invariant value; grows with each swap's fee). */
     public BigDecimal k() { return funded() ? reserveM.multiply(reserveT) : BigDecimal.ZERO; }
