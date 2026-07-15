@@ -1,0 +1,11 @@
+[Unit]
+Description=Run the PandaPools anchor re-announcer periodically (keeps every funded pool's beacon fresh)
+
+[Timer]
+OnActiveSec=2min
+OnUnitActiveSec=2h30min
+Persistent=true
+RandomizedDelaySec=3min
+
+[Install]
+WantedBy=timers.target

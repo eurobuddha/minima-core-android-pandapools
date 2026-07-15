@@ -1,0 +1,17 @@
+[Unit]
+Description=PandaPools beacon re-announcer (cloud anchor)
+Documentation=https://github.com/eurobuddha/minima-core-android-pandapools
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+Environment=PP_RPC=http://127.0.0.1:9005/
+Environment=PP_FAUCET=https://eurobuddha.com/faucet/api/request
+Environment=PP_STALE_BLOCKS=900
+Environment=PP_MIN_SENDABLE=0.00002
+Environment=PP_MAX_PER_RUN=40
+ExecStart=/usr/bin/python3 /root/pandapools-anchor/reannouncer.py
+# never a fund risk beyond dust beacons; keep it quiet + bounded
+TimeoutStartSec=600
+Nice=10
