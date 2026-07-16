@@ -40,8 +40,9 @@ public class ReAnnouncer {
     private static final int MAX_PER_RUN = 8;
 
     // Keys re-announced during THIS process — so a config-change recreate (e.g. theme toggle) can't
-    // double-post a beacon before the first one confirms into the sentinel window. Cleared on process death,
-    // by which point the beacon has long confirmed.
+    // double-post a beacon before the first one confirms into the sentinel window. RE-ARMED (key removed) in
+    // announce() the moment that beacon shows up live in the recent window, so a later re-fade re-announces
+    // again (an offline owner's pool survives multiple fade cycles). Cleared entirely on process death.
     private static final Set<String> ANNOUNCED = java.util.Collections.synchronizedSet(new HashSet<>());
 
     private final NodeApi node;
@@ -58,11 +59,12 @@ public class ReAnnouncer {
      */
     public void refreshFaded(final List<Pool> fundedOwn, final Listener cb) {
         if (fundedOwn == null || fundedOwn.isEmpty()) { cb.onAnnounced(0); return; }
-        // recent-window sentinel scan — NEVER megammr:true (see class note) AND hard-bounded by depth (the
-        // unspendable sentinel's pile is unbounded; an unbounded scan overflows the IPC broadcast → app killed).
-        // Using the same window as discovery keeps the present-check self-stabilising: a beacon counts as faded
-        // exactly when it leaves this window, so re-announce refreshes it and the window holds ~one beacon/pool.
-        node.cmd("coins simplestate:true order:desc depth:" + PoolCovenant.SENTINEL_SCAN_DEPTH
+        // PROACTIVE present-check: scan the TIGHTER REANNOUNCE_DEPTH window (not the wider discovery depth), so a
+        // beacon counts as "faded" — and gets re-announced — once it is older than REANNOUNCE_DEPTH, i.e. BEFORE
+        // it would leave the SENTINEL_SCAN_DEPTH discovery window. That's what keeps a live pool's beacon from ever
+        // lapsing on a non-owner node (the cross-device flicker fix). NEVER megammr:true (see class note); still
+        // depth-bounded so the reply stays IPC-safe.
+        node.cmd("coins simplestate:true order:desc depth:" + PoolCovenant.REANNOUNCE_DEPTH
                 + " address:" + PoolCovenant.SENTINEL, new NodeApi.Cb() {
             @Override public void onResult(JSONObject j) { announce(present(j), fundedOwn, cb); }
             @Override public void onError(String m) { cb.onAnnounced(0); }   // can't tell what's live → do nothing
@@ -143,7 +145,16 @@ public class ReAnnouncer {
         for (Pool p : fundedOwn) {
             if (p == null || p.opk == null || p.oadr == null || p.tok == null || p.kmin == null) continue;
             String k = key(p.opk, p.oadr, p.tok, p.kmin);
-            if (present.contains(k) || ANNOUNCED.contains(k)) continue;   // live beacon OR already re-posted this process
+            if (present.contains(k)) {
+                // Beacon is live in the recent window again → RE-ARM: drop the process-dedup guard so that when this
+                // beacon fades AGAIN (~20h later) we re-announce it, keeping an offline owner's pool alive across
+                // multiple fade cycles for the whole life of this (long-lived) foreground process. Without this the
+                // static set is sticky and a discovered pool is re-announced at most ONCE per process, letting its
+                // beacon go permanently dark on a later re-fade. Mirrors MDS service.js `delete ANN_SVC[abk]`.
+                ANNOUNCED.remove(k);
+                continue;
+            }
+            if (ANNOUNCED.contains(k)) continue;   // already re-posted this process, beacon not yet confirmed into window
             faded.add(p);
         }
         if (faded.isEmpty()) { cb.onAnnounced(0); return; }

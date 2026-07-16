@@ -43,16 +43,32 @@ public final class PoolCovenant {
     public static final String SENTINEL = "0x50414E4441504F4F4C53";
 
     /**
-     * Hard depth bound (blocks back from tip) for EVERY {@code coins address:SENTINEL} scan. The sentinel is an
-     * unspendable address, so announce beacons accumulate in the unpruned window (anchor + keep-fresh + every
-     * node's re-announce). An UNBOUNDED scan returned ~312 KB on a busy phone → the node's RESPONSE broadcast
-     * exceeded the Binder transaction limit → the OS killed the app ("can't deliver broadcast", the uncatchable
-     * IPC crash — see [[minima-ipc-gotchas]]). Measured live: this depth keeps every currently-live pool (their
-     * freshest beacon is <400 blocks old) while capping the reply to a few tens of KB — a large margin under the
-     * ~256 KB danger. The bound is self-stabilising: re-announce only fires once a beacon has faded out of THIS
-     * window, so the window holds ~one beacon per pool per active node, not the whole multi-day history.
+     * DISCOVERY depth bound (blocks back from tip) for the {@code coins address:SENTINEL} scan. The sentinel is an
+     * unspendable address, so a scan must stay bounded — an UNBOUNDED scan of a coinnotify-accumulated pile once
+     * returned ~312 KB and overflowed the IPC broadcast (the uncatchable "can't deliver broadcast" crash, see
+     * [[minima-ipc-gotchas]]). But that pile came from the {@code coinnotify add} we REMOVED in 0.9.14, so a clean
+     * node's sentinel is tiny: measured ~8 KB even UNBOUNDED (13 beacons). So this is now set NEAR the full ~1700
+     * cascade so a pool stays discoverable for essentially its whole life (~20h), not just ~5.5h — the fix for
+     * cross-device flicker where a beacon aged past a tight window and vanished from non-owner nodes. Still a bound
+     * (not unbounded) so a pathological/attacker beacon pile past 1500 blocks is capped. Re-verify the reply stays
+     * well under 256 KB on a busy node before raising further.
      */
-    public static final int SENTINEL_SCAN_DEPTH = 400;
+    public static final int SENTINEL_SCAN_DEPTH = 1500;
+
+    /**
+     * PROACTIVE re-announce threshold: {@link ReAnnouncer} re-posts a pool's beacon once it is older than this —
+     * comfortably BEFORE it would fall out of the {@link #SENTINEL_SCAN_DEPTH} discovery window — so a live pool's
+     * beacon never lapses on any node (no discovery flicker). Below the discovery depth with a wide margin, and
+     * below keep-fresh's REFRESH_BLOCKS so an owner's own refresh (which posts a fresh beacon) usually pre-empts it.
+     *
+     * HARD INVARIANT — SENTINEL_SCAN_DEPTH > REANNOUNCE_DEPTH + (beacon confirm-lag, a few blocks). A re-announce
+     * fires at age REANNOUNCE_DEPTH and its replacement beacon needs several blocks to confirm into the window; if
+     * the discovery depth is not comfortably ABOVE the re-announce threshold, a beacon can leave the discovery
+     * window before its replacement lands → the exact cross-device flicker this design removes. 1500 vs 1000 gives
+     * ~500 blocks of slack. If IPC exposure ever forces a smaller discovery depth, lower BOTH together (keep
+     * discovery ≈ 1.5× re-announce), never just one.
+     */
+    public static final int REANNOUNCE_DEPTH = 1000;
 
     private PoolCovenant() {}
 

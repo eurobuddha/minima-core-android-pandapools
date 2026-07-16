@@ -28,10 +28,13 @@ public class PoolRefresher {
 
     public interface Listener { void onRefreshed(int posted); }
 
-    /** Refresh a reserve coin once it is older than this, so it never reaches the ~1700-block cascade edge. The
-     *  margin (1700 - REFRESH_BLOCKS ≈ 500) must exceed the worst-case gap between refresh checks (a Doze-delayed
-     *  ~4h background run ≈ 288 blocks) so a fully-idle owner phone still catches it in time. */
-    public static final int REFRESH_BLOCKS = 1200;
+    /** Refresh a reserve coin once it is older than this, so its reserves stay YOUNG enough to sit inside every
+     *  node's unpruned window — not just the ~1700-block cascade edge. Lowered 1200 → 900 because a freshly-resynced
+     *  node's window can be well under 1200 blocks (~1059 observed), so at 1200 a pool's reserves aged out on that
+     *  node BEFORE keep-fresh ever refreshed them → it vanished from that node (cross-device divergence). 900 keeps
+     *  reserves young enough for a short window with margin, still leaves a big gap to the cascade edge, and a fresh
+     *  refresh also re-posts the beacon so a maintained pool's beacon stays well inside REANNOUNCE_DEPTH too. */
+    public static final int REFRESH_BLOCKS = 900;
     /** Per-run cap so a node with many pools doesn't fire a burst of PoW at once; later runs cover the rest. */
     private static final int MAX_PER_RUN = 8;
     /** A refresh takes ~a block or two to confirm; until then the reserves still read as old, so a second trigger
