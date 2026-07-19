@@ -711,9 +711,19 @@ public class MyLpView extends BaseView {
                 .show();
     }
 
+    /** Self-heal the owner key ($OPK) before an owner-signed action. $OPK is a newaddress key (index >= 64) a
+     *  seed-only restore regenerates ASYNCHRONOUSLY, so acting too soon after a restore fails with "Public Key
+     *  not found". OwnerKeyRecovery.ensure is a no-op when the node already holds the key (one extra keys check);
+     *  a not-yet-ready node just proceeds (the action itself surfaces any real error). */
+    private void ensureOwner(List<String> opks, Runnable then) {
+        NodeApi n = act.node();
+        if (n == null) { then.run(); return; }
+        OwnerKeyRecovery.ensure(n, opks, regenerated -> then.run());
+    }
+
     private void doMigrate(Pool p, BigDecimal x, BigDecimal y) {
         busy = true; status("Migrating your pool…");
-        mgr.migrate(p, x, y, new PoolManager.CreateResult() {
+        ensureOwner(java.util.Collections.singletonList(p.opk), () -> mgr.migrate(p, x, y, new PoolManager.CreateResult() {
             @Override public void onCreated(Pool pool, String txpowid) {
                 pool.tokName = p.tokName;
                 LpStore.record(act, pool.address, pool.reserveM, pool.reserveT, act.chainBlock());
@@ -730,7 +740,7 @@ public class MyLpView extends BaseView {
                 ActivityLog.recordFailed(act, ActivityLog.MIGRATE, "Migrate MINIMA / " + p.tokenLabel() + " pool", message);
                 act.runOnUiThread(() -> { busy = false; status("Migrate failed: " + message); });
             }
-        });
+        }));
     }
 
     // ---- close ----
@@ -746,7 +756,7 @@ public class MyLpView extends BaseView {
                     final String closeSummary = "Withdraw MINIMA / " + p.tokenLabel() + "  ·  "
                             + trim(p.reserveM) + " MINIMA + " + trim(p.reserveT) + " " + p.tokenLabel() + " back to wallet";
                     final String closeOadr = p.oadr;
-                    mgr.close(p, new PoolManager.Result() {
+                    ensureOwner(java.util.Collections.singletonList(p.opk), () -> mgr.close(p, new PoolManager.Result() {
                         @Override public void onPosted(String txpowid) {
                             LpStore.remove(act, p.address);   // pool closed — drop its display snapshot
                             // KEEP the OwnPoolStore recovery recipe here: a posted-but-unconfirmed close that
@@ -767,7 +777,7 @@ public class MyLpView extends BaseView {
                             ActivityLog.recordFailed(act, ActivityLog.CLOSE, closeSummary, message);
                             act.runOnUiThread(() -> { busy = false; status("Close failed: " + message); });
                         }
-                    });
+                    }));
                 })
                 .setNegativeButton("Cancel", null)
                 .show();
@@ -794,16 +804,22 @@ public class MyLpView extends BaseView {
      *  ($OADR) onward to default-64 wallet addresses. Rescues funds a pre-fix close left stranded. */
     private void doCollect() {
         List<String> oadrs = new ArrayList<>();
-        for (Pool p : OwnPoolStore.all(act)) if (p.oadr != null && !p.oadr.isEmpty()) oadrs.add(p.oadr);
+        List<String> opks = new ArrayList<>();
+        for (Pool p : OwnPoolStore.all(act)) {
+            if (p.oadr != null && !p.oadr.isEmpty()) oadrs.add(p.oadr);
+            if (p.opk != null && !p.opk.isEmpty()) opks.add(p.opk);
+        }
         if (oadrs.isEmpty()) { status("No pools on record to collect from."); return; }
         status("Collecting withdrawn funds to your wallet…");
-        mgr.sweepOwnerFunds(oadrs, (addressesForwarded, coins) -> act.runOnUiThread(() -> {
+        // $OADR is RETURN SIGNEDBY($OPK) → the auto sweep still needs the owner key. Regenerate any missing ones
+        // first (no-op when already held) so an explicit Collect self-heals after a seed restore.
+        ensureOwner(opks, () -> mgr.sweepOwnerFunds(oadrs, (addressesForwarded, coins) -> act.runOnUiThread(() -> {
             if (addressesForwarded > 0) {
                 status("Moved withdrawn funds from " + addressesForwarded + " pool"
                         + (addressesForwarded == 1 ? "" : "s") + " to your wallet ✓");
                 act.pools().refresh();
             } else status("Nothing to collect — no spendable funds are waiting at your pool payout addresses.");
-        }));
+        })));
     }
 
     // ---- network discoverability (Layer 5) ----
