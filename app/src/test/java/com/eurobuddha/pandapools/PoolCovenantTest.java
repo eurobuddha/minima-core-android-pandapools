@@ -102,7 +102,10 @@ public class PoolCovenantTest {
     @Test public void constantsAreLocked() {
         // Guard the two values that, if changed, either strand funds (sentinel) or reintroduce the IPC crash (depth).
         assertEquals("0x50414E4441504F4F4C53", PoolCovenant.SENTINEL);
-        assertEquals(400, PoolCovenant.SENTINEL_SCAN_DEPTH);
+        // 400 until 0.9.15, which widened the discovery window to 1500 to stop pools flickering out of
+        // view on non-owner nodes. Hard invariant: SENTINEL_SCAN_DEPTH > REANNOUNCE_DEPTH + confirm-lag.
+        assertEquals(1500, PoolCovenant.SENTINEL_SCAN_DEPTH);
+        assertTrue(PoolCovenant.SENTINEL_SCAN_DEPTH > PoolCovenant.REANNOUNCE_DEPTH);
         assertEquals(new BigDecimal("18446744073709551615"), PoolCovenant.MININUMBER_MAX);
     }
 }

@@ -56,6 +56,18 @@
                 android:value="Keeps the user's liquidity pools discoverable + tradeable on-chain (refreshes their reserves before they age out of the cascade) while the app is closed" />
         </service>
 
+        <!-- Hands the staged accounting-export ZIP to whichever app the user picks in the share sheet
+             (mail, Drive, …). Grants are per-Intent and read-only; see res/xml/file_paths.xml. -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+
         <!-- exported=false is correct for both: protected system broadcasts reach non-exported receivers. -->
         <receiver android:name=".BootReceiver" android:exported="false">
             <intent-filter>

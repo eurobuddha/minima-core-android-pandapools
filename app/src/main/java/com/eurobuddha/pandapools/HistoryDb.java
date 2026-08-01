@@ -80,17 +80,49 @@ public class HistoryDb extends SQLiteOpenHelper {
                 "SELECT txpowid,block,timemilli,direction,incoming,tokenid,tokenname,amount,deltas,counterparty,inputs,outputs,synced_at FROM "
                         + TX + where + " ORDER BY block DESC, timemilli DESC LIMIT " + limit + " OFFSET " + offset, args);
         try {
-            while (c.moveToNext()) {
-                HistoryEntry e = new HistoryEntry();
-                e.txpowid = c.getString(0); e.block = c.getLong(1); e.timemilli = c.getLong(2);
-                e.direction = c.getString(3); e.incoming = c.getInt(4) == 1;
-                e.tokenid = c.getString(5); e.tokenName = c.getString(6); e.amount = c.getString(7);
-                e.deltas = c.getString(8); e.counterparty = c.getString(9);
-                e.inputs = c.getString(10); e.outputs = c.getString(11); e.syncedAt = c.getLong(12);
-                out.add(e);
-            }
+            while (c.moveToNext()) out.add(read(c));
         } finally { c.close(); }
         return out;
+    }
+
+    /**
+     * Every stored transaction in a time window, OLDEST FIRST — the order the accounting export needs, since
+     * a running balance only means anything accumulated forwards. Unbounded by design: a ledger with a
+     * LIMIT on it does not reconcile.
+     *
+     * The window is on {@code timemilli} (wall-clock, what a tax year is defined in) rather than block
+     * height. Pass {@code fromMs = 0} and {@code toMs = Long.MAX_VALUE} for all time.
+     */
+    public List<HistoryEntry> listChronological(long fromMs, long toMs) {
+        List<HistoryEntry> out = new ArrayList<>();
+        Cursor c = getReadableDatabase().rawQuery(
+                "SELECT txpowid,block,timemilli,direction,incoming,tokenid,tokenname,amount,deltas,counterparty,inputs,outputs,synced_at FROM "
+                        + TX + " WHERE timemilli BETWEEN ? AND ? ORDER BY block ASC, timemilli ASC",
+                new String[]{String.valueOf(fromMs), String.valueOf(toMs)});
+        try {
+            while (c.moveToNext()) out.add(read(c));
+        } finally { c.close(); }
+        return out;
+    }
+
+    /** Lowest and highest block present, as {@code {min, max}}; {@code {0, 0}} when the table is empty.
+     *  Reported in the export's provenance block so the coverage of the ledger is explicit. */
+    public long[] blockRange() {
+        Cursor c = getReadableDatabase().rawQuery("SELECT MIN(block), MAX(block) FROM " + TX, null);
+        try {
+            if (c.moveToFirst()) return new long[]{c.getLong(0), c.getLong(1)};
+        } finally { c.close(); }
+        return new long[]{0, 0};
+    }
+
+    private static HistoryEntry read(Cursor c) {
+        HistoryEntry e = new HistoryEntry();
+        e.txpowid = c.getString(0); e.block = c.getLong(1); e.timemilli = c.getLong(2);
+        e.direction = c.getString(3); e.incoming = c.getInt(4) == 1;
+        e.tokenid = c.getString(5); e.tokenName = c.getString(6); e.amount = c.getString(7);
+        e.deltas = c.getString(8); e.counterparty = c.getString(9);
+        e.inputs = c.getString(10); e.outputs = c.getString(11); e.syncedAt = c.getLong(12);
+        return e;
     }
 
     public void setMeta(String k, String v) {

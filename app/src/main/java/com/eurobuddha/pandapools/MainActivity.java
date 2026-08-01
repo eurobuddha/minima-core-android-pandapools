@@ -61,7 +61,10 @@ public class MainActivity extends AppCompatActivity {
     // no FileProvider — the user chooses where to save / which file to restore.
     private ActivityResultLauncher<String> saveDocLauncher;
     private ActivityResultLauncher<String[]> openDocLauncher;
-    private Consumer<Uri> pendingSave, pendingOpen;
+    // A CreateDocument contract's mime type is fixed when it is registered, so the accounting export
+    // (a ZIP) needs its own launcher rather than reusing the JSON backup one.
+    private ActivityResultLauncher<String> saveZipLauncher;
+    private Consumer<Uri> pendingSave, pendingOpen, pendingZip;
 
     @Override protected void onCreate(Bundle b) {
         super.onCreate(b);
@@ -75,6 +78,10 @@ public class MainActivity extends AppCompatActivity {
         });
         openDocLauncher = registerForActivityResult(new ActivityResultContracts.OpenDocument(), uri -> {
             Consumer<Uri> cb = pendingOpen; pendingOpen = null;
+            if (cb != null) cb.accept(uri);
+        });
+        saveZipLauncher = registerForActivityResult(new ActivityResultContracts.CreateDocument("application/zip"), uri -> {
+            Consumer<Uri> cb = pendingZip; pendingZip = null;
             if (cb != null) cb.accept(uri);
         });
 
@@ -319,6 +326,12 @@ public class MainActivity extends AppCompatActivity {
         pendingSave = onPicked;
         try { saveDocLauncher.launch(suggestedName); }
         catch (Exception e) { pendingSave = null; if (onPicked != null) onPicked.accept(null); }
+    }
+    /** SAF "create document" picker to SAVE the accounting export ZIP (null URI if cancelled). */
+    public void pickSaveZip(String suggestedName, Consumer<Uri> onPicked) {
+        pendingZip = onPicked;
+        try { saveZipLauncher.launch(suggestedName); }
+        catch (Exception e) { pendingZip = null; if (onPicked != null) onPicked.accept(null); }
     }
     /** SAF "open document" picker to RESTORE a backup; the callback gets the chosen URI (null if cancelled). */
     public void pickOpenFile(Consumer<Uri> onPicked) {

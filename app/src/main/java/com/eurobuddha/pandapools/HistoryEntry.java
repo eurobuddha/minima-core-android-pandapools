@@ -118,11 +118,22 @@ public class HistoryEntry {
     public String reshuffleLabel() {
         return isSplit() ? ("Split · " + count(outputs) + " coins") : ("Consolidation · " + count(inputs) + " coins");
     }
-    /** If this tx is a two-token SWAP (exactly two opposite-sign non-zero deltas — e.g. MINIMA↔token),
-     *  format BOTH legs "−A TOK  ·  +B TOK" so a swap shows what went out AND what came in (not just the
-     *  single largest leg). Returns null for non-swap-shaped txns (caller keeps the single-token display).
-     *  Reads the persisted {@link #deltas} map only — no extra node call. */
-    public String swapLegsDisplay() {
+    /** The two sides of a two-token swap: what left the wallet and what arrived. Amounts are as stored
+     *  (negAmount is negative, posAmount positive). */
+    public static final class Legs {
+        public final String posTokenid, negTokenid;
+        public final BigDecimal posAmount, negAmount;
+        Legs(String posTid, BigDecimal posAmt, String negTid, BigDecimal negAmt) {
+            this.posTokenid = posTid; this.posAmount = posAmt;
+            this.negTokenid = negTid; this.negAmount = negAmt;
+        }
+    }
+
+    /** If this tx is a two-token SWAP (EXACTLY two opposite-sign non-zero deltas — e.g. MINIMA↔token),
+     *  the two legs; otherwise null. Reads the persisted {@link #deltas} map only — no extra node call.
+     *  Both {@link #swapLegsDisplay()} (UI) and the accounting export read this, so the shape test lives
+     *  in one place. */
+    public Legs legs() {
         try {
             JSONObject d = new JSONObject(deltas == null ? "{}" : deltas);
             String posTid = null, negTid = null;
@@ -137,8 +148,68 @@ public class HistoryEntry {
                 else { negTid = tid; negAmt = a; }
             }
             if (nonzero != 2 || posTid == null || negTid == null) return null;
-            return "−" + Util.tidyAmount(negAmt.abs().stripTrailingZeros().toPlainString()) + "  " + legName(negTid)
-                 + "   ·   +" + Util.tidyAmount(posAmt.stripTrailingZeros().toPlainString()) + "  " + legName(posTid);
+            return new Legs(posTid, posAmt, negTid, negAmt);
+        } catch (Exception e) { return null; }
+    }
+
+    /** The full per-token effect on the wallet as {tokenid → signed amount}, from the persisted
+     *  {@link #deltas}. This is the ledger primitive: summed chronologically it IS the balance.
+     *
+     *  Ordered MINIMA first, then by tokenid — JSON object key order is not guaranteed, and an export
+     *  whose rows shuffle between runs is not something anyone can reconcile against. */
+    public java.util.Map<String, BigDecimal> deltaMap() {
+        java.util.List<String> tids = new java.util.ArrayList<>();
+        java.util.Map<String, BigDecimal> raw = new java.util.HashMap<>();
+        try {
+            JSONObject d = new JSONObject(deltas == null ? "{}" : deltas);
+            for (Iterator<String> it = d.keys(); it.hasNext(); ) {
+                String tid = it.next();
+                tids.add(tid);
+                raw.put(tid, bd(d.optString(tid, "0")));
+            }
+        } catch (Exception ignore) {}
+        java.util.Collections.sort(tids, (a, b) -> {
+            boolean am = Util.isMinima(a), bm = Util.isMinima(b);
+            if (am != bm) return am ? -1 : 1;
+            return a.compareToIgnoreCase(b);
+        });
+        java.util.Map<String, BigDecimal> out = new java.util.LinkedHashMap<>();
+        for (String tid : tids) out.put(tid, raw.get(tid));
+        return out;
+    }
+
+    /** Format BOTH legs "−A TOK  ·  +B TOK" so a swap shows what went out AND what came in (not just the
+     *  single largest leg). Returns null for non-swap-shaped txns (caller keeps the single-token display). */
+    public String swapLegsDisplay() {
+        Legs l = legs();
+        if (l == null) return null;
+        return "−" + Util.tidyAmount(l.negAmount.abs().stripTrailingZeros().toPlainString()) + "  " + legName(l.negTokenid)
+             + "   ·   +" + Util.tidyAmount(l.posAmount.stripTrailingZeros().toPlainString()) + "  " + legName(l.posTokenid);
+    }
+
+    /** MINIMA burned by this transaction = sum(inputs) − sum(outputs) over tokenid 0x00, from the stored
+     *  coin arrays. Zero when it can't be determined (missing/partial arrays) — never negative. */
+    public BigDecimal burn() {
+        BigDecimal in = sumToken(inputs, Util.MINIMA_TOKENID);
+        BigDecimal out = sumToken(outputs, Util.MINIMA_TOKENID);
+        if (in == null || out == null) return BigDecimal.ZERO;
+        BigDecimal d = in.subtract(out);
+        return d.signum() > 0 ? d : BigDecimal.ZERO;
+    }
+
+    /** Total of one token across a stored coin array, or null if the array is missing/unparseable. */
+    private static BigDecimal sumToken(String coinsJson, String tokenid) {
+        if (coinsJson == null || coinsJson.isEmpty()) return null;
+        try {
+            JSONArray a = new JSONArray(coinsJson);
+            BigDecimal sum = BigDecimal.ZERO;
+            for (int i = 0; i < a.length(); i++) {
+                JSONObject c = a.optJSONObject(i);
+                if (c == null) continue;
+                if (!tokenid.equalsIgnoreCase(c.optString("tokenid", "0x00"))) continue;
+                sum = sum.add(bd(c.optString("amount", "0")));
+            }
+            return sum;
         } catch (Exception e) { return null; }
     }
 

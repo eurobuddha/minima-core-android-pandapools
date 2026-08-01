@@ -12,6 +12,13 @@ mirrored across all three.
 
 ---
 
+## [0.9.18] — accounting export (full transaction history, P/L and balance reconciliation)
+- **Added** an **Export** action on the Activity tab that writes a ZIP of four files: `pandapools-transactions.csv` (every pool create with **both** leg amounts, every trade with the price it actually executed at, deposits, withdrawals, maintenance), `wallet-ledger.csv` (every token movement across the whole wallet, oldest first, with a running balance), `lp-positions.csv` (per-pool round-trip totals, surviving a close), and `summary.txt` (reconciliation + provenance). Save via SAF or hand straight to another app via the share sheet.
+- Everything is derived from the existing permanent `HistoryDb` mirror — the per-token `deltas` map summed chronologically **is** the ledger. No fiat oracle and no market feed: mxUSDT is the unit of account and every price comes from the transaction's own two legs, so an export is exact, offline and reproducible.
+- A shortfall against the node's balance is disclosed as an **opening balance** rather than hidden, and an unfinished history backfill is stated up front — `HistorySync` reaches only as far back as the node still retains.
+- Read-only with respect to funds: no covenant, transaction-construction, discovery or `HistorySync` page-size change.
+- **Fixed** a stale assertion in `PoolCovenantTest` that still expected `SENTINEL_SCAN_DEPTH == 400` after 0.9.15 deliberately widened it to 1500. Added 24 tests (classification incl. the keep-fresh and migrate-vs-refresh traps, running balance, reconciliation, CSV injection safety).
+
 ## [0.9.17] — Pools tab: Individual | Combined view toggle
 - **Added** a toggle on the Pools tab: keep the per-pool list, or fold every pool of a token into **one collective-pool card** (summed reserves + aggregate spot price + pool count + tradeable depth). Display-only — reuses `VirtualCurve`/`PoolRouter` aggregation, no covenant/txn/scan change. Released 3-way with MDS 0.6.8 + desktop 0.16.2.
 

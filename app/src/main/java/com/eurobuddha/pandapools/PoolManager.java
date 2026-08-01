@@ -30,8 +30,10 @@ public class PoolManager {
     public interface ForwardResult { void onForwarded(String txpowid, int coins); void onNothing(); void onFailed(String message); }
     public interface SweepResult { void onSwept(int addressesForwarded, int coins); }
 
-    /** The discovery beacon carries only dust — it is a rendezvous coin, not spendable liquidity. */
-    private static final BigDecimal ANNOUNCE_DUST = new BigDecimal("0.000000001");
+    /** The discovery beacon carries only dust — it is a rendezvous coin, not spendable liquidity.
+     *  Public because {@link TxClassifier} identifies a keep-alive/re-announce transaction by this exact
+     *  beacon amount (the sentinel is stored in its Mx form in history, so the amount is the reliable tell). */
+    public static final BigDecimal ANNOUNCE_DUST = new BigDecimal("0.000000001");
     /** Grow-in-place is capped at 2×KMIN: beyond that a forged-dust raid could in theory profit, so we
      *  force a MIGRATE (which resets KMIN to the new product) instead. */
     private static final BigDecimal GROW_CAP_MULT = new BigDecimal("2");
