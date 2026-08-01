@@ -363,19 +363,42 @@ public class WalletView extends BaseView {
         if (act.node() == null) { out.setText("No node connection."); return; }
         if (addrBook == null) { addrBook = new PandaAddrBook(act); addrBook.seed(); }
         final String base = "coins relevant:true tokenid:" + b.tokenid;
+        // First ask WHICH coins the node considers spendable — its own sendable gate (isAddressSimple).
+        // Every coin outside that set is locked, and that set is exactly what the "locked ≈" figure counts.
+        // Best-effort: if this query fails the list still renders, just without the spendable/locked marks.
+        act.node().cmd(base + " sendable:true", new NodeApi.Cb() {
+            @Override public void onResult(JSONObject js) { withSendable(base, sendableIds(js), out); }
+            @Override public void onError(String m) { withSendable(base, null, out); }
+        });
+    }
+
+    private void withSendable(final String base, final java.util.Set<String> sendable, final TextView out) {
         act.node().cmd(base, new NodeApi.Cb() {
-            @Override public void onResult(JSONObject j) { out.setText(renderCoins(j, false)); }
+            @Override public void onResult(JSONObject j) { out.setText(renderCoins(j, sendable, false)); }
             @Override public void onError(String m) {
                 if (!NodeApi.ERR_TOO_LONG.equals(m)) { out.setText("Couldn't load coins: " + m); return; }
                 act.node().cmd(base + " sendable:true", new NodeApi.Cb() {
-                    @Override public void onResult(JSONObject j2) { out.setText(renderCoins(j2, true)); }
+                    @Override public void onResult(JSONObject j2) { out.setText(renderCoins(j2, sendable, true)); }
                     @Override public void onError(String m2) { out.setText("Too many coins to list."); }
                 });
             }
         });
     }
 
-    private CharSequence renderCoins(JSONObject j, boolean sendableOnly) {
+    private static java.util.Set<String> sendableIds(JSONObject j) {
+        java.util.Set<String> ids = new java.util.HashSet<>();
+        JSONArray arr = j.optJSONArray("response");
+        if (arr != null) for (int i = 0; i < arr.length(); i++) {
+            JSONObject c = arr.optJSONObject(i);
+            if (c != null) {
+                String id = c.optString("coinid", "");
+                if (!id.isEmpty()) ids.add(id);
+            }
+        }
+        return ids;
+    }
+
+    private CharSequence renderCoins(JSONObject j, java.util.Set<String> sendable, boolean sendableOnly) {
         JSONArray arr = j.optJSONArray("response");
         if (arr == null || arr.length() == 0) return "No coins.";
         List<Coin> list = new ArrayList<>();
@@ -390,21 +413,29 @@ public class WalletView extends BaseView {
         if (sendableOnly) sb.append("(the node's reply was over its size cap — sendable coins only)\n\n");
         for (Coin c : list) {
             sb.append(Util.tidyAmount(c.amount))
+              .append(state(c, sendable))
               .append(tag(c))
               .append('\n').append(c.coinid).append('\n');
         }
         return sb.toString().trim();
     }
 
+    /** Spendable or locked, straight from the node's own sendable set — blank if that query didn't answer,
+     *  because guessing which coins are spendable is exactly what this list exists to avoid. */
+    private String state(Coin c, java.util.Set<String> sendable) {
+        if (sendable == null) return "";
+        return sendable.contains(c.coinid) ? "   spendable" : "   locked";
+    }
+
     /**
-     * Why this coin isn't sendable. A pool reserve sits at the covenant address; a discovery beacon is dust
+     * WHY this coin isn't sendable. A pool reserve sits at the covenant address; a discovery beacon is dust
      * at the shared sentinel. Between them they account for most of the gap between confirmed and sendable,
-     * so naming them turns the list into an answer rather than a wall of hashes. Anything still untagged is
-     * locked by something else (another contract, or an owner payout address awaiting collection).
+     * so naming them turns the list into an answer rather than a wall of hashes. Anything locked but
+     * untagged is held by something else — another contract, or an owner payout address awaiting collection.
      */
     private String tag(Coin c) {
-        if (addrBook.contains(c.address) || addrBook.contains(c.miniaddress)) return "   (pool)";
-        if (PoolCovenant.SENTINEL.equalsIgnoreCase(c.address)) return "   (beacon)";
+        if (addrBook.contains(c.address) || addrBook.contains(c.miniaddress)) return "  (pool)";
+        if (PoolCovenant.SENTINEL.equalsIgnoreCase(c.address)) return "  (beacon)";
         return "";
     }
 

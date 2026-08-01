@@ -12,6 +12,10 @@ mirrored across all three.
 
 ---
 
+## [0.9.21] — Wallet coin list: spendable / locked per coin, and the builds are back in `dist/`
+- **Fixed** the coin list not saying which coins are actually spendable. It tagged `(pool)` and `(beacon)` but never marked spendable vs locked — so it named *some* of the gap between confirmed and sendable and left the rest unexplained. Each coin now carries `spendable` or `locked` straight from the node's own sendable set (`coins relevant:true sendable:true`), matching what the desktop app has shown since 0.16.3. If that query fails the marks are omitted rather than guessed.
+- **Fixed** released APKs going only to `releases/`, which is **gitignored** — so from the repo nothing newer than 0.9.16 existed. `dist/` is tracked and is where builds belong; 0.9.17 through 0.9.21 are now backfilled into it.
+
 ## [0.9.20] — Wallet: AtomiX's four-figure balance breakdown
 - **Changed** the Wallet tab to AtomiX's display logic (`atomix-mds/lib/ui.js:495` · `apks/atomix/…/MainActivity.java:678`): each token card keeps its headline **sendable** amount and gains a one-line breakdown — `confirmed X · locked ≈ Y · unconfirmed Z · N coins · updated Ns ago · tap for coins`.
 - **Fixed** the real problem this solves: `locked` and `pending` were hidden when zero, so a node with everything committed to a pool showed a bare `0` and nothing explaining where the money went. Every figure now shows unconditionally, zeros included. `locked = confirmed − sendable` (`sendable` counts only simple-address coins; `confirmed` includes contract-locked ones — in this app, your pool reserves), shown with `≈` because it is derived, not node-supplied. Full precision, so the Wallet card and the My LP card agree about the same coins.
