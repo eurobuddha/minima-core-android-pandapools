@@ -92,9 +92,9 @@ public class PoolManager {
     private void buildCreate(Pool p, BigDecimal x0, BigDecimal y0, String tokenid, CreateResult cb) {
         final BigDecimal minimaNeed = x0.add(ANNOUNCE_DUST);
         // select MINIMA (reserve + beacon dust), then token (reserve)
-        selectCoins(Util.MINIMA_TOKENID, minimaNeed, p.address, new SelCb() {
+        selectCoins(Util.MINIMA_TOKENID, minimaNeed, p.address, p.oadr, new SelCb() {
             @Override public void ok(List<Coin> mfunds, BigDecimal msum) {
-                selectCoins(tokenid, y0, p.address, new SelCb() {
+                selectCoins(tokenid, y0, p.address, p.oadr, new SelCb() {
                     @Override public void ok(List<Coin> tfunds, BigDecimal tsum) {
                         String txid = "ppcreate_" + tag();
                         String tokArg = " tokenid:" + tokenid;
@@ -149,9 +149,9 @@ public class PoolManager {
             return;
         }
         final String tok = p.tok, tokArg = " tokenid:" + tok;
-        selectCoins(Util.MINIMA_TOKENID, addM, p.address, new SelCb() {
+        selectCoins(Util.MINIMA_TOKENID, addM, p.address, p.oadr, new SelCb() {
             @Override public void ok(List<Coin> mfunds, BigDecimal msum) {
-                selectCoins(tok, addTc, p.address, new SelCb() {
+                selectCoins(tok, addTc, p.address, p.oadr, new SelCb() {
                     @Override public void ok(List<Coin> tfunds, BigDecimal tsum) {
                         String txid = "ppdep_" + tag();
                         List<String> cmds = new ArrayList<>();
@@ -219,9 +219,9 @@ public class PoolManager {
         final String tok = p.tok, tokArg = " tokenid:" + tok;
         final BigDecimal oldX = p.reserveM, oldY = p.reserveT;
         final BigDecimal minimaNeed = newX.add(ANNOUNCE_DUST);   // new reserve + the new beacon dust
-        selectCoins(Util.MINIMA_TOKENID, minimaNeed, p.address, new SelCb() {
+        selectCoins(Util.MINIMA_TOKENID, minimaNeed, p.address, p.oadr, new SelCb() {
             @Override public void ok(List<Coin> mfunds, BigDecimal msum) {
-                selectCoins(tok, newY, p.address, new SelCb() {
+                selectCoins(tok, newY, p.address, p.oadr, new SelCb() {
                     @Override public void ok(List<Coin> tfunds, BigDecimal tsum) {
                         String txid = "ppmig_" + tag();
                         List<String> cmds = new ArrayList<>();
@@ -377,7 +377,7 @@ public class PoolManager {
         if (p == null || p.address == null || isEmpty(p.opk) || isEmpty(p.tok) || isEmpty(p.oadr) || isEmpty(p.kmin)) {
             cb.onFailed("incomplete pool record"); return;
         }
-        selectCoins(Util.MINIMA_TOKENID, ANNOUNCE_DUST, p.address, new SelCb() {
+        selectCoins(Util.MINIMA_TOKENID, ANNOUNCE_DUST, p.address, p.oadr, new SelCb() {
             @Override public void ok(List<Coin> mfunds, BigDecimal msum) {
                 String txid = "ppann_" + tag();
                 List<String> cmds = new ArrayList<>();
@@ -423,7 +423,7 @@ public class PoolManager {
                 || isEmpty(p.coinidM) || isEmpty(p.coinidT)) { cb.onFailed("incomplete pool record"); return; }
         final String tokArg = " tokenid:" + p.tok;
         // a tiny MINIMA funding coin for the beacon dust (excludes the pool's own address — never a pool coin)
-        selectCoins(Util.MINIMA_TOKENID, ANNOUNCE_DUST, p.address, new SelCb() {
+        selectCoins(Util.MINIMA_TOKENID, ANNOUNCE_DUST, p.address, p.oadr, new SelCb() {
             @Override public void ok(List<Coin> mfunds, BigDecimal msum) {
                 String txid = "pprefresh_" + tag();
                 List<String> cmds = new ArrayList<>();
@@ -512,21 +512,36 @@ public class PoolManager {
 
     private interface SelCb { void ok(List<Coin> coins, BigDecimal sum); void none(); }
 
-    /** Plain sendable wallet coins for a token, largest-first, summing to at least {@code need}. Coins at
-     *  {@code excludeAddress} (the pool's own covenant address) are never selected — belt-and-braces on top
-     *  of {@code sendable:true}, so a pool leg can never be pulled in twice as "funding". */
-    private void selectCoins(String tokenid, BigDecimal need, String excludeAddress, SelCb cb) {
+    /**
+     * Plain sendable wallet coins for a token, largest-first, summing to at least {@code need}.
+     *
+     * Coins at {@code excludeAddress} (the pool's own covenant address) are never selected — belt-and-
+     * braces on top of {@code sendable:true}, so a pool leg can never be pulled in twice as "funding".
+     *
+     * Also excludes {@code ownerAddress} ($OADR). Funding from an owner coin makes {@code txnsign auto}
+     * sign with $OPK, which flips the covenant into its owner branch — and {@code ownerSignPost} then
+     * signs with $OPK a SECOND time, burning two key uses for one action. {@link PoolTxn#swap} already
+     * excluded it and explains why; this had not.
+     *
+     * And it skips coins another in-flight transaction has reserved ({@link CoinLock}). Without that,
+     * the deliberate fan-outs (up to 8 parallel refreshes / re-announces) all take the same largest
+     * coin, because for beacon dust the first coin always covers {@code need}.
+     */
+    private void selectCoins(String tokenid, BigDecimal need, String excludeAddress, String ownerAddress, SelCb cb) {
         if (need.signum() <= 0) { cb.ok(new ArrayList<>(), BigDecimal.ZERO); return; }
         node.cmd("coins relevant:true sendable:true tokenid:" + tokenid, new NodeApi.Cb() {
             @Override public void onResult(JSONObject json) {
                 JSONArray arr = json.optJSONArray("response");
                 if (arr == null || arr.length() == 0) { cb.none(); return; }
+                CoinLock.prune();
                 List<Coin> avail = new ArrayList<>();
                 for (int i = 0; i < arr.length(); i++) {
                     JSONObject jc = arr.optJSONObject(i);
                     if (jc == null) continue;
                     Coin c = Coin.from(jc);
                     if (excludeAddress != null && c.address != null && c.address.equalsIgnoreCase(excludeAddress)) continue;
+                    if (ownerAddress != null && c.address != null && c.address.equalsIgnoreCase(ownerAddress)) continue;
+                    if (CoinLock.isReserved(c.coinid)) continue;   // held by another in-flight transaction
                     avail.add(c);
                 }
                 avail.sort((a, b) -> new BigDecimal(b.amount).compareTo(new BigDecimal(a.amount)));
@@ -535,7 +550,15 @@ public class PoolManager {
                 for (Coin c : avail) {
                     sel.add(c);
                     sum = sum.add(new BigDecimal(c.amount));
-                    if (sum.compareTo(need) >= 0) { cb.ok(sel, sum); return; }
+                    if (sum.compareTo(need) >= 0) {
+                        // Claim them before handing them over, so a parallel builder can't pick the same
+                        // coin. Released by the TTL rather than explicitly: the chain has many exit paths
+                        // and a coin that stays claimed for a few minutes after a failure is harmless —
+                        // the keep-fresh cycle is 15 minutes.
+                        CoinLock.reserve(sel);
+                        cb.ok(sel, sum);
+                        return;
+                    }
                 }
                 cb.none();
             }

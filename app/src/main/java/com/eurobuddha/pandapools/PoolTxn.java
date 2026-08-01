@@ -7,9 +7,7 @@ import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
-import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Builds, signs and posts a constant-product swap against a single {@link Pool}, mirroring the proven
@@ -32,28 +30,17 @@ public class PoolTxn {
     /** Below this a MINIMA change output is dropped (dust not worth a UTXO; MINIMA may be burned). */
     private static final BigDecimal DUST = new BigDecimal("0.000000001");
 
-    /** A funding reservation self-expires after this long (~3–4 blocks) so a swap that posted but never
-     *  confirmed (lost a race / the pool moved) can't strand its funding coin as permanently unusable. */
-    private static final long INFLIGHT_TTL_MS = 3 * 60 * 1000L;
-
     private final NodeApi node;
-    // funding coins reserved by an in-flight swap (coinid -> reservedAt millis), so a concurrent swap
-    // can't reuse them; entries expire (TTL) and are pruned once the coin is actually spent.
-    private final Map<String, Long> inflight = new ConcurrentHashMap<>();
 
     public PoolTxn(NodeApi node) { this.node = node; }
 
-    private boolean isReserved(String coinid) {
-        Long t = inflight.get(coinid);
-        return t != null && (System.currentTimeMillis() - t) < INFLIGHT_TTL_MS;
-    }
-    private void reserve(List<Coin> funds) {
-        long now = System.currentTimeMillis();
-        for (Coin f : funds) inflight.put(f.coinid, now);
-    }
-    private void release(List<Coin> funds) {
-        for (Coin f : funds) inflight.remove(f.coinid);
-    }
+    // Delegated to the process-wide CoinLock so swaps and the owner/keep-alive transactions in
+    // PoolManager coordinate. This map was an INSTANCE field on a class only SwapView constructs, so it
+    // protected swaps from each other and nothing else — meanwhile PoolRefresher's 8 parallel refreshes
+    // were all selecting the same coin.
+    private boolean isReserved(String coinid) { return CoinLock.isReserved(coinid); }
+    private void reserve(List<Coin> funds) { CoinLock.reserve(funds); }
+    private void release(List<Coin> funds) { CoinLock.release(funds); }
 
     /**
      * Swap against one pool. {@code minimaToToken=true}: put in {@code amountIn} MINIMA, receive token.
@@ -190,7 +177,7 @@ public class PoolTxn {
                 // prune expired reservations by TTL (token-agnostic — this scan only sees one token's coins,
                 // so pruning against `present` would wrongly drop the other side's live reservations)
                 long now = System.currentTimeMillis();
-                inflight.entrySet().removeIf(e -> now - e.getValue() >= INFLIGHT_TTL_MS);
+                CoinLock.prune();
                 if (avail.isEmpty()) { cb.onNone(); return; }
                 avail.sort((a, b) -> new BigDecimal(b.amount).compareTo(new BigDecimal(a.amount)));
                 List<Coin> sel = new ArrayList<>();

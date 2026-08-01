@@ -1,7 +1,11 @@
 package com.eurobuddha.pandapools;
 
+import android.os.Handler;
+import android.os.Looper;
+
 import org.json.JSONObject;
 
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -25,7 +29,73 @@ public final class TxPost {
         @Override public void onError(String m) {}
     };
 
+    // ---- the signing gate -------------------------------------------------------------------------
+
+    /**
+     * SERIAL SIGNING. Only one build→sign→post chain from this app may be in flight at a time.
+     *
+     * Minima signatures are stateful: each key is a tree of one-time signatures and the node picks the
+     * next leaf by reading, incrementing and writing a per-key `uses` counter. Two transactions signing
+     * the same key at once both read the same value and both sign the SAME leaf over DIFFERENT data —
+     * which is a reused Winternitz signature, and reusing a leaf leaks its private key. This was
+     * observed for real: 7 of 64 default keys on a live node flagged as re-used.
+     *
+     * We hit it because several paths fan out deliberately — {@link PoolRefresher} posts up to 8
+     * refreshes in one loop, {@link ReAnnouncer} the same, {@code sweepOwnerFunds} one per owner
+     * address — and {@link PoolManager#selectCoins} sorts largest-first, so every one of those parallel
+     * builders picks the SAME funding coin, at the same address, owned by the same key.
+     *
+     * The node has since been fixed to synchronize its own signing, but this gate stays: our apps also
+     * run against nodes we don't control, and serialising is correct anyway — the 8 parallel refreshes
+     * were double-spending one coin and 7 of them were always going to fail.
+     *
+     * Everything here runs on the main thread ({@link NodeApi} funnels every node callback back to it),
+     * so the queue needs no locking.
+     */
+    private static final Handler MAIN = new Handler(Looper.getMainLooper());
+    private static final ArrayDeque<Runnable> QUEUE = new ArrayDeque<>();
+    private static boolean signing = false;
+    private static Runnable watchdog = null;
+
+    /** Longer than NodeApi's 180s write timeout, so the watchdog only ever fires for a chain whose
+     *  callback was genuinely lost — never for one that is merely slow. */
+    private static final long MAX_HOLD_MS = 200_000;
+
+    private static void submit(Runnable chain) {
+        QUEUE.add(chain);
+        if (!signing) startNext();
+    }
+
+    private static void startNext() {
+        Runnable next = QUEUE.poll();
+        if (next == null) { signing = false; return; }
+        signing = true;
+        watchdog = () -> { watchdog = null; startNext(); };   // a dropped callback must not wedge the app
+        MAIN.postDelayed(watchdog, MAX_HOLD_MS);
+        next.run();
+    }
+
+    private static void release() {
+        if (watchdog != null) { MAIN.removeCallbacks(watchdog); watchdog = null; }
+        startNext();
+    }
+
+    /** Releases the gate exactly once, however the chain ends. */
+    private static Done gated(Done done) {
+        return new Done() {
+            private boolean released = false;
+            private void free() { if (!released) { released = true; release(); } }
+            @Override public void ok(String txpowid) { free(); done.ok(txpowid); }
+            @Override public void fail(String message) { free(); done.fail(message); }
+        };
+    }
+
     public static void checkThenPost(NodeApi node, String txid, List<String> cmdsThroughBasics, Done done) {
+        final Done gatedDone = gated(done);
+        submit(() -> runChain(node, txid, cmdsThroughBasics, gatedDone));
+    }
+
+    private static void runChain(NodeApi node, String txid, List<String> cmdsThroughBasics, Done done) {
         List<String> cmds = new ArrayList<>(cmdsThroughBasics);
         cmds.add("txncheck id:" + txid);
         CmdChain.run(node, cmds, "txndelete id:" + txid, new CmdChain.Done() {
