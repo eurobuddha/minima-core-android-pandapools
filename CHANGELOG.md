@@ -18,6 +18,7 @@ mirrored across all three.
 - **Added** a **Coins** section to the token detail dialog: every relevant coin, largest first, with its **full** coinid, tagged `(pool)` for covenant reserves and `(beacon)` for registry dust. Selectable, plus a *copy all coins* action. It reconciles — on the dev node, `locked ≈ 177135.89717784727` = the pool coin `177115.89717779927` + two 10-MINIMA coins + 48 beacon dust.
 - The coin fetch omits `simplestate` and falls back to sendable-only on the node's over-256KB stub, saying so rather than silently showing a subset — an oversized broadcast reply is uncatchable and force-kills the app.
 - 11 new tests (locked derivation, zero-visibility regression, full precision, freshness stamp, backward clock).
+- Released **3-way** with MDS **0.6.9** + desktop **0.16.3**, which carry the same breakdown and the same uncapped, tagged coin list.
 
 ## [0.9.19] — pool statement replaces the accounting export + two real accounting bugs fixed
 - **Fixed** a **routed swap being booked entirely against one pool**. A swap is ONE transaction spanning up to 6 pools (`PoolRouter.MAX_POOLS`), but 0.9.18 attributed the whole trade to the first pool address it matched. Each pool now gets its own share, measured directly as `Σ(outputs at pool) − Σ(inputs at pool)` — exact for create, deposit, swap, withdraw and routed multi-pool trades alike. The split is checked against the wallet's own movement per transaction; anything that doesn't tie is flagged in the file rather than mis-booked.
