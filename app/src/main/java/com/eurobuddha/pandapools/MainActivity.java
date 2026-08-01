@@ -62,9 +62,9 @@ public class MainActivity extends AppCompatActivity {
     private ActivityResultLauncher<String> saveDocLauncher;
     private ActivityResultLauncher<String[]> openDocLauncher;
     // A CreateDocument contract's mime type is fixed when it is registered, so the accounting export
-    // (a ZIP) needs its own launcher rather than reusing the JSON backup one.
-    private ActivityResultLauncher<String> saveZipLauncher;
-    private Consumer<Uri> pendingSave, pendingOpen, pendingZip;
+    // (a CSV) needs its own launcher rather than reusing the JSON backup one.
+    private ActivityResultLauncher<String> saveCsvLauncher;
+    private Consumer<Uri> pendingSave, pendingOpen, pendingCsv;
 
     @Override protected void onCreate(Bundle b) {
         super.onCreate(b);
@@ -80,8 +80,8 @@ public class MainActivity extends AppCompatActivity {
             Consumer<Uri> cb = pendingOpen; pendingOpen = null;
             if (cb != null) cb.accept(uri);
         });
-        saveZipLauncher = registerForActivityResult(new ActivityResultContracts.CreateDocument("application/zip"), uri -> {
-            Consumer<Uri> cb = pendingZip; pendingZip = null;
+        saveCsvLauncher = registerForActivityResult(new ActivityResultContracts.CreateDocument("text/csv"), uri -> {
+            Consumer<Uri> cb = pendingCsv; pendingCsv = null;
             if (cb != null) cb.accept(uri);
         });
 
@@ -327,11 +327,11 @@ public class MainActivity extends AppCompatActivity {
         try { saveDocLauncher.launch(suggestedName); }
         catch (Exception e) { pendingSave = null; if (onPicked != null) onPicked.accept(null); }
     }
-    /** SAF "create document" picker to SAVE the accounting export ZIP (null URI if cancelled). */
-    public void pickSaveZip(String suggestedName, Consumer<Uri> onPicked) {
-        pendingZip = onPicked;
-        try { saveZipLauncher.launch(suggestedName); }
-        catch (Exception e) { pendingZip = null; if (onPicked != null) onPicked.accept(null); }
+    /** SAF "create document" picker to SAVE the pool statement CSV (null URI if cancelled). */
+    public void pickSaveCsv(String suggestedName, Consumer<Uri> onPicked) {
+        pendingCsv = onPicked;
+        try { saveCsvLauncher.launch(suggestedName); }
+        catch (Exception e) { pendingCsv = null; if (onPicked != null) onPicked.accept(null); }
     }
     /** SAF "open document" picker to RESTORE a backup; the callback gets the chosen URI (null if cancelled). */
     public void pickOpenFile(Consumer<Uri> onPicked) {

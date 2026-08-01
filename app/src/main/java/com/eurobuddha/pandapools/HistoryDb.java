@@ -17,9 +17,14 @@ import java.util.List;
 public class HistoryDb extends SQLiteOpenHelper {
 
     private static final String DB = "pandapools_history.db";
-    private static final int VERSION = 1;
+    /** v2: rows stored before this held the wrong token amount in inputs/outputs (see
+     *  {@link HistoryEntry} — `amount` was read where `tokenamount` was meant). The table is never
+     *  dropped; instead {@link #onUpgrade} arms a one-time re-sync that rewrites the rows in place. */
+    private static final int VERSION = 2;
     private static final String TX = "tx";
     private static final String META = "meta";
+    /** Meta flag driving the v2 token-amount repair: "pending" until a full re-sync has rewritten rows. */
+    public static final String META_REPAIR_V2 = "repair_v2";
 
     public HistoryDb(Context ctx) { super(ctx, DB, null, VERSION); }
 
@@ -39,10 +44,36 @@ public class HistoryDb extends SQLiteOpenHelper {
     }
 
     // Never drop the table (permanence). Future versions add columns via ALTER here.
-    @Override public void onUpgrade(SQLiteDatabase db, int o, int n) { onCreate(db); }
+    @Override public void onUpgrade(SQLiteDatabase db, int o, int n) {
+        onCreate(db);
+        if (o < 2) {
+            // Arm the token-amount repair: clear the backfill flag so HistorySync pages the whole of what
+            // the node still retains, rewriting each row through upsert(). Rows the node has since dropped
+            // keep their old token amounts — beyond reach, and the statement's P&L does not read them.
+            ContentValues cv = new ContentValues();
+            cv.put("k", META_REPAIR_V2); cv.put("v", "pending");
+            db.insertWithOnConflict(META, null, cv, SQLiteDatabase.CONFLICT_REPLACE);
+            db.delete(META, "k=?", new String[]{"backfill_done"});
+        }
+    }
 
-    /** Insert a row; returns true if it was NEW, false if this txpowid was already stored. Idempotent. */
+    /** Insert a row; returns true if it was NEW, false if this txpowid was already stored. Idempotent.
+     *
+     *  The boolean is load-bearing: it is how {@link HistorySync}'s incremental pass knows it has caught up
+     *  with what it already holds. Do NOT switch this to CONFLICT_REPLACE — replace always succeeds, the
+     *  caught-up test would never fire, and an incremental sync would page forever. Use {@link #upsert}. */
     public boolean insert(HistoryEntry e) {
+        long rid = getWritableDatabase().insertWithOnConflict(TX, null, values(e), SQLiteDatabase.CONFLICT_IGNORE);
+        return rid != -1;
+    }
+
+    /** Write a row, overwriting any existing one with the same txpowid. Used only by the v2 repair pass,
+     *  which has to rewrite rows that are already stored. */
+    public void upsert(HistoryEntry e) {
+        getWritableDatabase().insertWithOnConflict(TX, null, values(e), SQLiteDatabase.CONFLICT_REPLACE);
+    }
+
+    private static ContentValues values(HistoryEntry e) {
         ContentValues v = new ContentValues();
         v.put("txpowid", e.txpowid);
         v.put("block", e.block);
@@ -57,8 +88,7 @@ public class HistoryDb extends SQLiteOpenHelper {
         v.put("inputs", e.inputs);
         v.put("outputs", e.outputs);
         v.put("synced_at", e.syncedAt);
-        long rid = getWritableDatabase().insertWithOnConflict(TX, null, v, SQLiteDatabase.CONFLICT_IGNORE);
-        return rid != -1;
+        return v;
     }
 
     public int count() {

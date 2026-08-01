@@ -11,6 +11,7 @@ import android.widget.Button;
 import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.TextView;
+import android.widget.Toast;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -81,6 +82,10 @@ public class MyLpView extends BaseView {
         Ui.outlineButton(recoveryBtn);
         recoveryBtn.setTextColor(Design.accent());
         recoveryBtn.setOnClickListener(v -> showRecoveryDialog());
+        TextView statementBtn = find(R.id.lpStatementBtn);
+        Ui.outlineButton(statementBtn);
+        statementBtn.setTextColor(Design.accent());
+        statementBtn.setOnClickListener(v -> showStatementDialog());
 
         ((TextView) find(R.id.lpSummaryLabel)).setTextColor(Design.dim());
         ((TextView) find(R.id.lpSummaryValue)).setTextColor(Design.heading());
@@ -852,6 +857,79 @@ public class MyLpView extends BaseView {
     }
 
     // ---- backup & restore (recovery) ----
+
+    // ---- statement export ----
+
+    /**
+     * Export a per-pool statement: what you put in, your trades, what is in the pool now, and the profit.
+     *
+     * Hands {@link ExportWriter} the pool list this tab is already showing, so the file and the pool cards
+     * cannot disagree — they are the same scan.
+     */
+    private void showStatementDialog() {
+        if (myPools.isEmpty()) {
+            Toast.makeText(act, "No pools to report on yet.", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        LinearLayout box = dialogBox();
+        TextView t = text("A statement for each pool you own: what you put in, your own trades against it, "
+                + "what is in the pool now, and the profit.\n\nTrades listed are YOUR transactions only — "
+                + "not every trade against the pool. The profit figures are unaffected: they read the pool's "
+                + "reserves live, so everyone else's trading is already in them.",
+                Design.text(), 13, false);
+        box.addView(t);
+        new AlertDialog.Builder(act)
+                .setTitle("Export statement")
+                .setView(box)
+                .setPositiveButton("Save file…", (d, w) -> runStatement(false))
+                .setNeutralButton("Share…", (d, w) -> runStatement(true))
+                .setNegativeButton("Cancel", null)
+                .show();
+    }
+
+    private void runStatement(final boolean share) {
+        status("Building statement…");
+        final PandaAddrBook book = new PandaAddrBook(act);
+        book.seed();
+        book.addAll(myPools);
+        book.persist();
+        ExportWriter.run(act, book, myPools, new ExportWriter.Cb() {
+            @Override public void onDone(String csv, String filename, PoolStatement.Report report) {
+                status("");
+                if (share) shareStatement(csv, filename, report); else saveStatement(csv, filename, report);
+            }
+            @Override public void onError(String message) {
+                status("Export failed: " + message);
+            }
+        });
+    }
+
+    private void saveStatement(final String csv, String filename, final PoolStatement.Report report) {
+        act.pickSaveCsv(filename, uri -> {
+            if (uri == null) return;                       // cancelled
+            boolean ok = ExportWriter.writeTo(act, uri, csv);
+            Toast.makeText(act, ok ? "Saved  ·  " + ExportWriter.describe(report) : "Could not write the file",
+                    Toast.LENGTH_LONG).show();
+        });
+    }
+
+    private void shareStatement(String csv, String filename, PoolStatement.Report report) {
+        java.io.File f = ExportWriter.stageForShare(act, filename, csv);
+        if (f == null) { Toast.makeText(act, "Could not prepare the file", Toast.LENGTH_LONG).show(); return; }
+        try {
+            android.net.Uri uri = androidx.core.content.FileProvider.getUriForFile(
+                    act, act.getPackageName() + ".fileprovider", f);
+            android.content.Intent i = new android.content.Intent(android.content.Intent.ACTION_SEND);
+            i.setType("text/csv");
+            i.putExtra(android.content.Intent.EXTRA_STREAM, uri);
+            i.putExtra(android.content.Intent.EXTRA_SUBJECT, "PandaPools statement");
+            i.putExtra(android.content.Intent.EXTRA_TEXT, ExportWriter.describe(report));
+            i.addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            act.startActivity(android.content.Intent.createChooser(i, "Send statement"));
+        } catch (Exception e) {
+            Toast.makeText(act, "Could not share the file", Toast.LENGTH_LONG).show();
+        }
+    }
 
     private void showRecoveryDialog() {
         String[] items = { "Collect withdrawn funds to my wallet", "Back up my pools to a file", "Restore pools from a file", "How recovery works" };

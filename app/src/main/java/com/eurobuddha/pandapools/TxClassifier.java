@@ -6,6 +6,7 @@ import org.json.JSONObject;
 import java.math.BigDecimal;
 import java.math.MathContext;
 import java.math.RoundingMode;
+import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
@@ -176,6 +177,83 @@ public final class TxClassifier {
             }
         } catch (Exception ignore) {}
         return false;
+    }
+
+    // ---- per-pool attribution -------------------------------------------------------------------
+
+    /**
+     * OUR share of this transaction, split across EVERY pool it touched.
+     *
+     * A routed swap is ONE transaction spanning up to {@code PoolRouter.MAX_POOLS} pools — each pool's
+     * MINIMA leg at an even input and its token leg at the odd sibling, all recreated as outputs (see
+     * {@link PoolTxn}). Booking the whole transaction against a single address, as a naive read of
+     * {@link Tx#poolAddress} would, credits one pool with a trade that was split across three.
+     *
+     * Each pool's reserve change is measurable directly from the stored coin arrays:
+     * <pre>reserveChange_P = Σ(outputs at P) − Σ(inputs at P)</pre>
+     * and for OUR transactions the wallet is the counterparty to every pool touched, so our flow into pool
+     * P is exactly {@code −reserveChange_P}. That holds uniformly for create, deposit, swap, withdraw and
+     * routed multi-pool swaps — the split falls out of the arithmetic rather than being apportioned.
+     *
+     * It must NOT be applied to a stranger's trade: their swap moves reserves while our flow is zero.
+     * Callers gate on {@link Tx#movedOurFunds()}.
+     *
+     * @return address (original case, as stored on the coin) → {minimaFlow, tokenFlow}, signed from the
+     *         wallet's point of view. Empty when no pool was touched.
+     */
+    public static Map<String, BigDecimal[]> poolFlows(HistoryEntry e, Addrs addrs) {
+        Map<String, BigDecimal[]> byPool = new LinkedHashMap<>();
+        accumulate(byPool, e.outputs, addrs, false);   // outputs ADD to reserves
+        accumulate(byPool, e.inputs, addrs, true);     // inputs REMOVE from them
+        // reserveChange -> our flow: negate
+        for (BigDecimal[] v : byPool.values()) { v[0] = v[0].negate(); v[1] = v[1].negate(); }
+        return byPool;
+    }
+
+    private static void accumulate(Map<String, BigDecimal[]> byPool, String coinsJson, Addrs addrs, boolean subtract) {
+        if (coinsJson == null || coinsJson.isEmpty()) return;
+        try {
+            JSONArray a = new JSONArray(coinsJson);
+            for (int i = 0; i < a.length(); i++) {
+                JSONObject c = a.optJSONObject(i);
+                if (c == null) continue;
+                String addr = c.optString("addr", "");
+                if (addr.isEmpty()) continue;
+                // Ask the address book about this one coin, so we learn WHICH pool it belongs to rather
+                // than just whether the transaction touched some pool.
+                String pool = addrs.hitAddress(new JSONArray().put(c).toString());
+                if (pool == null) continue;
+                BigDecimal amt = Util.decOr(c.optString("amount", ""), null);
+                if (amt == null) continue;
+                if (subtract) amt = amt.negate();
+                BigDecimal[] v = byPool.computeIfAbsent(key(byPool, pool), k -> new BigDecimal[]{BigDecimal.ZERO, BigDecimal.ZERO});
+                boolean minima = Util.isMinima(c.optString("tokenid", "0x00"));
+                v[minima ? 0 : 1] = v[minima ? 0 : 1].add(amt);
+            }
+        } catch (Exception ignore) {}
+    }
+
+    /** Reuse the casing already recorded for this pool so hex and Mx forms of one address don't split. */
+    private static String key(Map<String, BigDecimal[]> byPool, String addr) {
+        for (String k : byPool.keySet()) if (k.equalsIgnoreCase(addr)) return k;
+        return addr;
+    }
+
+    /**
+     * Does the per-pool split account for the whole transaction? Σ of our per-pool flows must equal the
+     * wallet's own net movement, give or take the MINIMA burned (which is paid to no pool).
+     *
+     * This is an equation, not a heuristic, so it is checked rather than assumed: a transaction that fails
+     * it is reported and left out of the totals instead of being mis-booked.
+     */
+    public static boolean splitReconciles(Tx t, Map<String, BigDecimal[]> flows) {
+        BigDecimal m = BigDecimal.ZERO, tok = BigDecimal.ZERO;
+        for (BigDecimal[] v : flows.values()) { m = m.add(v[0]); tok = tok.add(v[1]); }
+        // token side must match exactly; MINIMA may differ by the burn (and by beacon dust paid to the
+        // sentinel, which is not a pool address and so is never in `flows`).
+        if (tok.compareTo(t.tokenDelta) != 0) return false;
+        BigDecimal slack = t.burn.add(PoolManager.ANNOUNCE_DUST);
+        return m.subtract(t.minimaDelta).abs().compareTo(slack) <= 0;
     }
 
     /** Token per MINIMA implied by the two legs of this transaction, or null when either leg is zero.

@@ -38,6 +38,8 @@ public class HistorySync {
 
     private boolean running = false;
     private boolean backfill = false;
+    /** v2 token-amount repair: rewrite every row the node still retains, instead of skipping ones we hold. */
+    private boolean repair = false;
     private int pageMax = START_MAX;
     private int totalNew = 0;
     private int fetches = 0;
@@ -50,7 +52,8 @@ public class HistorySync {
     public void start() {
         if (running) return;
         running = true;
-        backfill = !"true".equals(db.getMeta("backfill_done", ""));
+        repair = "pending".equals(db.getMeta(HistoryDb.META_REPAIR_V2, ""));
+        backfill = repair || !"true".equals(db.getMeta("backfill_done", ""));
         pageMax = START_MAX; totalNew = 0; fetches = 0; skipFails = 0;
         fetchPage(0);
     }
@@ -77,7 +80,12 @@ public class HistorySync {
                     if (tx == null) continue;
                     HistoryEntry e = HistoryEntry.from(tx, det);
                     if (e.txpowid.isEmpty()) continue;
-                    if (db.insert(e)) pageNew++; else hitKnown = true;
+                    // The repair pass must REWRITE rows it already holds (that is the whole point), so it
+                    // can't use insert()'s "was this new" answer — and doesn't need to: it runs in backfill
+                    // mode, which pages to the end of history rather than stopping at the first known row.
+                    if (repair) { db.upsert(e); pageNew++; }
+                    else if (db.insert(e)) pageNew++;
+                    else hitKnown = true;
                 }
                 totalNew += pageNew;
                 if (pageNew > 0 && listener != null) listener.onProgress(totalNew);
@@ -106,7 +114,11 @@ public class HistorySync {
         }
     }
 
-    private void markBackfillDone() { if (backfill) db.setMeta("backfill_done", "true"); }
+    /** Reached the end of what the node retains: the backfill (and any repair riding on it) is complete. */
+    private void markBackfillDone() {
+        if (backfill) db.setMeta("backfill_done", "true");
+        if (repair) { db.setMeta(HistoryDb.META_REPAIR_V2, "done"); repair = false; }
+    }
 
     private void finish(boolean ok) {
         running = false;

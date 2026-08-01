@@ -89,9 +89,16 @@ public class HistoryEntry {
             if (c == null) continue;
             try {
                 JSONObject o = new JSONObject();
+                String tid = c.optString("tokenid", "0x00");
                 o.put("addr", c.optString("miniaddress", c.optString("address", "")));
-                o.put("amount", c.optString("amount", c.optString("tokenamount", "")));
-                o.put("tokenid", c.optString("tokenid", "0x00"));
+                // A token coin carries BOTH `amount` (the internal coloured-coin value) and `tokenamount`
+                // (the actual quantity) — and `optString(k, fallback)` only falls back when the key is
+                // ABSENT, so reading `amount` first silently stored the wrong number for every token coin.
+                // Same rule as Coin.from() and PoolBook: MINIMA → amount, token → tokenamount.
+                o.put("amount", Util.isMinima(tid)
+                        ? c.optString("amount", "0")
+                        : c.optString("tokenamount", c.optString("amount", "0")));
+                o.put("tokenid", tid);
                 out.put(o);
             } catch (Exception ignored) {}
         }

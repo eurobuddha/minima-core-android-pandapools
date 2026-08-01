@@ -4,43 +4,36 @@ import android.net.Uri;
 import android.os.Handler;
 import android.os.Looper;
 
-import org.json.JSONArray;
-import org.json.JSONObject;
-
-import java.io.ByteArrayOutputStream;
 import java.io.OutputStream;
 import java.math.BigDecimal;
 import java.text.SimpleDateFormat;
+import java.util.ArrayList;
 import java.util.Date;
+import java.util.HashSet;
+import java.util.List;
 import java.util.Locale;
+import java.util.Set;
 import java.util.TimeZone;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.zip.ZipEntry;
-import java.util.zip.ZipOutputStream;
 
 /**
- * Runs the accounting export end to end: asks the node for a live balance, reads the whole local history
- * off the UI thread, builds the reports via {@link AccountingExport}, and packs them into one ZIP.
+ * Runs the pool statement: reads the local history off the UI thread, builds the CSV via
+ * {@link PoolStatement}, and hands it back for saving or sharing.
  *
- * The database read and the report build never touch the main thread — a full history is thousands of rows
- * and would jank the UI. The node call runs first (on the main thread, as {@link NodeApi} requires) and its
- * result is handed to the background pass. A node that is unreachable is NOT fatal: the export still runs,
- * and the summary says the reconciliation figures were unavailable rather than silently omitting them.
+ * The live pool reserves are passed IN by the caller rather than re-scanned here. {@link MyLpView} already
+ * holds the owned pools from the shared scan, so using its list means the statement and the on-screen pool
+ * card cannot disagree — they are literally the same numbers.
+ *
+ * A pool the caller owns but that is absent from the live scan is either closed (its last recorded event
+ * spent it out, so its reserves are exactly zero — knowledge, not assumption) or simply not seen this scan,
+ * in which case the statement says the reserves are unavailable instead of inventing them.
  */
 public final class ExportWriter {
 
     public interface Cb {
-        void onDone(byte[] zip, String filename, AccountingExport.Report report);
+        void onDone(String csv, String filename, PoolStatement.Report report);
         void onError(String message);
-    }
-
-    /** A time window to export. */
-    public static final class Window {
-        public final long fromMs, toMs;
-        public final String label;
-        public Window(long fromMs, long toMs, String label) { this.fromMs = fromMs; this.toMs = toMs; this.label = label; }
-        public static Window allTime() { return new Window(0, Long.MAX_VALUE, "All time"); }
     }
 
     private static final ExecutorService EXEC = Executors.newSingleThreadExecutor(r -> {
@@ -50,66 +43,47 @@ public final class ExportWriter {
 
     private ExportWriter() {}
 
-    /** Build the export. The callback fires on the UI thread. */
-    public static void run(final MainActivity act, final PandaAddrBook addrs, final Window win, final Cb cb) {
-        if (act.node() == null) { cb.onError("No node connection."); return; }
-        // Live balance first (main thread, per NodeApi's contract); the heavy work follows in the background.
-        act.node().cmd("balance", new NodeApi.Cb() {
-            @Override public void onResult(JSONObject j) { background(act, addrs, win, j.optJSONArray("response"), cb); }
-            @Override public void onError(String m) { background(act, addrs, win, null, cb); }
-        });
-    }
-
-    private static void background(final MainActivity act, final PandaAddrBook addrs, final Window win,
-                                   final JSONArray balances, final Cb cb) {
+    /**
+     * Build the statement. The callback fires on the UI thread.
+     *
+     * @param livePools the pools this node owns, with reserves from the latest scan
+     */
+    public static void run(final MainActivity act, final PandaAddrBook addrs,
+                           final List<Pool> livePools, final Cb cb) {
+        final List<Pool> live = new ArrayList<>(livePools);
         EXEC.execute(() -> {
             try {
-                AccountingExport.Params p = new AccountingExport.Params();
+                PoolStatement.Params p = new PoolStatement.Params();
                 p.addrs = addrs;
                 p.exportedAtMs = System.currentTimeMillis();
-                p.fromMs = win.fromMs; p.toMs = win.toMs; p.windowLabel = win.label;
                 try {
                     p.appVersion = act.getPackageManager().getPackageInfo(act.getPackageName(), 0).versionName;
                 } catch (Exception ignore) {}
 
-                if (balances != null) {
-                    for (int i = 0; i < balances.length(); i++) {
-                        JSONObject b = balances.optJSONObject(i);
-                        if (b == null) continue;
-                        TokenBalance tb = TokenBalance.from(b);
-                        if (tb.tokenid == null || tb.tokenid.isEmpty()) continue;
-                        p.symbols.put(tb.tokenid, label(tb));
-                        BigDecimal s = Util.decOr(tb.sendable, null);
-                        BigDecimal c = Util.decOr(tb.confirmed, null);
-                        if (s != null) p.nodeSendable.put(tb.tokenid, s);
-                        if (c != null) p.nodeConfirmed.put(tb.tokenid, c);
-                    }
-                }
-
                 HistoryDb db = act.history();
-                p.rows = db.listChronological(win.fromMs, win.toMs);
-                p.dbRowCount = db.count();
-                long[] range = db.blockRange();
-                p.dbMinBlock = range[0]; p.dbMaxBlock = range[1];
+                p.rows = db.listChronological(0, Long.MAX_VALUE);
                 p.backfillDone = "true".equals(db.getMeta("backfill_done", ""));
-                p.firstSyncTs = db.getMeta("first_sync_ts", "");
-                p.lastSyncTs = db.getMeta("last_sync_ts", "");
-                p.syncedTipBlock = db.getMeta("synced_tip_block", "");
 
-                // Opening reserves for any pool whose LpStore snapshot still exists (it is dropped on close,
-                // so a closed pool simply has none — the position is still fully described by the ledger).
-                for (Pool pool : OwnPoolStore.all(act)) {
-                    if (pool.address == null) continue;
-                    LpStore.Snapshot s = LpStore.get(act, pool.address);
-                    if (s == null) continue;
-                    p.openings.put(pool.address.toLowerCase(),
-                            new AccountingExport.LpOpening(s.initM, s.initT, s.initPrice, s.block));
+                Set<String> seen = new HashSet<>();
+                for (Pool pool : live) {
+                    if (pool == null || pool.address == null) continue;
+                    seen.add(pool.address.toLowerCase());
+                    p.pools.add(new PoolStatement.PoolInfo(pool.address, pool.tokenLabel(),
+                            pool.reserveM, pool.reserveT, false, null));
+                }
+                // Pools we own that the scan didn't return — closed, or just not seen this time.
+                for (Pool recipe : OwnPoolStore.all(act)) {
+                    if (recipe.address == null || seen.contains(recipe.address.toLowerCase())) continue;
+                    Closure c = closure(p.rows, addrs, recipe.address);
+                    p.pools.add(new PoolStatement.PoolInfo(recipe.address, label(recipe),
+                            c.closed ? BigDecimal.ZERO : null,
+                            c.closed ? BigDecimal.ZERO : null,
+                            c.closed, c.migratedTo));
                 }
 
-                AccountingExport.Report rep = AccountingExport.build(p);
-                byte[] zip = zip(rep);
+                PoolStatement.Report rep = PoolStatement.build(p);
                 String name = filename(p.exportedAtMs);
-                UI.post(() -> cb.onDone(zip, name, rep));
+                UI.post(() -> cb.onDone(rep.csv, name, rep));
             } catch (Throwable t) {
                 String msg = t.getMessage() == null ? t.getClass().getSimpleName() : t.getMessage();
                 UI.post(() -> cb.onError(msg));
@@ -117,65 +91,70 @@ public final class ExportWriter {
         });
     }
 
-    private static String label(TokenBalance tb) {
-        if (tb.isMinima()) return "MINIMA";
-        if (tb.meta != null) {
-            if (tb.meta.ticker != null && !tb.meta.ticker.isEmpty()) return tb.meta.ticker;
-            if (tb.meta.name != null && !tb.meta.name.isEmpty()) return tb.meta.name;
+    private static final class Closure { boolean closed; String migratedTo; }
+
+    /**
+     * Was this pool spent out? Only if the LAST thing our history records for it withdrew or migrated it.
+     * Anything else (or no record at all) leaves the reserves unknown rather than assumed-zero.
+     */
+    private static Closure closure(List<HistoryEntry> rows, TxClassifier.Addrs addrs, String address) {
+        Closure c = new Closure();
+        for (HistoryEntry e : rows) {                       // chronological, so the last match wins
+            TxClassifier.Tx t = TxClassifier.classify(e, addrs);
+            if (t.poolAddress == null || !t.poolAddress.equalsIgnoreCase(address)) continue;
+            if (TxClassifier.POOL_KEEPALIVE.equals(t.type)) continue;
+            boolean out = TxClassifier.POOL_WITHDRAW.equals(t.type) || TxClassifier.POOL_MIGRATE.equals(t.type);
+            c.closed = out;
+            c.migratedTo = null;
+            if (TxClassifier.POOL_MIGRATE.equals(t.type)) {
+                // the migrate's other pool address is where the position went
+                for (String other : TxClassifier.poolFlows(e, addrs).keySet())
+                    if (!other.equalsIgnoreCase(address)) c.migratedTo = other;
+            }
         }
-        return Util.shorten(tb.tokenid);
+        return c;
+    }
+
+    private static String label(Pool recipe) {
+        String cached = Util.tokenNameCached(recipe.tok);
+        if (cached != null && !cached.isEmpty()) return cached;
+        return Util.shorten(recipe.tok);        // an identifier, not a guessed name
     }
 
     static String filename(long ms) {
         SimpleDateFormat f = new SimpleDateFormat("yyyy-MM-dd", Locale.ENGLISH);
         f.setTimeZone(TimeZone.getTimeZone("UTC"));
-        return "pandapools-accounts-" + f.format(new Date(ms)) + ".zip";
+        return "pandapools-statement-" + f.format(new Date(ms)) + ".csv";
     }
 
-    private static byte[] zip(AccountingExport.Report r) throws Exception {
-        ByteArrayOutputStream bos = new ByteArrayOutputStream();
-        try (ZipOutputStream z = new ZipOutputStream(bos)) {
-            put(z, AccountingExport.FILE_SUMMARY, r.summaryTxt);
-            put(z, AccountingExport.FILE_TX, r.transactionsCsv);
-            put(z, AccountingExport.FILE_LEDGER, r.ledgerCsv);
-            put(z, AccountingExport.FILE_LP, r.lpCsv);
-        }
-        return bos.toByteArray();
-    }
-
-    private static void put(ZipOutputStream z, String name, String content) throws Exception {
-        z.putNextEntry(new ZipEntry(name));
-        z.write(content.getBytes("UTF-8"));
-        z.closeEntry();
-    }
-
-    /** Write the finished ZIP to a SAF-picked destination. Returns false if the stream couldn't be opened. */
-    public static boolean writeTo(MainActivity act, Uri uri, byte[] data) {
+    /** Write the statement to a SAF-picked destination. False if the stream couldn't be opened. */
+    public static boolean writeTo(MainActivity act, Uri uri, String csv) {
         try (OutputStream os = act.getContentResolver().openOutputStream(uri, "w")) {
             if (os == null) return false;
-            os.write(data);
+            os.write(csv.getBytes("UTF-8"));
             return true;
         } catch (Exception e) { return false; }
     }
 
-    /** Stage the ZIP in the app's cache so it can be handed to another app via FileProvider. */
-    public static java.io.File stageForShare(MainActivity act, String name, byte[] data) {
+    /** Stage the statement in the app's cache so it can be handed to another app via FileProvider. */
+    public static java.io.File stageForShare(MainActivity act, String name, String csv) {
         try {
             java.io.File dir = new java.io.File(act.getCacheDir(), "export");
             if (!dir.exists() && !dir.mkdirs()) return null;
-            // one staged export at a time — don't leave old financial data lying in the cache
-            java.io.File[] old = dir.listFiles();
+            java.io.File[] old = dir.listFiles();     // one staged export at a time
             if (old != null) for (java.io.File f : old) f.delete();
             java.io.File out = new java.io.File(dir, name);
-            try (java.io.FileOutputStream fos = new java.io.FileOutputStream(out)) { fos.write(data); }
+            try (java.io.FileOutputStream fos = new java.io.FileOutputStream(out)) {
+                fos.write(csv.getBytes("UTF-8"));
+            }
             return out;
         } catch (Exception e) { return null; }
     }
 
-    /** Convenience for the UI: a one-line description of what was produced. */
-    public static String describe(AccountingExport.Report r) {
-        return r.pandaCount + " PandaPools transaction" + (r.pandaCount == 1 ? "" : "s")
-                + " · " + r.ledgerRows + " ledger rows · "
-                + r.poolCount + " pool" + (r.poolCount == 1 ? "" : "s");
+    /** One line for the UI describing what was produced. */
+    public static String describe(PoolStatement.Report r) {
+        String s = r.poolCount + " pool" + (r.poolCount == 1 ? "" : "s") + " · " + r.tradeRows + " transactions";
+        if (r.unreconciled > 0) s += " · " + r.unreconciled + " flagged";
+        return s;
     }
 }

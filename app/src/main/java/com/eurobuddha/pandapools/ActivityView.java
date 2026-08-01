@@ -43,7 +43,7 @@ public class ActivityView extends BaseView {
     private static final long FAIL_SHOW_MS = 6 * 3600_000L;   // keep a failed action visible this long
 
     private final LinearLayout container;
-    private final TextView personalTab, globalTab, refreshTv, statusTv, exportTv;
+    private final TextView personalTab, globalTab, refreshTv, statusTv;
     private final HistorySync sync;
     private boolean showGlobal = false;
     private boolean polling = false;
@@ -75,16 +75,12 @@ public class ActivityView extends BaseView {
         globalTab   = find(R.id.actGlobal);
         refreshTv   = find(R.id.actRefresh);
         statusTv    = find(R.id.actStatus);
-        exportTv    = find(R.id.actExport);
         a.pools().subscribe(poolListener);
         sync = new HistorySync(a, a.history(), syncListener);
         addrBook.seed();
 
         refreshTv.setTextColor(Design.accent());
         statusTv.setTextColor(Design.dim());
-        exportTv.setTextColor(Design.accent());
-        exportTv.setTypeface(Design.typefaceBold());
-        exportTv.setOnClickListener(v -> showExportDialog());
         personalTab.setOnClickListener(v -> setScope(false));
         globalTab.setOnClickListener(v -> setScope(true));
         refreshTv.setOnClickListener(v -> { syncPersonal(); scanGlobal(); });
@@ -354,158 +350,6 @@ public class ActivityView extends BaseView {
         mid.addView(line1); mid.addView(line2);
         row.addView(mid);
         return row;
-    }
-
-    // ---- accounting export ----
-
-    /**
-     * Offer the accounting export: pick a window, then save the ZIP or hand it straight to another app.
-     *
-     * The coverage line is deliberately blunt about an unfinished backfill. Sum-of-movements only equals the
-     * wallet balance when the local store holds every relevant transaction, and {@link HistorySync} can only
-     * reach as far back as the node still retains — so a partial sync must be disclosed BEFORE someone books
-     * the numbers, not discovered afterwards.
-     */
-    private void showExportDialog() {
-        HistoryDb db = act.history();
-        int rows = db.count();
-        long[] range = db.blockRange();
-        boolean backfilled = "true".equals(db.getMeta("backfill_done", ""));
-
-        LinearLayout box = new LinearLayout(act);
-        box.setOrientation(LinearLayout.VERTICAL);
-        box.setPadding(dp(20), dp(14), dp(20), dp(6));
-
-        TextView blurb = line("A full transaction history for accounting: every pool create with both "
-                + "amounts, every trade with the price it executed at, a wallet ledger that reconciles to "
-                + "your balance, and per-pool totals.", Design.text(), 13f, false);
-        box.addView(blurb);
-
-        TextView cover = line("\n" + rows + " transactions stored  ·  blocks " + range[0] + "–" + range[1],
-                Design.dim(), 12f, false);
-        box.addView(cover);
-
-        if (!backfilled) {
-            TextView warn = line("\n! History is still syncing, so older transactions may be missing. "
-                    + "The export says so in summary.txt and shows the shortfall as an opening balance.",
-                    Design.amber(), 12f, false);
-            box.addView(warn);
-        }
-
-        final int[] choice = {0};
-        final ExportWriter.Window[] windows = {
-                ExportWriter.Window.allTime(),
-                thisYear(),
-                lastYear(),
-        };
-        final String[] labels = { "All time", windows[1].label, windows[2].label };
-
-        TextView pick = line("\nPeriod", Design.dim(), 11f, true);
-        pick.setAllCaps(true);
-        pick.setLetterSpacing(0.1f);
-        box.addView(pick);
-
-        final TextView[] chips = new TextView[labels.length];
-        LinearLayout chipRow = new LinearLayout(act);
-        chipRow.setOrientation(LinearLayout.HORIZONTAL);
-        chipRow.setPadding(0, dp(6), 0, 0);
-        for (int i = 0; i < labels.length; i++) {
-            final int idx = i;
-            TextView c = new TextView(act);
-            c.setText(labels[i]);
-            c.setTextSize(12f);
-            c.setPadding(dp(12), dp(7), dp(12), dp(7));
-            Ui.chip(c, i == 0);
-            c.setOnClickListener(v -> {
-                choice[0] = idx;
-                for (int k = 0; k < chips.length; k++) Ui.chip(chips[k], k == idx);
-            });
-            chips[i] = c;
-            chipRow.addView(c);
-            if (i < labels.length - 1) {
-                View gap = new View(act);
-                gap.setLayoutParams(new LinearLayout.LayoutParams(dp(8), dp(1)));
-                chipRow.addView(gap);
-            }
-        }
-        box.addView(chipRow);
-
-        ScrollView sv = new ScrollView(act);
-        sv.addView(box);
-        new AlertDialog.Builder(act)
-                .setTitle("Export for accounting")
-                .setView(sv)
-                .setPositiveButton("Save file…", (d, w) -> runExport(windows[choice[0]], false))
-                .setNeutralButton("Share…", (d, w) -> runExport(windows[choice[0]], true))
-                .setNegativeButton("Cancel", null)
-                .show();
-    }
-
-    private void runExport(ExportWriter.Window win, final boolean share) {
-        setStatus("Building export…");
-        ExportWriter.run(act, addrBook, win, new ExportWriter.Cb() {
-            @Override public void onDone(byte[] zip, String filename, AccountingExport.Report report) {
-                setStatus(null);
-                if (share) shareZip(zip, filename, report); else saveZip(zip, filename, report);
-            }
-            @Override public void onError(String message) {
-                setStatus(null);
-                Toast.makeText(act, "Export failed: " + message, Toast.LENGTH_LONG).show();
-            }
-        });
-    }
-
-    private void saveZip(final byte[] zip, String filename, final AccountingExport.Report report) {
-        act.pickSaveZip(filename, uri -> {
-            if (uri == null) return;                       // user cancelled
-            boolean ok = ExportWriter.writeTo(act, uri, zip);
-            Toast.makeText(act, ok ? "Saved  ·  " + ExportWriter.describe(report) : "Could not write the file",
-                    Toast.LENGTH_LONG).show();
-        });
-    }
-
-    private void shareZip(byte[] zip, String filename, AccountingExport.Report report) {
-        java.io.File f = ExportWriter.stageForShare(act, filename, zip);
-        if (f == null) { Toast.makeText(act, "Could not prepare the file", Toast.LENGTH_LONG).show(); return; }
-        try {
-            android.net.Uri uri = androidx.core.content.FileProvider.getUriForFile(
-                    act, act.getPackageName() + ".fileprovider", f);
-            android.content.Intent i = new android.content.Intent(android.content.Intent.ACTION_SEND);
-            i.setType("application/zip");
-            i.putExtra(android.content.Intent.EXTRA_STREAM, uri);
-            i.putExtra(android.content.Intent.EXTRA_SUBJECT, "PandaPools accounting export");
-            i.putExtra(android.content.Intent.EXTRA_TEXT, ExportWriter.describe(report));
-            i.addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION);
-            act.startActivity(android.content.Intent.createChooser(i, "Send export"));
-        } catch (Exception e) {
-            Toast.makeText(act, "Could not share the file", Toast.LENGTH_LONG).show();
-        }
-    }
-
-    private void setStatus(String s) {
-        if (s == null || s.isEmpty()) { statusTv.setVisibility(View.GONE); return; }
-        statusTv.setText(s);
-        statusTv.setVisibility(View.VISIBLE);
-    }
-
-    /** 1 Jan this year → now, in the device's own timezone (a tax year is a local-calendar thing). */
-    private static ExportWriter.Window thisYear() {
-        java.util.Calendar c = java.util.Calendar.getInstance();
-        int y = c.get(java.util.Calendar.YEAR);
-        return new ExportWriter.Window(startOfYear(y), Long.MAX_VALUE, String.valueOf(y));
-    }
-
-    private static ExportWriter.Window lastYear() {
-        java.util.Calendar c = java.util.Calendar.getInstance();
-        int y = c.get(java.util.Calendar.YEAR) - 1;
-        return new ExportWriter.Window(startOfYear(y), startOfYear(y + 1) - 1, String.valueOf(y));
-    }
-
-    private static long startOfYear(int year) {
-        java.util.Calendar c = java.util.Calendar.getInstance();
-        c.clear();
-        c.set(year, java.util.Calendar.JANUARY, 1, 0, 0, 0);
-        return c.getTimeInMillis();
     }
 
     // ---- detail dialog (mirrors the History app) ----
