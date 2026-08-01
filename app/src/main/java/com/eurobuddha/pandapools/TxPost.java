@@ -52,7 +52,6 @@ public final class TxPost {
      * Everything here runs on the main thread ({@link NodeApi} funnels every node callback back to it),
      * so the queue needs no locking.
      */
-    private static final Handler MAIN = new Handler(Looper.getMainLooper());
     private static final ArrayDeque<Runnable> QUEUE = new ArrayDeque<>();
     private static boolean signing = false;
     private static Runnable watchdog = null;
@@ -60,6 +59,19 @@ public final class TxPost {
     /** Longer than NodeApi's 180s write timeout, so the watchdog only ever fires for a chain whose
      *  callback was genuinely lost — never for one that is merely slow. */
     private static final long MAX_HOLD_MS = 200_000;
+
+    /** Lazily resolved so the queue logic works without a Looper. Off-device android.jar's stub THROWS
+     *  rather than returning null, so catch broadly; without a Looper the watchdog is simply absent. */
+    private static Handler main;
+    private static boolean mainResolved = false;
+    private static Handler main() {
+        if (!mainResolved) {
+            mainResolved = true;
+            try { Looper l = Looper.getMainLooper(); if (l != null) main = new Handler(l); }
+            catch (Throwable noAndroidRuntime) { main = null; }
+        }
+        return main;
+    }
 
     private static void submit(Runnable chain) {
         QUEUE.add(chain);
@@ -70,13 +82,16 @@ public final class TxPost {
         Runnable next = QUEUE.poll();
         if (next == null) { signing = false; return; }
         signing = true;
-        watchdog = () -> { watchdog = null; startNext(); };   // a dropped callback must not wedge the app
-        MAIN.postDelayed(watchdog, MAX_HOLD_MS);
+        Handler h = main();
+        if (h != null) {
+            watchdog = () -> { watchdog = null; startNext(); };   // a dropped callback must not wedge the app
+            h.postDelayed(watchdog, MAX_HOLD_MS);
+        }
         next.run();
     }
 
     private static void release() {
-        if (watchdog != null) { MAIN.removeCallbacks(watchdog); watchdog = null; }
+        if (watchdog != null) { Handler h = main(); if (h != null) h.removeCallbacks(watchdog); watchdog = null; }
         startNext();
     }
 
