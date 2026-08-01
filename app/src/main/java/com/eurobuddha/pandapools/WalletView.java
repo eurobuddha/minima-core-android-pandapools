@@ -46,6 +46,11 @@ public class WalletView extends BaseView {
     private final List<TokenBalance> balances = new ArrayList<>();
     private String receiveAddr = "";
     private boolean loading = false;
+    /** When the last `balance` reply landed — drives the "updated Ns ago" stamp (AtomiX parity). */
+    private long lastBalanceUpdate = 0;
+    private boolean unpaired = false;
+    /** Every known pool covenant address, so the coin list can say WHICH coins are the locked ones. */
+    private PandaAddrBook addrBook;
 
     public WalletView(MainActivity a) {
         super(a, R.layout.view_balances);
@@ -78,6 +83,8 @@ public class WalletView extends BaseView {
         act.node().cmd("balance", new NodeApi.Cb() {
             @Override public void onResult(JSONObject j) {
                 loading = false;
+                unpaired = false;
+                lastBalanceUpdate = System.currentTimeMillis();
                 balances.clear();
                 JSONArray arr = j.optJSONArray("response");
                 if (arr != null) for (int i = 0; i < arr.length(); i++) {
@@ -93,7 +100,14 @@ public class WalletView extends BaseView {
                 });
                 renderCards();
             }
-            @Override public void onError(String m) { loading = false; }
+            // Stamp the attempt either way, so "updated Ns ago" reflects when we last heard from the node
+            // rather than freezing at the last success and implying the figures are fresher than they are.
+            @Override public void onError(String m) {
+                loading = false;
+                lastBalanceUpdate = System.currentTimeMillis();
+                unpaired = NodeApi.ERR_NOT_ENABLED.equals(m);
+                if (unpaired) { balances.clear(); renderCards(); }
+            }
         });
     }
 
@@ -109,7 +123,8 @@ public class WalletView extends BaseView {
         container.addView(receiveHeader());
         if (balances.isEmpty()) {
             TextView tv = new TextView(act);
-            tv.setText(loading ? "Loading balances…" : "No balances yet.");
+            tv.setText(unpaired ? "Connect your node in Minima Core → Apps to see your balances."
+                    : loading ? "Loading balances…" : "No balances yet.");
             tv.setTextColor(Design.dim()); tv.setGravity(Gravity.CENTER); tv.setPadding(0, dp(40), 0, 0);
             container.addView(tv);
             return;
@@ -235,13 +250,11 @@ public class WalletView extends BaseView {
 
         card.addView(top);
 
-        String locked = lockedAmount(b);
-        if (positive(locked) || positive(b.unconfirmed)) {
-            card.addView(divider());
-            card.addView(splitRow("SENDABLE", Util.tidyAmount(b.sendable), Design.accent()));
-            if (positive(locked)) card.addView(splitRow("LOCKED", Util.tidyAmount(locked), Design.dim()));
-            if (positive(b.unconfirmed)) card.addView(splitRow("PENDING", Util.tidyAmount(b.unconfirmed), Design.dim()));
-        }
+        // The full breakdown, ALWAYS — zeros included. Hiding a zero is what made this unreadable: on a node
+        // whose funds are all in a pool you saw a headline 0 and nothing explaining where the money went.
+        TextView bd = mono(b.breakdown(lastBalanceUpdate, System.currentTimeMillis()), 11.5f, Design.dim(), false);
+        bd.setPadding(0, dp(6), 0, 0);
+        card.addView(bd);
 
         card.setOnClickListener(v -> showTokenDetail(b));
         return card;
@@ -283,16 +296,37 @@ public class WalletView extends BaseView {
         title.setGravity(Gravity.CENTER); title.setTypeface(Design.typeface(), Typeface.BOLD);
         title.setPadding(0, 0, 0, dp(8)); box.addView(title);
 
+        // All four, always — same rule as the card. A hidden zero is what we're fixing.
         addKv(box, "Sendable", Util.tidyAmount(b.sendable));
         addKv(box, "Confirmed", Util.tidyAmount(b.confirmed));
-        if (positive(b.unconfirmed)) addKv(box, "Pending", Util.tidyAmount(b.unconfirmed));
-        String locked = lockedAmount(b);
-        if (positive(locked)) addKv(box, "Locked", Util.tidyAmount(locked));
+        addKv(box, "Unconfirmed", Util.tidyAmount(b.unconfirmed));
+        addKv(box, "Locked ≈", b.locked());
         addKv(box, "Coins", String.valueOf(b.coins));
         addKv(box, "Supply", Util.tidyAmount(b.total));
         if (notEmpty(b.meta.ticker)) addKv(box, "Ticker", b.meta.ticker);
         if (notEmpty(b.meta.decimals)) addKv(box, "Decimals", b.meta.decimals);
         if (notEmpty(b.meta.owner)) addKv(box, "Owner", b.meta.owner);
+
+        box.addView(sectionLabel("Coins"));
+        TextView coinsView = new TextView(act);
+        coinsView.setText("Loading coins…");
+        coinsView.setTextColor(Design.dim()); coinsView.setTextSize(12f); coinsView.setTypeface(Typeface.MONOSPACE);
+        // Selectable so any single coinid can be lifted out; the copy row below grabs the whole list at once.
+        coinsView.setTextIsSelectable(true);
+        TextView copyAll = new TextView(act);
+        copyAll.setText("copy all coins");
+        copyAll.setTextColor(Design.accent()); copyAll.setTextSize(12f);
+        copyAll.setPadding(0, dp(2), 0, dp(6));
+        copyAll.setOnClickListener(v -> {
+            CharSequence all = coinsView.getText();
+            if (all == null || all.length() == 0) return;
+            ((ClipboardManager) act.getSystemService(Context.CLIPBOARD_SERVICE))
+                    .setPrimaryClip(ClipData.newPlainText("coins", all));
+            Toast.makeText(act, "Coins copied", Toast.LENGTH_SHORT).show();
+        });
+        box.addView(copyAll);
+        box.addView(coinsView);
+        loadCoins(b, coinsView);
 
         box.addView(sectionLabel("Token ID"));
         TextView idv = new TextView(act);
@@ -310,6 +344,68 @@ public class WalletView extends BaseView {
         if (notEmpty(b.meta.webvalidate)) box.addView(linkRow("Web validation", b.meta.webvalidate));
 
         new AlertDialog.Builder(act).setView(sv).setPositiveButton("Close", null).show();
+    }
+
+    // ---- coin list (AtomiX's coin dump, tagged for PandaPools) ----
+
+    /**
+     * List the coins the node counts as relevant for this token, largest first, tagging the ones sitting at
+     * a pool covenant address. That turns the section into a direct answer to "why is confirmed bigger than
+     * sendable" — those tagged coins ARE the difference.
+     *
+     * BOUNDED deliberately. AtomiX asks for {@code simplestate:false} unbounded; over this app's broadcast
+     * IPC an oversized reply is not a catchable error — the Binder transaction fails and the OS force-kills
+     * the app before any callback runs. So we omit simplestate (which is what inflates the reply) and, if
+     * the node still returns its over-256KB stub, retry once for sendable coins only and SAY the list is
+     * partial rather than quietly showing a subset.
+     */
+    private void loadCoins(TokenBalance b, TextView out) {
+        if (act.node() == null) { out.setText("No node connection."); return; }
+        if (addrBook == null) { addrBook = new PandaAddrBook(act); addrBook.seed(); }
+        final String base = "coins relevant:true tokenid:" + b.tokenid;
+        act.node().cmd(base, new NodeApi.Cb() {
+            @Override public void onResult(JSONObject j) { out.setText(renderCoins(j, false)); }
+            @Override public void onError(String m) {
+                if (!NodeApi.ERR_TOO_LONG.equals(m)) { out.setText("Couldn't load coins: " + m); return; }
+                act.node().cmd(base + " sendable:true", new NodeApi.Cb() {
+                    @Override public void onResult(JSONObject j2) { out.setText(renderCoins(j2, true)); }
+                    @Override public void onError(String m2) { out.setText("Too many coins to list."); }
+                });
+            }
+        });
+    }
+
+    private CharSequence renderCoins(JSONObject j, boolean sendableOnly) {
+        JSONArray arr = j.optJSONArray("response");
+        if (arr == null || arr.length() == 0) return "No coins.";
+        List<Coin> list = new ArrayList<>();
+        for (int i = 0; i < arr.length(); i++) {
+            JSONObject c = arr.optJSONObject(i);
+            if (c != null) list.add(Coin.from(c));
+        }
+        Collections.sort(list, (x, y) -> bd(y.amount).compareTo(bd(x.amount)));
+
+        // EVERY coin, with its FULL coinid — this is the audit view, so nothing is capped or elided.
+        StringBuilder sb = new StringBuilder();
+        if (sendableOnly) sb.append("(the node's reply was over its size cap — sendable coins only)\n\n");
+        for (Coin c : list) {
+            sb.append(Util.tidyAmount(c.amount))
+              .append(tag(c))
+              .append('\n').append(c.coinid).append('\n');
+        }
+        return sb.toString().trim();
+    }
+
+    /**
+     * Why this coin isn't sendable. A pool reserve sits at the covenant address; a discovery beacon is dust
+     * at the shared sentinel. Between them they account for most of the gap between confirmed and sendable,
+     * so naming them turns the list into an answer rather than a wall of hashes. Anything still untagged is
+     * locked by something else (another contract, or an owner payout address awaiting collection).
+     */
+    private String tag(Coin c) {
+        if (addrBook.contains(c.address) || addrBook.contains(c.miniaddress)) return "   (pool)";
+        if (PoolCovenant.SENTINEL.equalsIgnoreCase(c.address)) return "   (beacon)";
+        return "";
     }
 
     private void showImageFull(String url) {
@@ -330,26 +426,6 @@ public class WalletView extends BaseView {
         t.setText(s); t.setTextColor(color); t.setTextSize(sp);
         t.setTypeface(Design.typeface(), bold ? Typeface.BOLD : Typeface.NORMAL);
         return t;
-    }
-
-    private View divider() {
-        View v = new View(act);
-        v.setBackgroundColor(Design.border());
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(MP, Math.max(1, dp(1)));
-        lp.topMargin = dp(10); lp.bottomMargin = dp(8);
-        v.setLayoutParams(lp);
-        return v;
-    }
-
-    private View splitRow(String label, String value, int labelColor) {
-        LinearLayout r = new LinearLayout(act);
-        r.setOrientation(LinearLayout.HORIZONTAL); r.setGravity(Gravity.CENTER_VERTICAL);
-        r.setPadding(0, dp(2), 0, dp(2));
-        TextView l = mono(label, 10f, labelColor, true); l.setLetterSpacing(0.08f);
-        TextView val = mono(value, 13f, Design.heading(), true); val.setGravity(Gravity.END);
-        r.addView(l, new LinearLayout.LayoutParams(0, WC, 1f));
-        r.addView(val, new LinearLayout.LayoutParams(0, WC, 1f));
-        return r;
     }
 
     private GradientDrawable borderBox(int bg, int border) {
@@ -420,17 +496,6 @@ public class WalletView extends BaseView {
     }
 
     private static boolean notEmpty(String s) { return s != null && !s.isEmpty(); }
-
-    private boolean positive(String amt) {
-        try { return new BigDecimal(amt).signum() > 0; } catch (Exception e) { return false; }
-    }
-
-    private static String lockedAmount(TokenBalance b) {
-        try {
-            BigDecimal l = new BigDecimal(b.confirmed).subtract(new BigDecimal(b.sendable));
-            return l.signum() > 0 ? l.stripTrailingZeros().toPlainString() : "0";
-        } catch (Exception e) { return "0"; }
-    }
 
     private static BigDecimal bd(String s) { try { return new BigDecimal(s); } catch (Exception e) { return BigDecimal.ZERO; } }
     private int dp(int v) { return Math.round(v * act.getResources().getDisplayMetrics().density); }

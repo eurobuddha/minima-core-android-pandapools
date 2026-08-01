@@ -31,6 +31,40 @@ public class TokenBalance {
         return t;
     }
 
+    /**
+     * Contract-locked = {@code confirmed − sendable}.
+     *
+     * {@code sendable} counts only simple-address coins; {@code confirmed} counts every confirmed coin
+     * INCLUDING those locked in a contract. In PandaPools a pool's reserves sit at its covenant address, so
+     * the difference IS the liquidity you have committed. It is derived, not node-supplied — which is why
+     * it is always shown with a "≈".
+     *
+     * Returns {@code "—"} if either side won't parse, matching AtomiX rather than implying a real zero.
+     */
+    public String locked() {
+        try {
+            java.math.BigDecimal l = new java.math.BigDecimal(confirmed).subtract(new java.math.BigDecimal(sendable));
+            return Util.tidyAmount((l.signum() > 0 ? l : java.math.BigDecimal.ZERO).toPlainString());
+        } catch (Exception e) { return "—"; }
+    }
+
+    /**
+     * The one-line balance breakdown — a port of AtomiX's {@code minimaBreakdown()}, whose comment is the
+     * whole reason it exists: "so the displayed numbers are never a black box".
+     *
+     * Every figure is shown unconditionally, zeros included. Hiding a zero is what made the old display
+     * unreadable: on a node whose funds are all in a pool you saw a headline 0 and no explanation.
+     */
+    public String breakdown(long lastUpdateMs, long nowMs) {
+        String ago = lastUpdateMs <= 0 ? "never" : Math.max(0, (nowMs - lastUpdateMs) / 1000) + "s ago";
+        return "confirmed " + Util.tidyAmount(confirmed)
+             + "  ·  locked ≈ " + locked()
+             + "  ·  unconfirmed " + Util.tidyAmount(unconfirmed)
+             + "  ·  " + coins + " coins"
+             + "  ·  updated " + ago
+             + "  ·  tap for coins";
+    }
+
     public boolean isMinima() { return Util.isMinima(tokenid); }
 
     public boolean hasIcon() { return meta != null && meta.iconUrl != null && !meta.iconUrl.isEmpty(); }
