@@ -944,7 +944,7 @@ public class MyLpView extends BaseView {
 
     private void doBackup() {
         status("Preparing backup…");
-        recovery.backup(act, new ArrayList<>(myPools), new Recovery.BackupCb() {
+        recovery.backup(act, new ArrayList<>(myPools), act.chainBlock(), new Recovery.BackupCb() {
             @Override public void onBackup(String json) {
                 act.pickSaveFile("pandapools-backup.json", uri -> {
                     if (uri == null) { status("Backup cancelled."); return; }
@@ -967,7 +967,7 @@ public class MyLpView extends BaseView {
             if (json == null || json.isEmpty()) { status("Could not read that file."); return; }
             status("Restoring pools…");
             final StringBuilder log = new StringBuilder();
-            recovery.restore(act, json, new Recovery.RestoreCb() {
+            recovery.restore(act, json, act.chainBlock(), new Recovery.RestoreCb() {
                 @Override public void onProgress(String line) { log.append(line).append('\n'); status("Restoring… " + line); }
                 @Override public void onDone(int restored, int total) {
                     if (total == 0) {

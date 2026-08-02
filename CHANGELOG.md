@@ -12,6 +12,14 @@ mirrored across all three.
 
 ---
 
+## [0.9.23] — carry the owner key's signature count through backup and restore
+- **Fixed** the last key-reuse path. A pool's owner key (`$OPK`) is minted with `newaddress`, so a seed-only re-sync doesn't bring it back — only the 64 defaults are rebuilt. `OwnerKeyRecovery` re-mints it correctly, but the node inserts **every** new key at `uses = 0` (`Wallet.createNewKey`), so the next owner action re-signed leaves the pre-restore node had already spent. Signing one Winternitz leaf twice leaks its private key. Deterministic, not a race.
+- **Added** `opkuses` + `atblock` to the backup (**format v2**): the owner key's real signature count, read from the node, and the height it was read at. On restore the target is `count + elapsed blocks ÷ REFRESH_BLOCKS + slack` — every term measured or derived, none invented.
+- The counter is advanced by **burning leaves** (`sign` → `Wallet.signData` increments and persists `uses`). There is no command to set a counter, and the private key can't be fetched (`KeyRow.toJSON` has `privatekey` commented out) — so this is the one mechanism the node exposes, and it **works on any node**: no forked build, no new command.
+- A pre-v2 backup, or a key the advance can't reach, is **reported** — never silently resumed at leaf 0.
+- **No transaction-building code was touched.** `PoolManager`, `PoolTxn`, `TxPost` and `CmdChain` are byte-identical, so every command an existing pool emits is unchanged. Only `Recovery.java` and two argument-passing lines in `MyLpView` differ.
+- Released 3-way with MDS **0.6.11** + desktop **0.16.5**; the MDS/desktop arithmetic is verified case-by-case against the Java implementation.
+
 ## [0.9.22] — SECURITY: never sign two transactions at once
 - **Fixed** the app fanning out concurrent signing. `PoolRefresher` posted up to **8 refreshes in one loop** (`ReAnnouncer` and `sweepOwnerFunds` likewise), and `PoolManager.selectCoins` sorted largest-first and stopped at the first coin covering the amount needed — which for beacon dust is always the single largest wallet coin. So every parallel builder picked **the same coin, at the same address, owned by the same key**, and signed simultaneously.
 - Minima signatures are stateful: the node picks the next one-time leaf by reading, incrementing and writing a per-key `uses` counter. Two transactions signing one key at once both read the same value and sign the **same leaf over different data** — a reused Winternitz signature, which leaks that leaf's private key. Confirmed in the wild: 7 of 64 default keys on a live node flagged `RE-USED ×2` by a witness-exact auditor.

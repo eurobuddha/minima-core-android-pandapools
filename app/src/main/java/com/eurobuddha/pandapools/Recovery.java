@@ -24,8 +24,11 @@ import java.util.concurrent.atomic.AtomicInteger;
  */
 public class Recovery {
 
-    /** Bumped if the backup wire format ever changes. */
-    static final int BACKUP_VERSION = 1;
+    /** Bumped if the backup wire format ever changes.
+     *  v2 adds {@code opkuses} + {@code atblock} per pool — the owner key's one-time-signature counter and
+     *  the height it was read at. Without them a restore has no way to know where the key left off and
+     *  resumes at leaf 0, re-signing leaves the pre-restore node already spent (see {@link KeyUses}). */
+    static final int BACKUP_VERSION = 2;
 
     public interface BackupCb { void onBackup(String json); void onError(String msg); }
     public interface RestoreCb { void onProgress(String line); void onDone(int restored, int total); }
@@ -42,6 +45,12 @@ public class Recovery {
      * {@code coinexport} of both reserve coins so a fresh node can re-import them directly.
      */
     public void backup(Context ctx, List<Pool> fundedMine, BackupCb cb) {
+        backup(ctx, fundedMine, 0, cb);
+    }
+
+    /** @param chainBlock the current tip, stamped alongside each owner key's use count so a later restore
+     *                    can work out how many keep-fresh signatures could have happened since. */
+    public void backup(Context ctx, List<Pool> fundedMine, final int chainBlock, BackupCb cb) {
         final List<Pool> recipes = OwnPoolStore.all(ctx);
         if (recipes.isEmpty()) { cb.onError("No pools to back up yet — create a pool first."); return; }
 
@@ -53,13 +62,35 @@ public class Recovery {
         for (Pool r : recipes) {
             final JSONObject e = baseEntry(r);
             out.put(e);
-            Pool f = funded.get(r.address == null ? "" : r.address.toLowerCase());
-            if (f != null && notEmpty(f.coinidM) && notEmpty(f.coinidT)) {
-                exportPair(f, e, () -> { if (pending.decrementAndGet() == 0) finishBackup(out, cb); });
-            } else {
-                if (pending.decrementAndGet() == 0) finishBackup(out, cb);
-            }
+            final Pool f = funded.get(r.address == null ? "" : r.address.toLowerCase());
+            final Runnable afterUses = () -> {
+                if (f != null && notEmpty(f.coinidM) && notEmpty(f.coinidT)) {
+                    exportPair(f, e, () -> { if (pending.decrementAndGet() == 0) finishBackup(out, cb); });
+                } else {
+                    if (pending.decrementAndGet() == 0) finishBackup(out, cb);
+                }
+            };
+            recordUses(r, e, chainBlock, afterUses);
         }
+    }
+
+    /**
+     * Stamp this pool's owner-key use count into the backup entry.
+     *
+     * This is the number that makes a restore safe: it is what the key had actually spent at backup time,
+     * measured from the node rather than guessed. Best-effort — a key the node no longer holds (already
+     * restored elsewhere) simply gets no count, and the restore falls back to asking the user.
+     */
+    private void recordUses(final Pool r, final JSONObject e, final int chainBlock, final Runnable done) {
+        if (r.opk == null || r.opk.isEmpty()) { done.run(); return; }
+        KeyUses.read(node, r.opk, new KeyUses.UsesCb() {
+            @Override public void onUses(int uses) {
+                try { e.put("opkuses", uses); if (chainBlock > 0) e.put("atblock", chainBlock); }
+                catch (Exception ignore) {}
+                done.run();
+            }
+            @Override public void onError(String m) { done.run(); }
+        });
     }
 
     private void exportPair(final Pool f, final JSONObject e, final Runnable done) {
@@ -117,6 +148,12 @@ public class Recovery {
      * archive once the node has the coins). Reports progress per pool.
      */
     public void restore(Context ctx, String json, RestoreCb cb) {
+        restore(ctx, json, 0, cb);
+    }
+
+    /** @param chainBlock current tip — used with each entry's stamped height to work out how many
+     *                    keep-fresh signatures could have happened since the backup was taken. */
+    public void restore(Context ctx, String json, final int chainBlock, RestoreCb cb) {
         final JSONArray pools;
         try {
             JSONObject root = new JSONObject(json);
@@ -141,12 +178,62 @@ public class Recovery {
                     OwnerKeyRecovery.ensure(node, opks, regenerated -> {
                         if (regenerated > 0) cb.onProgress("Regenerated " + regenerated
                                 + " owner key" + (regenerated == 1 ? "" : "s") + " so your pools are spendable.");
-                        cb.onDone(okCount.get(), total);
+                        // A regenerated key comes back at uses=0. Wind it forward to where it actually left
+                        // off BEFORE anything can sign with it — that ordering is the entire fix.
+                        advanceAll(pools, 0, chainBlock, cb, () -> cb.onDone(okCount.get(), total));
                     });
                 }
             });
         }
     }
+
+    /**
+     * Walk the backup entries, winding each owner key forward to the count it had reached.
+     *
+     * Sequential on purpose: each pass burns real signatures, and firing them concurrently is exactly the
+     * pattern that caused the original reuse. Best-effort per pool — one key that can't be advanced must
+     * not abandon the others — but every failure is REPORTED, never swallowed, because a key left short
+     * is a key that must not be signed with.
+     */
+    private void advanceAll(final JSONArray pools, final int i, final int chainBlock,
+                            final RestoreCb cb, final Runnable done) {
+        if (i >= pools.length()) { done.run(); return; }
+        final JSONObject e = pools.optJSONObject(i);
+        final Runnable next = () -> advanceAll(pools, i + 1, chainBlock, cb, done);
+        if (e == null) { next.run(); return; }
+
+        final String opk = e.optString("opk", "");
+        final String label = Util.shorten(e.optString("addr", "pool"));
+        if (opk.isEmpty() || !e.has("opkuses")) {
+            // A pre-v2 backup carries no count. Say so rather than quietly resuming at leaf 0 — the user
+            // needs to know this key may re-sign, and can set it from their own resync keyuses value.
+            if (!opk.isEmpty()) cb.onProgress("! " + label + ": this backup predates key-use tracking, so the "
+                    + "owner key's signature count is unknown. Re-back-up now, and avoid reusing this pool.");
+            next.run();
+            return;
+        }
+
+        final int target = KeyUses.restoreTarget(e.optInt("opkuses", 0), e.optInt("atblock", 0), chainBlock, USES_SLACK);
+        KeyUses.advanceTo(node, opk, target, new KeyUses.AdvanceCb() {
+            @Override public void onProgress(int at, int tgt) {
+                if (at % 50 == 0) cb.onProgress("Restoring " + label + " key usage… " + at + "/" + tgt);
+            }
+            @Override public void onDone(int finalUses) {
+                cb.onProgress("Recovered " + label + " owner key (usage restored to " + finalUses + ").");
+                next.run();
+            }
+            @Override public void onError(String m) {
+                cb.onProgress("! " + label + ": could not restore the owner key's usage (" + m + "). "
+                        + "Do not use this pool until that succeeds — signing now could expose the key.");
+                next.run();
+            }
+        });
+    }
+
+    /** Owner actions other than keep-fresh (deposit / migrate / close / collect) that could also have
+     *  signed between the backup and the restore. A leaf costs nothing against 262,144; falling short
+     *  leaks the key — so this errs high deliberately. */
+    private static final int USES_SLACK = 50;
 
     private void restoreOne(final Context ctx, final JSONObject e, final RestoreCb cb,
                             final Runnable onOk, final Runnable done) {
