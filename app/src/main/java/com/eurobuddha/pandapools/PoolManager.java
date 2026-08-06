@@ -63,6 +63,9 @@ public class PoolManager {
                 String oadr = r != null ? r.optString("address", "") : "";
                 String opk  = r != null ? r.optString("publickey", "") : "";
                 if (oadr.isEmpty() || opk.isEmpty()) { cb.onFailed("could not mint an owner key"); return; }
+                // the reply's `total` is the key count AFTER this mint → this key's derivation index
+                final int newTotal = r.optInt("total", 0);
+                final int kidx = newTotal > 0 ? newTotal - 1 : -1;
 
                 final String script = PoolCovenant.script(opk, oadr, tokenid, kmin);
                 // 2. derive the canonical covenant address the same way discovery will (node runscript)
@@ -75,6 +78,7 @@ public class PoolManager {
                             private void fundAndPost() {
                                 Pool p = new Pool();
                                 p.address = address; p.mxaddress = mx; p.opk = opk; p.oadr = oadr;
+                                p.kidx = kidx;
                                 p.tok = tokenid; p.kmin = kmin; p.tokDecimals = tokDecimals;
                                 p.covenantScript = script;   // exact covenant → OwnPoolStore recipe for recovery
                                 p.reserveM = x0; p.reserveT = y0c;
@@ -204,6 +208,7 @@ public class PoolManager {
                     private void go() {
                         Pool np = new Pool();
                         np.address = a2; np.mxaddress = mx2; np.opk = p.opk; np.oadr = p.oadr;
+                        np.kidx = p.kidx;   // same owner key, same derivation index
                         np.tok = p.tok; np.kmin = kmin2; np.tokDecimals = p.tokDecimals;
                         np.covenantScript = script2;   // exact covenant → OwnPoolStore recipe for recovery
                         np.reserveM = newX; np.reserveT = newYc;

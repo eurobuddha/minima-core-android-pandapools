@@ -7,8 +7,10 @@ import org.json.JSONObject;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
@@ -27,8 +29,11 @@ public class Recovery {
     /** Bumped if the backup wire format ever changes.
      *  v2 adds {@code opkuses} + {@code atblock} per pool — the owner key's one-time-signature counter and
      *  the height it was read at. Without them a restore has no way to know where the key left off and
-     *  resumes at leaf 0, re-signing leaves the pre-restore node already spent (see {@link KeyUses}). */
-    static final int BACKUP_VERSION = 2;
+     *  resumes at leaf 0, re-signing leaves the pre-restore node already spent (see {@link KeyUses}).
+     *  v3 adds {@code kidx} per pool — the owner key's derivation index ({@code modifier}), so a restore's
+     *  key hunt is exact and a backup restored onto the WRONG seed is proven foreign with zero minted
+     *  keys (see {@link HuntBudget}). */
+    static final int BACKUP_VERSION = 3;
 
     public interface BackupCb { void onBackup(String json); void onError(String msg); }
     public interface RestoreCb { void onProgress(String line); void onDone(int restored, int total); }
@@ -70,7 +75,7 @@ public class Recovery {
                     if (pending.decrementAndGet() == 0) finishBackup(out, cb);
                 }
             };
-            recordUses(r, e, chainBlock, afterUses);
+            recordUses(ctx, r, e, chainBlock, afterUses);
         }
     }
 
@@ -81,12 +86,24 @@ public class Recovery {
      * measured from the node rather than guessed. Best-effort — a key the node no longer holds (already
      * restored elsewhere) simply gets no count, and the restore falls back to asking the user.
      */
-    private void recordUses(final Pool r, final JSONObject e, final int chainBlock, final Runnable done) {
+    private void recordUses(final Context ctx, final Pool r, final JSONObject e,
+                            final int chainBlock, final Runnable done) {
         if (r.opk == null || r.opk.isEmpty()) { done.run(); return; }
-        KeyUses.read(node, r.opk, new KeyUses.UsesCb() {
-            @Override public void onUses(int uses) {
-                try { e.put("opkuses", uses); if (chainBlock > 0) e.put("atblock", chainBlock); }
-                catch (Exception ignore) {}
+        node.cmd("keys action:list publickey:" + r.opk, new NodeApi.Cb() {
+            @Override public void onResult(JSONObject j) {
+                try {
+                    Integer uses = KeyUses.extractUses(j, r.opk);
+                    if (uses != null) { e.put("opkuses", uses); if (chainBlock > 0) e.put("atblock", chainBlock); }
+                    // the same row carries the key's derivation index — the node's answer beats the recipe's
+                    int kidx = HuntBudget.modifierOf(j, r.opk);
+                    if (kidx >= 0) {
+                        e.put("kidx", kidx);
+                        // Backfill the local recipe too: a pre-v3 pool only reveals its index while the
+                        // node still HOLDS the key — this backup is exactly that moment. With it stored,
+                        // a later hunt on this device is exact instead of blind.
+                        if (r.kidx != kidx) { r.kidx = kidx; OwnPoolStore.record(ctx, r); }
+                    }
+                } catch (Exception ignore) {}
                 done.run();
             }
             @Override public void onError(String m) { done.run(); }
@@ -134,6 +151,7 @@ public class Recovery {
             e.put("dec", r.tokDecimals);
             e.put("kmin", nz(r.kmin));
             e.put("script", nz(r.covenantScript));
+            if (r.kidx >= 0) e.put("kidx", r.kidx);   // recipe's copy; recordUses overwrites with the node's
         } catch (Exception ignore) {}
         return e;
     }
@@ -175,12 +193,28 @@ public class Recovery {
             final JSONObject e = pools.optJSONObject(i);
             restoreOne(ctx, e, cb, () -> { okCount.incrementAndGet(); }, () -> {
                 if (pending.decrementAndGet() == 0) {
-                    OwnerKeyRecovery.ensure(node, opks, regenerated -> {
+                    // Recipes (incl. kidx) are already recorded by restoreOne — but a degenerate entry
+                    // (no covenant script → no recipe) can still carry opk + kidx, so merge the backup's
+                    // own indexes on top of the store's. Larger wins, same rule as kidxFromStore.
+                    final Map<String, Integer> kidx = OwnerKeyRecovery.kidxFromStore(ctx);
+                    for (int k = 0; k < pools.length(); k++) {
+                        JSONObject en = pools.optJSONObject(k);
+                        if (en == null) continue;
+                        String o = en.optString("opk", "").toLowerCase();
+                        int ki = en.optInt("kidx", -1);
+                        if (o.isEmpty() || ki < 0) continue;
+                        Integer prev = kidx.get(o);
+                        if (prev == null || prev < ki) kidx.put(o, ki);
+                    }
+                    OwnerKeyRecovery.ensure(ctx, node, opks, kidx, (regenerated, unreachable) -> {
                         if (regenerated > 0) cb.onProgress("Regenerated " + regenerated
                                 + " owner key" + (regenerated == 1 ? "" : "s") + " so your pools are spendable.");
+                        if (!unreachable.isEmpty()) cb.onProgress("! " + unreachable.size() + " owner key"
+                                + (unreachable.size() == 1 ? " was" : "s were") + " created under a DIFFERENT seed — "
+                                + "this node cannot sign for those pools. Restore them on the device/seed that created them.");
                         // A regenerated key comes back at uses=0. Wind it forward to where it actually left
                         // off BEFORE anything can sign with it — that ordering is the entire fix.
-                        advanceAll(pools, 0, chainBlock, cb, () -> cb.onDone(okCount.get(), total));
+                        advanceAll(pools, 0, chainBlock, new HashSet<>(unreachable), cb, () -> cb.onDone(okCount.get(), total));
                     });
                 }
             });
@@ -196,14 +230,22 @@ public class Recovery {
      * is a key that must not be signed with.
      */
     private void advanceAll(final JSONArray pools, final int i, final int chainBlock,
-                            final RestoreCb cb, final Runnable done) {
+                            final Set<String> unreachable, final RestoreCb cb, final Runnable done) {
         if (i >= pools.length()) { done.run(); return; }
         final JSONObject e = pools.optJSONObject(i);
-        final Runnable next = () -> advanceAll(pools, i + 1, chainBlock, cb, done);
+        final Runnable next = () -> advanceAll(pools, i + 1, chainBlock, unreachable, cb, done);
         if (e == null) { next.run(); return; }
 
         final String opk = e.optString("opk", "");
         final String label = Util.shorten(e.optString("addr", "pool"));
+        if (!opk.isEmpty() && unreachable.contains(opk.toLowerCase())) {
+            // Not this seed's key — there is nothing to advance and never will be. The honest message
+            // here, not the misleading "could not restore the owner key's usage".
+            cb.onProgress("! " + label + ": this pool's owner key belongs to a different seed — "
+                    + "this node cannot sign for it.");
+            next.run();
+            return;
+        }
         if (opk.isEmpty() || !e.has("opkuses")) {
             // A pre-v2 backup carries no count. Say so rather than quietly resuming at leaf 0 — the user
             // needs to know this key may re-sign, and can set it from their own resync keyuses value.
@@ -278,6 +320,7 @@ public class Recovery {
         p.tokDecimals = e.optInt("dec", 8);
         p.kmin = e.optString("kmin", "");
         p.covenantScript = e.optString("script", "");
+        p.kidx = e.optInt("kidx", -1);
         return p;
     }
 

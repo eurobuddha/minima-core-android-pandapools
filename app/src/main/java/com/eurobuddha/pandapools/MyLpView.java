@@ -719,33 +719,56 @@ public class MyLpView extends BaseView {
     /** Self-heal the owner key ($OPK) before an owner-signed action. $OPK is a newaddress key (index >= 64) a
      *  seed-only restore regenerates ASYNCHRONOUSLY, so acting too soon after a restore fails with "Public Key
      *  not found". OwnerKeyRecovery.ensure is a no-op when the node already holds the key (one extra keys check);
-     *  a not-yet-ready node just proceeds (the action itself surfaces any real error). */
-    private void ensureOwner(List<String> opks, Runnable then) {
+     *  a not-yet-ready node just proceeds (the action itself surfaces any real error). The hunt is budgeted
+     *  (see HuntBudget): an $OPK from a DIFFERENT seed comes back in {@code unreachable} instead of burning
+     *  256 fresh wallet keys per attempt, forever. */
+    private void ensureOwner(List<String> opks, OwnerKeyRecovery.Cb cb) {
         NodeApi n = act.node();
-        if (n == null) { then.run(); return; }
-        OwnerKeyRecovery.ensure(n, opks, regenerated -> then.run());
+        if (n == null) { cb.done(0, java.util.Collections.emptyList()); return; }
+        OwnerKeyRecovery.ensure(act, n, opks, cb);
     }
+
+    /** True when the hunt reported this pool's owner key as another seed's — signing is impossible here. */
+    private static boolean foreignKey(String opk, List<String> unreachable) {
+        return opk != null && unreachable != null && unreachable.contains(opk.toLowerCase());
+    }
+
+    private static final String FOREIGN_KEY_MSG =
+            "This pool's owner key belongs to a different seed — this node cannot sign for it. "
+                    + "Manage this pool on the device/seed that created it.";
 
     private void doMigrate(Pool p, BigDecimal x, BigDecimal y) {
         busy = true; status("Migrating your pool…");
-        ensureOwner(java.util.Collections.singletonList(p.opk), () -> mgr.migrate(p, x, y, new PoolManager.CreateResult() {
-            @Override public void onCreated(Pool pool, String txpowid) {
-                pool.tokName = p.tokName;
-                LpStore.record(act, pool.address, pool.reserveM, pool.reserveT, act.chainBlock());
-                OwnPoolStore.record(act, pool);   // recipe for the new pool
-                act.ensureKeepAlive();            // ensure the keep-alive is up (idempotent)
-                LpStore.remove(act, p.address);   // the old pool's display snapshot is stale — drop it
-                // KEEP the old pool's recovery recipe until the migrate CONFIRMS: if the tx never lands the
-                // old pool is still live and must stay recoverable. Harmless once it does (emptied covenant).
-                ActivityLog.record(act, ActivityLog.MIGRATE, "Migrate MINIMA / " + p.tokenLabel() + " pool  ·  new size "
-                        + trim(pool.reserveM) + " MINIMA + " + trim(pool.reserveT) + " " + p.tokenLabel(), txpowid, act.chainBlock());
-                act.runOnUiThread(() -> { busy = false; status("Migrated ✓ " + Util.shorten(txpowid) + " — confirming on-chain."); act.pools().refresh(); });
+        ensureOwner(java.util.Collections.singletonList(p.opk), (regenerated, unreachable) -> {
+            if (foreignKey(p.opk, unreachable)) {
+                act.runOnUiThread(() -> { busy = false; status(FOREIGN_KEY_MSG); });
+                return;
             }
-            @Override public void onFailed(String message) {
-                ActivityLog.recordFailed(act, ActivityLog.MIGRATE, "Migrate MINIMA / " + p.tokenLabel() + " pool", message);
-                act.runOnUiThread(() -> { busy = false; status("Migrate failed: " + message); });
+            // Scanned pools never carry kidx — the recipes do. Enrich before migrate so the NEW recipe
+            // (same opk, same index) records it instead of -1.
+            if (p.kidx < 0 && p.opk != null) {
+                Integer known = OwnerKeyRecovery.kidxFromStore(act).get(p.opk.toLowerCase());
+                if (known != null) p.kidx = known;
             }
-        }));
+            mgr.migrate(p, x, y, new PoolManager.CreateResult() {
+                @Override public void onCreated(Pool pool, String txpowid) {
+                    pool.tokName = p.tokName;
+                    LpStore.record(act, pool.address, pool.reserveM, pool.reserveT, act.chainBlock());
+                    OwnPoolStore.record(act, pool);   // recipe for the new pool
+                    act.ensureKeepAlive();            // ensure the keep-alive is up (idempotent)
+                    LpStore.remove(act, p.address);   // the old pool's display snapshot is stale — drop it
+                    // KEEP the old pool's recovery recipe until the migrate CONFIRMS: if the tx never lands the
+                    // old pool is still live and must stay recoverable. Harmless once it does (emptied covenant).
+                    ActivityLog.record(act, ActivityLog.MIGRATE, "Migrate MINIMA / " + p.tokenLabel() + " pool  ·  new size "
+                            + trim(pool.reserveM) + " MINIMA + " + trim(pool.reserveT) + " " + p.tokenLabel(), txpowid, act.chainBlock());
+                    act.runOnUiThread(() -> { busy = false; status("Migrated ✓ " + Util.shorten(txpowid) + " — confirming on-chain."); act.pools().refresh(); });
+                }
+                @Override public void onFailed(String message) {
+                    ActivityLog.recordFailed(act, ActivityLog.MIGRATE, "Migrate MINIMA / " + p.tokenLabel() + " pool", message);
+                    act.runOnUiThread(() -> { busy = false; status("Migrate failed: " + message); });
+                }
+            });
+        });
     }
 
     // ---- close ----
@@ -761,28 +784,34 @@ public class MyLpView extends BaseView {
                     final String closeSummary = "Withdraw MINIMA / " + p.tokenLabel() + "  ·  "
                             + trim(p.reserveM) + " MINIMA + " + trim(p.reserveT) + " " + p.tokenLabel() + " back to wallet";
                     final String closeOadr = p.oadr;
-                    ensureOwner(java.util.Collections.singletonList(p.opk), () -> mgr.close(p, new PoolManager.Result() {
-                        @Override public void onPosted(String txpowid) {
-                            LpStore.remove(act, p.address);   // pool closed — drop its display snapshot
-                            // KEEP the OwnPoolStore recovery recipe here: a posted-but-unconfirmed close that
-                            // never lands would otherwise strip the recipe from a STILL-LIVE pool (exactly the
-                            // wiped-node case this feature backstops). A stale recipe is a harmless no-op —
-                            // re-track on an emptied covenant tracks nothing, and only funded() pools render.
-                            ActivityLog.record(act, ActivityLog.CLOSE, closeSummary, txpowid, act.chainBlock());
-                            act.runOnUiThread(() -> {
-                                busy = false;
-                                status("Pool closed ✓ " + Util.shorten(txpowid) + " — moving funds to a wallet address (confirming on-chain)…");
-                                act.pools().refresh();
-                                // Second hop: once the covenant→$OADR sweep confirms, forward it to a default-64
-                                // wallet address so the withdrawn funds survive a seed-only restore.
-                                collectAfterClose(closeOadr, 8);
-                            });
+                    ensureOwner(java.util.Collections.singletonList(p.opk), (regenerated, unreachable) -> {
+                        if (foreignKey(p.opk, unreachable)) {
+                            act.runOnUiThread(() -> { busy = false; status(FOREIGN_KEY_MSG); });
+                            return;
                         }
-                        @Override public void onFailed(String message) {
-                            ActivityLog.recordFailed(act, ActivityLog.CLOSE, closeSummary, message);
-                            act.runOnUiThread(() -> { busy = false; status("Close failed: " + message); });
-                        }
-                    }));
+                        mgr.close(p, new PoolManager.Result() {
+                            @Override public void onPosted(String txpowid) {
+                                LpStore.remove(act, p.address);   // pool closed — drop its display snapshot
+                                // KEEP the OwnPoolStore recovery recipe here: a posted-but-unconfirmed close that
+                                // never lands would otherwise strip the recipe from a STILL-LIVE pool (exactly the
+                                // wiped-node case this feature backstops). A stale recipe is a harmless no-op —
+                                // re-track on an emptied covenant tracks nothing, and only funded() pools render.
+                                ActivityLog.record(act, ActivityLog.CLOSE, closeSummary, txpowid, act.chainBlock());
+                                act.runOnUiThread(() -> {
+                                    busy = false;
+                                    status("Pool closed ✓ " + Util.shorten(txpowid) + " — moving funds to a wallet address (confirming on-chain)…");
+                                    act.pools().refresh();
+                                    // Second hop: once the covenant→$OADR sweep confirms, forward it to a default-64
+                                    // wallet address so the withdrawn funds survive a seed-only restore.
+                                    collectAfterClose(closeOadr, 8);
+                                });
+                            }
+                            @Override public void onFailed(String message) {
+                                ActivityLog.recordFailed(act, ActivityLog.CLOSE, closeSummary, message);
+                                act.runOnUiThread(() -> { busy = false; status("Close failed: " + message); });
+                            }
+                        });
+                    });
                 })
                 .setNegativeButton("Cancel", null)
                 .show();
@@ -817,14 +846,20 @@ public class MyLpView extends BaseView {
         if (oadrs.isEmpty()) { status("No pools on record to collect from."); return; }
         status("Collecting withdrawn funds to your wallet…");
         // $OADR is RETURN SIGNEDBY($OPK) → the auto sweep still needs the owner key. Regenerate any missing ones
-        // first (no-op when already held) so an explicit Collect self-heals after a seed restore.
-        ensureOwner(opks, () -> mgr.sweepOwnerFunds(oadrs, (addressesForwarded, coins) -> act.runOnUiThread(() -> {
-            if (addressesForwarded > 0) {
-                status("Moved withdrawn funds from " + addressesForwarded + " pool"
-                        + (addressesForwarded == 1 ? "" : "s") + " to your wallet ✓");
-                act.pools().refresh();
-            } else status("Nothing to collect — no spendable funds are waiting at your pool payout addresses.");
-        })));
+        // first (no-op when already held) so an explicit Collect self-heals after a seed restore. A foreign-seed
+        // key doesn't abort the sweep — the OTHER pools' funds still move — it's just reported.
+        ensureOwner(opks, (regenerated, unreachable) -> {
+            final int foreign = unreachable == null ? 0 : unreachable.size();
+            final String skipped = foreign == 0 ? "" : "  (" + foreign + " owner key" + (foreign == 1 ? "" : "s")
+                    + " belong" + (foreign == 1 ? "s" : "") + " to a different seed — those pools can't sign here)";
+            mgr.sweepOwnerFunds(oadrs, (addressesForwarded, coins) -> act.runOnUiThread(() -> {
+                if (addressesForwarded > 0) {
+                    status("Moved withdrawn funds from " + addressesForwarded + " pool"
+                            + (addressesForwarded == 1 ? "" : "s") + " to your wallet ✓" + skipped);
+                    act.pools().refresh();
+                } else status("Nothing to collect — no spendable funds are waiting at your pool payout addresses." + skipped);
+            }));
+        });
     }
 
     // ---- network discoverability (Layer 5) ----

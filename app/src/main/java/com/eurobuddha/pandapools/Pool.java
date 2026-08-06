@@ -19,6 +19,10 @@ public class Pool {
     public String covenantScript;
     public String tokName;      // display name of the token side (resolved when reserves are scanned)
     public int tokDecimals = 8; // token's on-chain decimal grain (resolved when reserves are scanned)
+    /** $OPK's derivation index (the key's {@code modifier}); -1 unknown. Known only for OWN pools —
+     *  captured from {@code newaddress}'s reply at create, or from the node's key row at backup time.
+     *  Lets {@link OwnerKeyRecovery} hunt to the exact index, and PROVE a foreign seed with zero mints. */
+    public int kidx = -1;
 
     /** Short, human display symbol for the token side (its name, or a truncated tokenid). */
     public String tokenLabel() {

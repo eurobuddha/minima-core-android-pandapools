@@ -41,6 +41,7 @@ public final class OwnPoolStore {
             o.put("tok", p.tok);
             o.put("dec", p.tokDecimals);
             o.put("kmin", p.kmin);
+            o.put("kidx", p.kidx);   // $OPK's derivation index (-1 unknown) — exact owner-key recovery
             // authoritative covenant script for re-tracking; reconstruct from params if the caller didn't
             // carry it (exact only for this app's fee — legacy-fee pools should always carry their own script)
             String script = (!isEmpty(p.covenantScript)) ? p.covenantScript : reconstruct(p);
@@ -73,6 +74,7 @@ public final class OwnPoolStore {
                 p.tok = o.optString("tok", "");
                 p.tokDecimals = o.optInt("dec", 8);
                 p.kmin = o.optString("kmin", "");
+                p.kidx = o.optInt("kidx", -1);
                 p.covenantScript = o.optString("script", "");
                 if (!isEmpty(p.address) && !isEmpty(p.covenantScript)) out.add(p);
             } catch (Exception ignore) {}
