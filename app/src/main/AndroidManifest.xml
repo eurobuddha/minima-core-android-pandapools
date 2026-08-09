@@ -23,6 +23,10 @@
         <package android:name="org.minimarex.minimacore" />
     </queries>
 
+    <!-- allowBackup stays TRUE here on purpose — see res/xml/data_extraction_rules.xml. The pool recovery
+         recipes (`pandapools_ownpools`: seed-derived opk/kidx + covenant script) must never reach a cloud, but
+         they are deliberately node-independent — same seed + recipe = always reclaimable — so carrying them
+         over a same-user device transfer is the intended behaviour. Cloud backup excludes everything. -->
     <application
         android:allowBackup="true"
         android:dataExtractionRules="@xml/data_extraction_rules"

@@ -1,0 +1,347 @@
+{
+  "anchor/reannouncer.py": {
+    "mtime": 1784109431.922971,
+    "ast_hash": "6325c70b1210a62435cf8096d30febf8",
+    "semantic_hash": "6325c70b1210a62435cf8096d30febf8"
+  },
+  "app/build.gradle": {
+    "mtime": 1785142653.3738208,
+    "ast_hash": "7abc37065212894b4823643235b78dcb",
+    "semantic_hash": "7abc37065212894b4823643235b78dcb"
+  },
+  "app/src/main/java/com/eurobuddha/pandapools/ActivityLog.java": {
+    "mtime": 1783731609.366052,
+    "ast_hash": "827545a7e21e540aa606bd1d9db188e9",
+    "semantic_hash": "827545a7e21e540aa606bd1d9db188e9"
+  },
+  "app/src/main/java/com/eurobuddha/pandapools/ActivityView.java": {
+    "mtime": 1783893048.7588527,
+    "ast_hash": "83c09cf4395b62a978cc9abee4ad725c",
+    "semantic_hash": "83c09cf4395b62a978cc9abee4ad725c"
+  },
+  "app/src/main/java/com/eurobuddha/pandapools/BaseView.java": {
+    "mtime": 1783889397.7640302,
+    "ast_hash": "a77d8b3466096270518af561f457d136",
+    "semantic_hash": "a77d8b3466096270518af561f457d136"
+  },
+  "app/src/main/java/com/eurobuddha/pandapools/BootReceiver.java": {
+    "mtime": 1784121814.3247967,
+    "ast_hash": "36eb23d2a3fd0e168d71cae811e25aba",
+    "semantic_hash": "36eb23d2a3fd0e168d71cae811e25aba"
+  },
+  "app/src/main/java/com/eurobuddha/pandapools/CmdChain.java": {
+    "mtime": 1783644914.9136877,
+    "ast_hash": "7a8b1fe2c678061f71a13803e56946f1",
+    "semantic_hash": "7a8b1fe2c678061f71a13803e56946f1"
+  },
+  "app/src/main/java/com/eurobuddha/pandapools/Coin.java": {
+    "mtime": 1783643585.1326783,
+    "ast_hash": "7fdcc96e79ff4ee68ba4f7ebbd7fc010",
+    "semantic_hash": "7fdcc96e79ff4ee68ba4f7ebbd7fc010"
+  },
+  "app/src/main/java/com/eurobuddha/pandapools/Design.java": {
+    "mtime": 1783650713.3199234,
+    "ast_hash": "8f8f2782e0e7c1a152b3e6c2f6ae4de4",
+    "semantic_hash": "8f8f2782e0e7c1a152b3e6c2f6ae4de4"
+  },
+  "app/src/main/java/com/eurobuddha/pandapools/GlobalFeed.java": {
+    "mtime": 1783892893.2065058,
+    "ast_hash": "18b28a982b5686bc38a1671338844652",
+    "semantic_hash": "18b28a982b5686bc38a1671338844652"
+  },
+  "app/src/main/java/com/eurobuddha/pandapools/HeartbeatReceiver.java": {
+    "mtime": 1784121805.6504526,
+    "ast_hash": "156f3beb11062fb6ee06d768170e02bf",
+    "semantic_hash": "156f3beb11062fb6ee06d768170e02bf"
+  },
+  "app/src/main/java/com/eurobuddha/pandapools/HistoryDb.java": {
+    "mtime": 1783729930.569607,
+    "ast_hash": "04b37ad17a5b83f2922f2631e659c025",
+    "semantic_hash": "04b37ad17a5b83f2922f2631e659c025"
+  },
+  "app/src/main/java/com/eurobuddha/pandapools/HistoryEntry.java": {
+    "mtime": 1783776409.3373604,
+    "ast_hash": "4097813452c07d26eec1f7b3a23b1a63",
+    "semantic_hash": "4097813452c07d26eec1f7b3a23b1a63"
+  },
+  "app/src/main/java/com/eurobuddha/pandapools/HistorySync.java": {
+    "mtime": 1784127077.0393035,
+    "ast_hash": "4dc0acce6667d706d36a49b9079eeb44",
+    "semantic_hash": "4dc0acce6667d706d36a49b9079eeb44"
+  },
+  "app/src/main/java/com/eurobuddha/pandapools/IconResolver.java": {
+    "mtime": 1783643585.1367495,
+    "ast_hash": "7a63837d501e65e2afd78ffb942d8b85",
+    "semantic_hash": "7a63837d501e65e2afd78ffb942d8b85"
+  },
+  "app/src/main/java/com/eurobuddha/pandapools/Identicon.java": {
+    "mtime": 1783643585.1352592,
+    "ast_hash": "cead06891d2da99d31f0c7ef7fd96aae",
+    "semantic_hash": "cead06891d2da99d31f0c7ef7fd96aae"
+  },
+  "app/src/main/java/com/eurobuddha/pandapools/ImageLoader.java": {
+    "mtime": 1783643585.1389463,
+    "ast_hash": "b25242fa471d66c42b52064bb1db1f59",
+    "semantic_hash": "b25242fa471d66c42b52064bb1db1f59"
+  },
+  "app/src/main/java/com/eurobuddha/pandapools/LpStore.java": {
+    "mtime": 1783889397.7652242,
+    "ast_hash": "abdb3188cb9d2e31513c3fd360f223fd",
+    "semantic_hash": "abdb3188cb9d2e31513c3fd360f223fd"
+  },
+  "app/src/main/java/com/eurobuddha/pandapools/MainActivity.java": {
+    "mtime": 1784129330.4308314,
+    "ast_hash": "d4a793ada3bd551955f5ee203d9c386d",
+    "semantic_hash": "d4a793ada3bd551955f5ee203d9c386d"
+  },
+  "app/src/main/java/com/eurobuddha/pandapools/MainPager.java": {
+    "mtime": 1783643585.1375895,
+    "ast_hash": "5c521d948b493f79b45bca218632ad8b",
+    "semantic_hash": "5c521d948b493f79b45bca218632ad8b"
+  },
+  "app/src/main/java/com/eurobuddha/pandapools/MarketPrice.java": {
+    "mtime": 1783778106.912385,
+    "ast_hash": "75db52fc2bd1408cdd173933552e9817",
+    "semantic_hash": "75db52fc2bd1408cdd173933552e9817"
+  },
+  "app/src/main/java/com/eurobuddha/pandapools/MyLpView.java": {
+    "mtime": 1784489964.380712,
+    "ast_hash": "1323e75a5cc296d6c46844f470b497aa",
+    "semantic_hash": "1323e75a5cc296d6c46844f470b497aa"
+  },
+  "app/src/main/java/com/eurobuddha/pandapools/NodeApi.java": {
+    "mtime": 1784129494.2392304,
+    "ast_hash": "2d02c8b3741e805b8486540d63d145c0",
+    "semantic_hash": "2d02c8b3741e805b8486540d63d145c0"
+  },
+  "app/src/main/java/com/eurobuddha/pandapools/OwnPoolStore.java": {
+    "mtime": 1783889397.7672033,
+    "ast_hash": "c944a27c22c50685dfd027eba3d4fffa",
+    "semantic_hash": "c944a27c22c50685dfd027eba3d4fffa"
+  },
+  "app/src/main/java/com/eurobuddha/pandapools/OwnerKeyRecovery.java": {
+    "mtime": 1784022656.055825,
+    "ast_hash": "665a012e06ce14a086ba1fe0b18dd978",
+    "semantic_hash": "665a012e06ce14a086ba1fe0b18dd978"
+  },
+  "app/src/main/java/com/eurobuddha/pandapools/Pool.java": {
+    "mtime": 1784113915.569056,
+    "ast_hash": "f176d91a53ab42d15bc54080bd125e0c",
+    "semantic_hash": "f176d91a53ab42d15bc54080bd125e0c"
+  },
+  "app/src/main/java/com/eurobuddha/pandapools/PoolBook.java": {
+    "mtime": 1784129358.036822,
+    "ast_hash": "8a20ac8aca97b6ad7548dff521757ee2",
+    "semantic_hash": "8a20ac8aca97b6ad7548dff521757ee2"
+  },
+  "app/src/main/java/com/eurobuddha/pandapools/PoolCovenant.java": {
+    "mtime": 1784197018.0349677,
+    "ast_hash": "d4fad90ea359adc4c982003ce489ec36",
+    "semantic_hash": "d4fad90ea359adc4c982003ce489ec36"
+  },
+  "app/src/main/java/com/eurobuddha/pandapools/PoolKeepAliveService.java": {
+    "mtime": 1784129343.8981295,
+    "ast_hash": "66f1fb6a4e91cffe1d746bd77e5d89fb",
+    "semantic_hash": "66f1fb6a4e91cffe1d746bd77e5d89fb"
+  },
+  "app/src/main/java/com/eurobuddha/pandapools/PoolManager.java": {
+    "mtime": 1784113977.5004299,
+    "ast_hash": "1fa1598fdfaead6036b6de5204947855",
+    "semantic_hash": "1fa1598fdfaead6036b6de5204947855"
+  },
+  "app/src/main/java/com/eurobuddha/pandapools/PoolRefresher.java": {
+    "mtime": 1784196134.4029956,
+    "ast_hash": "0f5c878236ef45be3aec9fd6a755c530",
+    "semantic_hash": "0f5c878236ef45be3aec9fd6a755c530"
+  },
+  "app/src/main/java/com/eurobuddha/pandapools/PoolRepository.java": {
+    "mtime": 1784129323.1913784,
+    "ast_hash": "6ea8b383d390c4ca332f362bf52d6b9a",
+    "semantic_hash": "6ea8b383d390c4ca332f362bf52d6b9a"
+  },
+  "app/src/main/java/com/eurobuddha/pandapools/PoolRouter.java": {
+    "mtime": 1783649623.2677555,
+    "ast_hash": "37d92bf21e9fcda3c67151243deb1ce1",
+    "semantic_hash": "37d92bf21e9fcda3c67151243deb1ce1"
+  },
+  "app/src/main/java/com/eurobuddha/pandapools/PoolTxn.java": {
+    "mtime": 1783715889.2652686,
+    "ast_hash": "144753575f5f50b05154654fff0c56ae",
+    "semantic_hash": "144753575f5f50b05154654fff0c56ae"
+  },
+  "app/src/main/java/com/eurobuddha/pandapools/PoolWatchWorker.java": {
+    "mtime": 1784122688.8222969,
+    "ast_hash": "eb8e0a444779eb5677f8eef0c9fa4f42",
+    "semantic_hash": "eb8e0a444779eb5677f8eef0c9fa4f42"
+  },
+  "app/src/main/java/com/eurobuddha/pandapools/PoolsView.java": {
+    "mtime": 1785142645.5655415,
+    "ast_hash": "22d96181bab045f94a3c40ca47b470c7",
+    "semantic_hash": "22d96181bab045f94a3c40ca47b470c7"
+  },
+  "app/src/main/java/com/eurobuddha/pandapools/PriceOracle.java": {
+    "mtime": 1784036388.4877372,
+    "ast_hash": "d1da22e3a3cfa1b2a89ddd34a1b0cfe0",
+    "semantic_hash": "d1da22e3a3cfa1b2a89ddd34a1b0cfe0"
+  },
+  "app/src/main/java/com/eurobuddha/pandapools/ReAnnouncer.java": {
+    "mtime": 1784197004.5149658,
+    "ast_hash": "2edae65e92b8d6c1e5cf6885cbd77166",
+    "semantic_hash": "2edae65e92b8d6c1e5cf6885cbd77166"
+  },
+  "app/src/main/java/com/eurobuddha/pandapools/Recovery.java": {
+    "mtime": 1784022891.223237,
+    "ast_hash": "70fa46cdf0c9664cd8f79996f36373e7",
+    "semantic_hash": "70fa46cdf0c9664cd8f79996f36373e7"
+  },
+  "app/src/main/java/com/eurobuddha/pandapools/SwapView.java": {
+    "mtime": 1783889397.7708776,
+    "ast_hash": "77dd8fea9c7f1c5ada98ab1ca00a3e3f",
+    "semantic_hash": "77dd8fea9c7f1c5ada98ab1ca00a3e3f"
+  },
+  "app/src/main/java/com/eurobuddha/pandapools/TokenBalance.java": {
+    "mtime": 1783729945.1516142,
+    "ast_hash": "797faa5879d4ccd19f86a3b0022aaa5f",
+    "semantic_hash": "797faa5879d4ccd19f86a3b0022aaa5f"
+  },
+  "app/src/main/java/com/eurobuddha/pandapools/TokenMeta.java": {
+    "mtime": 1783643585.1335456,
+    "ast_hash": "a4e8725462653f34b5bb302e8982466c",
+    "semantic_hash": "a4e8725462653f34b5bb302e8982466c"
+  },
+  "app/src/main/java/com/eurobuddha/pandapools/TxPost.java": {
+    "mtime": 1783680357.1958737,
+    "ast_hash": "826e1ce2d14538aa234b35f58c11b68f",
+    "semantic_hash": "826e1ce2d14538aa234b35f58c11b68f"
+  },
+  "app/src/main/java/com/eurobuddha/pandapools/Ui.java": {
+    "mtime": 1783645151.5474577,
+    "ast_hash": "cf24da7b5206625bdadbe6840279cbf1",
+    "semantic_hash": "cf24da7b5206625bdadbe6840279cbf1"
+  },
+  "app/src/main/java/com/eurobuddha/pandapools/Util.java": {
+    "mtime": 1783776402.9954548,
+    "ast_hash": "8101d71736866f2d9720dbb39f4d1c1c",
+    "semantic_hash": "8101d71736866f2d9720dbb39f4d1c1c"
+  },
+  "app/src/main/java/com/eurobuddha/pandapools/VirtualCurve.java": {
+    "mtime": 1783732472.4395142,
+    "ast_hash": "0efa8c84d7a6acd7a198b594e54ff052",
+    "semantic_hash": "0efa8c84d7a6acd7a198b594e54ff052"
+  },
+  "app/src/main/java/com/eurobuddha/pandapools/WalletView.java": {
+    "mtime": 1783889397.7714183,
+    "ast_hash": "9d9f2afd455d2c2b07412f6d954a0d5f",
+    "semantic_hash": "9d9f2afd455d2c2b07412f6d954a0d5f"
+  },
+  "app/src/main/java/com/eurobuddha/pandapools/WebValidate.java": {
+    "mtime": 1783650709.5705,
+    "ast_hash": "f7614e9f3d936408fd7dc8b9f75b219c",
+    "semantic_hash": "f7614e9f3d936408fd7dc8b9f75b219c"
+  },
+  "app/src/test/java/com/eurobuddha/pandapools/PoolBookStateTest.java": {
+    "mtime": 1784128907.6583562,
+    "ast_hash": "03d49b051c8f1ff6faaf3b5ff644f498",
+    "semantic_hash": "03d49b051c8f1ff6faaf3b5ff644f498"
+  },
+  "app/src/test/java/com/eurobuddha/pandapools/PoolCovenantTest.java": {
+    "mtime": 1784127400.9161525,
+    "ast_hash": "322132e4d40a18d069dd557ca47c17ed",
+    "semantic_hash": "322132e4d40a18d069dd557ca47c17ed"
+  },
+  "app/src/test/java/com/eurobuddha/pandapools/PoolRouterTest.java": {
+    "mtime": 1784129080.6531792,
+    "ast_hash": "0a77634805ba60644dc51c66ec576d71",
+    "semantic_hash": "0a77634805ba60644dc51c66ec576d71"
+  },
+  "app/src/test/java/com/eurobuddha/pandapools/PoolTest.java": {
+    "mtime": 1784127562.4210825,
+    "ast_hash": "3e56abadb8355a6a46d4af8168577581",
+    "semantic_hash": "3e56abadb8355a6a46d4af8168577581"
+  },
+  "app/src/test/java/com/eurobuddha/pandapools/UtilTest.java": {
+    "mtime": 1784128923.825104,
+    "ast_hash": "4faf262f28f1129e09869277f4ef658f",
+    "semantic_hash": "4faf262f28f1129e09869277f4ef658f"
+  },
+  "app/src/test/java/com/eurobuddha/pandapools/VirtualCurveTest.java": {
+    "mtime": 1784129063.678291,
+    "ast_hash": "5c66499e1066b01ebc2d3534605ab8a0",
+    "semantic_hash": "5c66499e1066b01ebc2d3534605ab8a0"
+  },
+  "build.gradle": {
+    "mtime": 1782212552.0,
+    "ast_hash": "583193a3771192898c84ddef2d926224",
+    "semantic_hash": "583193a3771192898c84ddef2d926224"
+  },
+  "gradlew": {
+    "mtime": 1782212552.0,
+    "ast_hash": "02c16663c6f0aa37f98d94d698c22b8c",
+    "semantic_hash": "02c16663c6f0aa37f98d94d698c22b8c"
+  },
+  "settings.gradle": {
+    "mtime": 1782232218.0,
+    "ast_hash": "4ab1b50726563c630f986a494e760941",
+    "semantic_hash": "4ab1b50726563c630f986a494e760941"
+  },
+  "CLAUDE.md": {
+    "mtime": 1784124679.0714896,
+    "ast_hash": "4439d09bc81851d89f9ffcecc4136dcf",
+    "semantic_hash": "4439d09bc81851d89f9ffcecc4136dcf"
+  },
+  "DESIGN_MAP.md": {
+    "mtime": 1782292073.0,
+    "ast_hash": "14fc5f67a96dbc38bf2129353764c4a2",
+    "semantic_hash": "14fc5f67a96dbc38bf2129353764c4a2"
+  },
+  "README.md": {
+    "mtime": 1783941723.493638,
+    "ast_hash": "8f871ca8428979a26a4d83b9326af7a4",
+    "semantic_hash": "8f871ca8428979a26a4d83b9326af7a4"
+  },
+  "anchor/README.md": {
+    "mtime": 1784109431.9302926,
+    "ast_hash": "8445f7a52da5e6b0f55b5a6feecc1b73",
+    "semantic_hash": "8445f7a52da5e6b0f55b5a6feecc1b73"
+  },
+  "app/src/main/res/drawable-nodpi/minima_coin.png": {
+    "mtime": 1782910364.0,
+    "ast_hash": "b42a00a97985ae43dc75340e887b85c2",
+    "semantic_hash": "b42a00a97985ae43dc75340e887b85c2"
+  },
+  "app/src/main/res/drawable-nodpi/minima_logo.png": {
+    "mtime": 1782891719.0,
+    "ast_hash": "6976cdf6379c575ff396965d8c79bae4",
+    "semantic_hash": "6976cdf6379c575ff396965d8c79bae4"
+  },
+  "app/src/main/res/mipmap-hdpi/ic_launcher_foreground.png": {
+    "mtime": 1782864434.0,
+    "ast_hash": "2c9737d4f912a1f8476a4e408ed8df68",
+    "semantic_hash": "2c9737d4f912a1f8476a4e408ed8df68"
+  },
+  "app/src/main/res/mipmap-mdpi/ic_launcher_foreground.png": {
+    "mtime": 1782864434.0,
+    "ast_hash": "178b630bb3b6c6e0ea2ffc4b38648a79",
+    "semantic_hash": "178b630bb3b6c6e0ea2ffc4b38648a79"
+  },
+  "app/src/main/res/mipmap-xhdpi/ic_launcher_foreground.png": {
+    "mtime": 1782864434.0,
+    "ast_hash": "d75267b0727bf4ccd4133e1646faf96e",
+    "semantic_hash": "d75267b0727bf4ccd4133e1646faf96e"
+  },
+  "app/src/main/res/mipmap-xxhdpi/ic_launcher_foreground.png": {
+    "mtime": 1782864434.0,
+    "ast_hash": "84b6fd2f44142db9739322b1e45987ef",
+    "semantic_hash": "84b6fd2f44142db9739322b1e45987ef"
+  },
+  "app/src/main/res/mipmap-xxxhdpi/ic_launcher_foreground.png": {
+    "mtime": 1782864434.0,
+    "ast_hash": "171bc4320ad34791f91054d5b2835cb7",
+    "semantic_hash": "171bc4320ad34791f91054d5b2835cb7"
+  },
+  "app/src/main/res/raw/minima_icon.svg": {
+    "mtime": 1782899815.0,
+    "ast_hash": "df87d6ade37210e92ec34cf658a62940",
+    "semantic_hash": "df87d6ade37210e92ec34cf658a62940"
+  }
+}
