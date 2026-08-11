@@ -22,12 +22,12 @@ android {
         // without those props this config stays empty and release falls back to debug signing,
         // so the project still builds for local/CI sideload use.
         release {
-            def ksFile = project.findProperty('PANDAPOOLS_RELEASE_STORE_FILE')
+            def ksFile = project.findProperty('MINIMA_FAMILY_RELEASE_STORE_FILE')
             if (ksFile != null) {
                 storeFile file(ksFile)
-                storePassword project.findProperty('PANDAPOOLS_RELEASE_STORE_PASSWORD')
-                keyAlias project.findProperty('PANDAPOOLS_RELEASE_KEY_ALIAS')
-                keyPassword project.findProperty('PANDAPOOLS_RELEASE_KEY_PASSWORD')
+                storePassword project.findProperty('MINIMA_FAMILY_RELEASE_STORE_PASSWORD')
+                keyAlias project.findProperty('MINIMA_FAMILY_RELEASE_KEY_ALIAS')
+                keyPassword project.findProperty('MINIMA_FAMILY_RELEASE_KEY_PASSWORD')
             }
         }
     }
@@ -40,7 +40,7 @@ android {
             // change forces every existing user to uninstall+reinstall (and re-pair their MINIMA_ID with
             // the node). The dedicated signingConfigs.release above stays defined for a future, deliberate
             // migration — flip this back to the ternary when you're ready to switch keys. See the plan.
-            signingConfig signingConfigs.debug
+            signingConfig signingConfigs.release
         }
     }
     compileOptions {
