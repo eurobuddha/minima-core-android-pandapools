@@ -16,3 +16,6 @@ local.properties
 
 # Local versioned APK archive (built APKs live in the minima-core-apks repo + GitHub Releases)
 releases/
+
+# Built APKs live in the minima-core-apks catalog + GitHub Releases
+*.apk
