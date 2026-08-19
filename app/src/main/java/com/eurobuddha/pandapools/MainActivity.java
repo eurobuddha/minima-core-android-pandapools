@@ -14,7 +14,9 @@ import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.appcompat.app.AppCompatActivity;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.function.Consumer;
 import androidx.core.graphics.Insets;
 import androidx.core.view.ViewCompat;
@@ -25,6 +27,7 @@ import androidx.viewpager.widget.ViewPager;
 
 import com.google.android.material.tabs.TabLayout;
 
+import org.json.JSONArray;
 import org.json.JSONObject;
 
 /**
@@ -57,6 +60,7 @@ public class MainActivity extends AppCompatActivity {
     private final Runnable pollTask = this::pollBlock;
     private boolean retrackedOwn = false;   // Layer-2 re-track runs once per session
     private boolean untrackedSentinel = false;   // one-time sentinel-untrack cleanup runs once per session
+    private boolean cleanedForeign = false;   // foreign-pool tracking hygiene sweep runs once per session
     // Storage Access Framework pickers for the pool backup file (Increment 2): no storage permission and
     // no FileProvider — the user chooses where to save / which file to restore.
     private ActivityResultLauncher<String> saveDocLauncher;
@@ -215,6 +219,7 @@ public class MainActivity extends AppCompatActivity {
         if (paired) {
             untrackSentinelOnce();   // clean up any legacy sentinel tracking BEFORE the first scan runs
             retrackOwnPools();   // Layer 2: re-track own pools so a wiped/re-synced node rediscovers them
+            cleanForeignTracking();   // AFTER re-track: demote foreign pool covenants out of the balance
             if (views != null) for (BaseView v : views) v.refresh();
         }
     }
@@ -265,6 +270,116 @@ public class MainActivity extends AppCompatActivity {
                 @Override public void onError(String m) {}
             });
         }
+    }
+
+    /**
+     * Wallet-balance hygiene sweep (once per session, AFTER the Layer-2 re-track): demote every tracked
+     * FOREIGN pool covenant to {@code trackall:false} and drop its already-relevant coins, so a stranger's
+     * pool reserves stop counting into this wallet's balance. Old builds' swap path ran
+     * {@code newscript trackall:true} on every routed pool and nothing ever untracked it; the swap path now
+     * registers foreign pools track:false, and this sweep heals nodes the old builds polluted. Fail-safe:
+     * if {@code keys} can't be read (or returns none) ownership can't be proven and NOTHING is written.
+     * Re-running each launch is deliberate — core keeps a demoted address in its in-memory relevance cache
+     * until the node restarts, so new pool coins can keep turning relevant in between.
+     */
+    private void cleanForeignTracking() {
+        if (cleanedForeign || node == null) return;
+        cleanedForeign = true;
+        node.cmd("keys", new NodeApi.Cb() {
+            @Override public void onResult(JSONObject j) {
+                final Set<String> myKeys = parseKeysLower(j);
+                if (myKeys.isEmpty()) return;   // can't prove ownership → zero writes
+                final Set<String> ownAddrs = new HashSet<>(), ownOpks = new HashSet<>();
+                for (Pool p : OwnPoolStore.all(MainActivity.this)) {
+                    if (p.address != null && !p.address.isEmpty()) ownAddrs.add(p.address.toLowerCase());
+                    if (p.opk != null && !p.opk.isEmpty()) ownOpks.add(p.opk.toLowerCase());
+                }
+                node.cmd("scripts", new NodeApi.Cb() {
+                    @Override public void onResult(JSONObject sj) {
+                        // a failed read (e.g. the >256K IPC stub on a massively-polluted node) parses to no
+                        // rows → zero writes. Log it: those are exactly the nodes this sweep exists to heal.
+                        if (!TxPost.truthy(sj, "status"))
+                            android.util.Log.w("PandaPools", "hygiene sweep: scripts read failed — sweep skipped");
+                        List<TrackHygiene.Row> foreign = TrackHygiene.classifyForeign(
+                                sj.optJSONArray("response"), myKeys, ownAddrs, ownOpks);
+                        if (!foreign.isEmpty()) demoteForeign(foreign, 0);
+                    }
+                    @Override public void onError(String m) {
+                        android.util.Log.w("PandaPools", "hygiene sweep: scripts read failed — sweep skipped: " + m);
+                    }
+                });
+            }
+            @Override public void onError(String m) {}
+        });
+    }
+
+    /** Tolerant {@code keys} parse (array or {"keys":[…]} shapes) → lowercase public keys. */
+    private static Set<String> parseKeysLower(JSONObject j) {
+        Set<String> out = new HashSet<>();
+        Object resp = j == null ? null : j.opt("response");
+        JSONArray arr = null;
+        if (resp instanceof JSONArray) arr = (JSONArray) resp;
+        else if (resp instanceof JSONObject) arr = ((JSONObject) resp).optJSONArray("keys");
+        if (arr != null) for (int i = 0; i < arr.length(); i++) {
+            JSONObject k = arr.optJSONObject(i);
+            if (k != null) {
+                String pk = k.optString("publickey", "");
+                if (!pk.isEmpty()) out.add(pk.toLowerCase());
+            }
+        }
+        return out;
+    }
+
+    /** Sequential, best-effort: re-register each still-track:true foreign row with its VERBATIM script
+     *  (reconstruction could differ for a legacy-fee covenant, and {@code newscript} REPLACES the row). */
+    private void demoteForeign(List<TrackHygiene.Row> foreign, int i) {
+        if (i >= foreign.size()) { untrackForeignCoins(foreign); return; }
+        TrackHygiene.Row r = foreign.get(i);
+        if (!r.track) { demoteForeign(foreign, i + 1); return; }
+        node.cmd("newscript trackall:false script:" + Util.scriptArg(r.script), new NodeApi.Cb() {
+            @Override public void onResult(JSONObject j) { demoteForeign(foreign, i + 1); }
+            @Override public void onError(String m) { demoteForeign(foreign, i + 1); }
+        });
+    }
+
+    /**
+     * Drop lingering relevant coins at ALL foreign covenant addresses (not just still-track:true rows) —
+     * this also heals a partial prior sweep and in-session re-pollution from the stale relevance cache.
+     * ONE BOUNDED QUERY PER ADDRESS, sequential — never an unbounded `coins relevant:true`: on a pre-1.6.9
+     * node an inline reply of 128K–256K chars overflows the broadcast parcel and kills the app uncatchably,
+     * and the polluted, coin-heavy nodes this sweep targets are the likeliest to hit it.
+     * Known residual: a recipe-only backup (no coin exports) restored AFTER this sweep ran leaves the old
+     * reserve coins non-relevant until the next refresh/swap recreates them — display-only; close/migrate
+     * read coins via `coins address:` and are relevance-independent.
+     */
+    private void untrackForeignCoins(List<TrackHygiene.Row> foreign) {
+        untrackNextAddress(foreign, 0, false);
+    }
+
+    private void untrackNextAddress(List<TrackHygiene.Row> foreign, int i, boolean touched) {
+        if (i >= foreign.size()) {
+            if (touched && poolRepo != null) poolRepo.refresh();   // repaint once the balance is clean
+            return;
+        }
+        final String addr = foreign.get(i).address;
+        final Set<String> one = new HashSet<>();
+        one.add(addr.toLowerCase());
+        node.cmd("coins relevant:true address:" + addr, new NodeApi.Cb() {
+            @Override public void onResult(JSONObject j) {
+                List<String> ids = TrackHygiene.coinsToUntrack(j.optJSONArray("response"), one);
+                untrackNextCoin(ids, 0, () -> untrackNextAddress(foreign, i + 1, touched || !ids.isEmpty()));
+            }
+            @Override public void onError(String m) { untrackNextAddress(foreign, i + 1, touched); }
+        });
+    }
+
+    private void untrackNextCoin(List<String> coinids, int i, Runnable then) {
+        if (i >= coinids.size()) { then.run(); return; }
+        // {"status":false} (already spent / ADMIN denied) arrives via the SUCCESS callback — keep going
+        node.cmd("cointrack enable:false coinid:" + coinids.get(i), new NodeApi.Cb() {
+            @Override public void onResult(JSONObject j) { untrackNextCoin(coinids, i + 1, then); }
+            @Override public void onError(String m) { untrackNextCoin(coinids, i + 1, then); }
+        });
     }
 
     private void pollBlock() {

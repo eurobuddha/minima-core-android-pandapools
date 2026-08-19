@@ -144,13 +144,34 @@ public class PoolTxn {
     }
 
     /**
-     * Register the pool's covenant on the node before spending so {@code txnbasics} can attach the script
-     * + MMR proof (the "Script Missing" trap for untracked script addresses). Best-effort: newscript is
-     * idempotent, and if it genuinely can't run the later txnbasics surfaces a clear error anyway.
+     * Make sure the node can attach this pool's covenant + MMR proof at {@code txnbasics} time (the
+     * "Script Missing" trap) WITHOUT adopting the pool's reserves into the wallet balance. A row already
+     * on the node — ANY track value — is left untouched: {@code newscript} REPLACES an existing row, so
+     * re-registering here would downgrade an LP's own {@code trackall:true} row. Only an AFFIRMATIVE
+     * "not found" reply ({@code {"status":false}} + the node's not-found error, via the SUCCESS callback)
+     * registers the covenant with {@code trackall:false}: txnbasics reads the script table regardless of
+     * the track flag, and track:false keeps a foreign pool's locked reserves out of {@code balance}. Any
+     * AMBIGUOUS failure (read timeout, IPC overflow) writes NOTHING — a blind newscript could replace a
+     * row we merely failed to read; if the row genuinely doesn't exist, txnbasics fails closed, nothing
+     * posts, and the user retries. A wrong track:false that slips through anyway is healed by the flows
+     * that re-assert trackall:true: create, migrate, Restore, and the launch re-track (retrackOwnPools).
      */
     private void ensureTracked(Pool p, Runnable then) {
-        String script = PoolCovenant.script(p.opk, p.oadr, p.tok, p.kmin);
-        node.cmd("newscript trackall:true script:" + Util.scriptArg(script), new NodeApi.Cb() {
+        node.cmd("scripts address:" + p.address, new NodeApi.Cb() {
+            @Override public void onResult(JSONObject j) {
+                if (TrackHygiene.rowExists(j)) { then.run(); return; }
+                if (TrackHygiene.isNotFound(j)) { registerUntracked(p, then); return; }
+                then.run();   // ambiguous failure → no write (see javadoc)
+            }
+            @Override public void onError(String m) { then.run(); }   // transport failure → no write
+        });
+    }
+
+    private void registerUntracked(Pool p, Runnable then) {
+        String script = (p.covenantScript != null && !p.covenantScript.isEmpty())
+                ? p.covenantScript   // the ACTUAL covenant when known (a legacy-fee pool reconstructs differently)
+                : PoolCovenant.script(p.opk, p.oadr, p.tok, p.kmin);
+        node.cmd("newscript trackall:false script:" + Util.scriptArg(script), new NodeApi.Cb() {
             @Override public void onResult(JSONObject j) { then.run(); }
             @Override public void onError(String m) { then.run(); }
         });
