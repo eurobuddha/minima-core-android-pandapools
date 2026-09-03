@@ -86,6 +86,10 @@ public class MyLpView extends BaseView {
         Ui.outlineButton(statementBtn);
         statementBtn.setTextColor(Design.accent());
         statementBtn.setOnClickListener(v -> showStatementDialog());
+        TextView calcBtn = find(R.id.lpCalcBtn);
+        Ui.outlineButton(calcBtn);
+        calcBtn.setTextColor(Design.accent());
+        calcBtn.setOnClickListener(v -> PoolCalcDialog.show(act, null));
 
         ((TextView) find(R.id.lpSummaryLabel)).setTextColor(Design.dim());
         ((TextView) find(R.id.lpSummaryValue)).setTextColor(Design.heading());
@@ -293,6 +297,12 @@ public class MyLpView extends BaseView {
         card.addView(healthBar(ratio));
 
         card.addView(actionRow(p, ratio));
+        // what-if: open the calculator seeded with THIS pool's live reserves (display only, nothing posted)
+        TextView calc = text("What if the price moves?  Pool calculator ›", Design.accent(), 12, true);
+        calc.setGravity(Gravity.END);
+        calc.setPadding(0, Ui.dp(act, 10), 0, 0);
+        calc.setOnClickListener(v -> PoolCalcDialog.show(act, p));
+        card.addView(calc);
         return card;
     }
 
