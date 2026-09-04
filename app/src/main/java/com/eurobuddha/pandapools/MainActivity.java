@@ -12,6 +12,7 @@ import android.widget.TextView;
 import androidx.activity.result.ActivityResultLauncher;
 import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.appcompat.app.AppCompatActivity;
+import androidx.appcompat.app.AppCompatDelegate;
 
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -73,6 +74,15 @@ public class MainActivity extends AppCompatActivity {
     @Override protected void onCreate(Bundle b) {
         super.onCreate(b);
         Design.load(this);
+        // The palette is a runtime Design.Mode toggle, decoupled from the system day/night. AlertDialog
+        // windows, however, draw their background from Theme.Material3.DayNight, which follows the SYSTEM
+        // setting — so on a light-mode phone a dialog paints white while Design (dark) hands it white text,
+        // leaving inputs invisible (white-on-white). Bind this Activity's framework day/night to Design so
+        // dialog chrome always matches the palette. Use the per-Activity LOCAL night mode (applied here at
+        // creation time) rather than the global AppCompatDelegate.setDefaultNightMode: the global variant
+        // fires its own destructive recreate that drops this (briefly translucent) task to the background.
+        getDelegate().setLocalNightMode(
+                Design.isDark() ? AppCompatDelegate.MODE_NIGHT_YES : AppCompatDelegate.MODE_NIGHT_NO);
         setContentView(R.layout.activity_main);
 
         // Register the SAF pickers early — registerForActivityResult must run before the Activity is started.
@@ -102,7 +112,13 @@ public class MainActivity extends AppCompatActivity {
             // Don't recreate() (which tears down NodeApi) while a tx is building/posting — it would strand
             // the in-flight CmdChain (no callback, no txndelete). Ask the user to finish first.
             if (anyViewBusy()) { android.widget.Toast.makeText(this, "Finish your transaction first, then switch theme.", android.widget.Toast.LENGTH_SHORT).show(); return; }
-            Design.next(); Design.set(this, Design.mode()); recreate();
+            // Design.next() RETURNS the next mode; it does not mutate state. The old code
+            // (Design.next(); Design.set(this, Design.mode())) discarded that return and re-set the
+            // CURRENT mode — so the toggle silently did nothing. Persist next()'s result directly.
+            Design.set(this, Design.next());
+            // Plain recreate: onCreate re-applies the local night mode to match the new Design mode,
+            // so the dialog chrome follows the toggle without the destructive global-night-mode recreate.
+            recreate();
         });
         Button openNode = findViewById(R.id.openNodeBtn);
         if (openNode != null) openNode.setOnClickListener(v -> openMinimaCore());
