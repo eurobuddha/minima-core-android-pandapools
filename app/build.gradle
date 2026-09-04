@@ -10,8 +10,8 @@ android {
         applicationId "com.eurobuddha.pandapools"
         minSdk 28
         targetSdk 35
-        versionCode 934
-        versionName "0.9.34"
+        versionCode 935
+        versionName "0.9.35"
 
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -36,10 +36,13 @@ android {
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
-            // HELD at debug signing for store parity: the published catalog is debug-signed, and a key
-            // change forces every existing user to uninstall+reinstall (and re-pair their MINIMA_ID with
-            // the node). The dedicated signingConfigs.release above stays defined for a future, deliberate
-            // migration — flip this back to the ternary when you're ready to switch keys. See the plan.
+            // Signed with the dedicated FAMILY RELEASE KEY via signingConfigs.release whenever the
+            // MINIMA_FAMILY_RELEASE_* gradle props are present (they are on the release machine); without
+            // them it falls back to debug signing for local/CI sideload builds only. The published catalog
+            // is therefore family-key-signed — verified: 0.9.30 and 0.9.34 both carry signer cert SHA-256
+            // eca1383c9d27683a281fbe6355356267877dc2dd14d963d7cc289ca0700e517f (NOT debug-signed). Do NOT
+            // switch keys: a cert change forces every existing user to uninstall+reinstall and re-pair
+            // their MINIMA_ID with the node. Always publish from a machine that has the family-key props.
             signingConfig signingConfigs.release
         }
     }

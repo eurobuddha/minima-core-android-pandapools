@@ -1,6 +1,7 @@
 # Changelog
 
-All notable changes to the **PandaPools** native Android app. Newest first. Each release is a debug-signed APK
+All notable changes to the **PandaPools** native Android app. Newest first. Each release is a family-release-key-signed APK
+(signer cert SHA-256 `eca1383c9d27683a281fbe6355356267877dc2dd14d963d7cc289ca0700e517f`)
 published to the [PandaApps catalog](https://github.com/eurobuddha/minima-core-apks) (`apks.json`) and tagged here.
 
 The app shares one mainnet + `PANDAPOOLS` registry + 0.5% covenant with the [PandaPools MiniDapp](https://github.com/eurobuddha/pandapools-mds)
@@ -11,6 +12,9 @@ mirrored across all three.
 > the tracked releases — see the [GitHub Releases](../../releases) for the canonical published list.
 
 ---
+
+## [0.9.35] — docs: correct the stale "debug-signed" signing notes
+- **No app/behaviour change.** Corrected two stale, misleading claims that the release is debug-signed. In reality, since 2026-08-09 the release build is signed with the dedicated **family release key** via `signingConfigs.release` (active whenever the `MINIMA_FAMILY_RELEASE_*` gradle props are present) — verified this release: 0.9.30 and 0.9.34 both carry signer cert SHA-256 `eca1383c9d27683a281fbe6355356267877dc2dd14d963d7cc289ca0700e517f`, not the debug cert. Fixed the `app/build.gradle` release-signing comment (which said "HELD at debug signing… the published catalog is debug-signed") and the CHANGELOG header ("Each release is a debug-signed APK"). Version bumped so the corrected state is a distinct, trackable release even though no code changed.
 
 ## [0.9.34] — light-mode fixes: visible dialog inputs + a working STYLE toggle
 - **Fixed** invisible text in every entry dialog when the phone is in **light** system mode. The app paints its whole UI from the runtime `Design.Mode` palette (default dark), decoupled from the system day/night — but `AlertDialog` windows draw their background from `Theme.Material3.DayNight`, which follows the **system** setting. On a light-mode phone the dialog painted white while `Design` (dark) handed it white input text, so what you typed was white-on-white and invisible (reported on the Pool calculator; affected create/add/migrate/deposit/swap/send too). Fixed by binding this Activity's framework day/night to the Design palette via the **per-Activity** `getDelegate().setLocalNightMode(...)` in `onCreate` (applied at creation time). The global `AppCompatDelegate.setDefaultNightMode` was tried first and rejected: it fires its own destructive recreate that dropped the (briefly translucent) task to the background.
