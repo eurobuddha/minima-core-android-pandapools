@@ -1,11 +1,15 @@
 package com.eurobuddha.pandapools;
 
+import android.content.ClipData;
+import android.content.ClipboardManager;
+import android.content.Context;
 import android.graphics.Typeface;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.LinearLayout;
 import android.widget.TextView;
+import android.widget.Toast;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -135,7 +139,16 @@ public class PoolsView extends BaseView {
         card.addView(kv("spot price", trim8(p.spotPrice()) + " " + tl + " / MINIMA"));
         BigDecimal fg = p.feeGrowth().multiply(new BigDecimal("100"));
         card.addView(kv("fees accrued (K/KMIN−1)", trim8(fg) + " %"));
-        card.addView(kv("pool", p.address.substring(0, 14) + "…"));
+        // Address is shown truncated but the FULL value is one tap away (copied verbatim to the clipboard) —
+        // never leave an identifier with no way to recover it in full.
+        final String fullAddr = p.address;
+        View poolRow = kv("pool", p.address.substring(0, 14) + "…  (tap to copy)");
+        poolRow.setOnClickListener(view -> {
+            ((ClipboardManager) act.getSystemService(Context.CLIPBOARD_SERVICE))
+                    .setPrimaryClip(ClipData.newPlainText("pool address", fullAddr));
+            Toast.makeText(act, "Pool address copied", Toast.LENGTH_SHORT).show();
+        });
+        card.addView(poolRow);
         return card;
     }
 

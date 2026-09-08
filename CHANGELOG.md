@@ -13,6 +13,9 @@ mirrored across all three.
 
 ---
 
+## [0.9.38] — POOLS: tap a pool address to copy it in full
+- **Added** tap-to-copy on the "pool" row of each POOLS card. The address is still shown truncated (`0x8962BA669233…`) but tapping the row now copies the **complete** address to the clipboard — a truncated identifier with no way to recover the full value is never acceptable.
+
 ## [0.9.37] — fix garbled pool cards (label text stacking vertically)
 - **Fixed** pool cards where a label collapsed to one character wide and stacked vertically (e.g. "reserves" as `r/e/s/e/r/v/e/s` on the POOLS tab, or "Your liquidity" as "Your liq / uidity" on MY LP), with the value overlapping it. The row helper (`PoolsView.kv`, `MyLpView.kvColored`) gave the **label** `width=0, weight=1` and the **value** an uncapped `WRAP_CONTENT`; a value string that filled the row starved the weighted label to ~1 char. Now the label keeps its natural width (capped at 190dp) and the VALUE takes the remaining width (`weight=1`, right-aligned, multi-line) so it wraps within its own column instead of overflowing. Financial figures stay full — no truncation.
 
