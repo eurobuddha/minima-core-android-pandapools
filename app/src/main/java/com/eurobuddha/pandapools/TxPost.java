@@ -1,8 +1,5 @@
 package com.eurobuddha.pandapools;
 
-import android.os.Handler;
-import android.os.Looper;
-
 import org.json.JSONObject;
 
 import java.util.ArrayDeque;
@@ -54,26 +51,7 @@ public final class TxPost {
      */
     private static final ArrayDeque<Runnable> QUEUE = new ArrayDeque<>();
     private static boolean signing = false;
-    private static Runnable watchdog = null;
-
-    /** Longer than NodeApi's 180s write timeout, so the watchdog only ever fires for a chain whose
-     *  callback was genuinely lost — never for one that is merely slow. */
-    private static final long MAX_HOLD_MS = 200_000;
-
-    /** Lazily resolved so the queue logic works without a Looper. Off-device android.jar's stub THROWS
-     *  rather than returning null, so catch broadly; without a Looper the watchdog is simply absent. */
-    private static Handler main;
-    private static boolean mainResolved = false;
-    private static Handler main() {
-        if (!mainResolved) {
-            mainResolved = true;
-            try { Looper l = Looper.getMainLooper(); if (l != null) main = new Handler(l); }
-            catch (Throwable noAndroidRuntime) { main = null; }
-        }
-        return main;
-    }
-
-    private static void submit(Runnable chain) {
+    static void submit(Runnable chain) {
         QUEUE.add(chain);
         if (!signing) startNext();
     }
@@ -82,31 +60,52 @@ public final class TxPost {
         Runnable next = QUEUE.poll();
         if (next == null) { signing = false; return; }
         signing = true;
-        Handler h = main();
-        if (h != null) {
-            watchdog = () -> { watchdog = null; startNext(); };   // a dropped callback must not wedge the app
-            h.postDelayed(watchdog, MAX_HOLD_MS);
-        }
+        // Never release on elapsed time: the node may still be signing. NodeApi owns command
+        // timeouts, and quarantines ambiguous writes before another chain can reach signing.
         next.run();
     }
 
     private static void release() {
-        if (watchdog != null) { Handler h = main(); if (h != null) h.removeCallbacks(watchdog); watchdog = null; }
         startNext();
     }
 
     /** Releases the gate exactly once, however the chain ends. */
-    private static Done gated(Done done) {
+    static Done gated(Done done) {
         return new Done() {
             private boolean released = false;
-            private void free() { if (!released) { released = true; release(); } }
-            @Override public void ok(String txpowid) { free(); done.ok(txpowid); }
-            @Override public void fail(String message) { free(); done.fail(message); }
+            @Override public void ok(String txpowid) {
+                if (released) return; released = true;
+                try { done.ok(txpowid); } finally { release(); }
+            }
+            @Override public void fail(String message) {
+                if (released) return; released = true;
+                try { done.fail(message); } finally { release(); }
+            }
         };
     }
 
     public static void checkThenPost(NodeApi node, String txid, List<String> cmdsThroughBasics, Done done) {
-        final Done gatedDone = gated(done);
+        List<String> inputIds = new ArrayList<>();
+        for (String command : cmdsThroughBasics) if (command.startsWith("txninput ")) {
+            String id = "";
+            for (String part : command.split("\\s+")) if (part.startsWith("coinid:")) id = part.substring(7);
+            if (!FundingCoins.hex(id)) { done.fail("Invalid transaction input. Nothing was posted."); return; }
+            inputIds.add(id);
+        }
+        int inputs = inputIds.size();
+        if (inputs > FundingCoins.MAX_INPUTS) {
+            done.fail("This transaction needs " + inputs + " inputs; the mobile limit is "
+                    + FundingCoins.MAX_INPUTS + ". Consolidate coins or use fewer pools. Nothing was posted.");
+            return;
+        }
+        if (!CoinLock.claimInputs(inputIds)) {
+            done.fail("An input is already in another queued transaction, or appears twice. Wait for Activity to update and retry.");
+            return;
+        }
+        final Done gatedDone = gated(new Done() {
+            public void ok(String id) { CoinLock.finishInputs(inputIds); done.ok(id); }
+            public void fail(String message) { CoinLock.finishInputs(inputIds); done.fail(message); }
+        });
         submit(() -> runChain(node, txid, cmdsThroughBasics, gatedDone));
     }
 
@@ -115,33 +114,51 @@ public final class TxPost {
         cmds.add("txncheck id:" + txid);
         CmdChain.run(node, cmds, "txndelete id:" + txid, new CmdChain.Done() {
             @Override public void ok(JSONObject last) {
-                JSONObject resp = last != null ? last.optJSONObject("response") : null;
-                // txncheck's TOP-LEVEL `scripts` is the COUNT of distinct input scripts (not a verdict).
-                // The real covenant verdict is the boolean `response.valid.scripts`; `validamounts` is a
-                // top-level boolean. Read both truthily (handles bool/int/string).
-                JSONObject valid = resp != null ? resp.optJSONObject("valid") : null;
-                boolean scriptsOk = truthy(valid, "scripts");
-                boolean amountsOk = truthy(resp, "validamounts");
-                boolean mmrOk = truthy(valid, "mmrproofs");   // false ⇒ an input was already spent (pool moved)
-                if (!scriptsOk || !amountsOk || !mmrOk) {
+                String invalid = checkFailure(last);
+                if (invalid != null) {
                     node.cmd("txndelete id:" + txid, NOOP);
-                    done.fail(!mmrOk
-                            ? "an input coin was already spent (the pool moved) — nothing was posted"
-                            : !scriptsOk
-                            ? "the pool covenant rejects this transaction — nothing was posted"
-                            : "the amounts don't balance — nothing was posted");
-                    return;
+                    done.fail(invalid); return;
                 }
                 node.cmd("txnpost id:" + txid, new NodeApi.Cb() {
                     @Override public void onResult(JSONObject j) {
-                        if (j.optBoolean("status", false)) done.ok(Util.extractTxpowid(j, txid));
-                        else { node.cmd("txndelete id:" + txid, NOOP); done.fail("post rejected" + err(j)); }
+                        if (j.optBoolean("status", false)) {
+                            node.cmd("txndelete id:" + txid, NOOP);
+                            String postedId = Util.extractTxpowid(j, txid);
+                            ActivityLog.rememberSubmission(node.context(), j, postedId);
+                            done.ok(postedId);
+                        }
+                        else { node.cmd("txndelete id:" + txid, NOOP); done.fail(postError(j)); }
                     }
-                    @Override public void onError(String m) { node.cmd("txndelete id:" + txid, NOOP); done.fail(m); }
+                    @Override public void onError(String m) {
+                        if (!NodeApi.ERR_WRITE_UNCERTAIN.equals(m)) node.cmd("txndelete id:" + txid, NOOP);
+                        done.fail(m);
+                    }
                 });
             }
             @Override public void fail(String message) { done.fail(message); }
         });
+    }
+
+    static String checkFailure(JSONObject reply) {
+        JSONObject r = reply == null ? null : reply.optJSONObject("response");
+        JSONObject valid = r == null ? null : r.optJSONObject("valid");
+        if (!truthy(reply, "status")) return "The node could not check the transaction. Nothing was posted.";
+        if (!truthy(valid, "mmrproofs")) return "An input coin was already spent or its proof is invalid. Refresh and retry; nothing was posted.";
+        if (!truthy(r, "validamounts")) return "The transaction amounts do not balance. Nothing was posted.";
+        if (!truthy(valid, "scripts")) return "The pool covenant rejects this transaction. Nothing was posted.";
+        if (!truthy(valid, "basic") || !truthy(r, "allsignaturesvalid") || !truthy(r, "validtransaction"))
+            return "The node did not validate the complete transaction and signatures. Nothing was posted.";
+        return null;
+    }
+
+    static String postError(JSONObject reply) {
+        String error = reply == null ? "" : reply.optString("error", "");
+        if (error.contains("TxPoW size too large"))
+            return "Minima rejected the transaction at txnpost: " + error
+                    + ". These are serialized TxPoW bytes / the chain maximum. Nothing was broadcast. "
+                    + "Use Wallet → Consolidate to combine fewer coins, wait for confirmation, then retry. "
+                    + "A coin-count limit does not guarantee that proofs and signatures fit.";
+        return "Node rejected txnpost" + (error.isEmpty() ? "." : ": " + error);
     }
 
     static String err(JSONObject j) { String e = j.optString("error", ""); return e.isEmpty() ? "" : " : " + e; }

@@ -275,7 +275,7 @@ public class MainActivity extends AppCompatActivity {
         // every session on a re-paired/different-seed node; it runs only on an explicit Restore instead.)
         final List<String> oadrs = new ArrayList<>();
         for (Pool p : own) if (p.oadr != null && !p.oadr.isEmpty()) oadrs.add(p.oadr);
-        new PoolManager(node).sweepOwnerFunds(oadrs, (addressesForwarded, coins) -> {
+        new PoolManager(node).sweepOwnerFunds(oadrs, (addressesForwarded, coins, error) -> {
             if (addressesForwarded > 0 && poolRepo != null) poolRepo.refresh();
         });
 
@@ -407,6 +407,10 @@ public class MainActivity extends AppCompatActivity {
                     blockNo.setText("#" + blk);
                     if (blk != chainBlock) {
                         chainBlock = blk;
+                        ActivityLog.verify(MainActivity.this, node, () -> {
+                            if (!isFinishing() && !isDestroyed() && views != null)
+                                views[TAB_ACTIVITY].refresh();
+                        });
                         // ONE shared registry scan per block (single-flight) — its result is multicast to
                         // every tab. Drives the pool refresh centrally so it doesn't depend on any one view.
                         if (poolRepo != null) poolRepo.refresh();

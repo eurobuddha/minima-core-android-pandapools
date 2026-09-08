@@ -4,19 +4,10 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 /**
- * Bounded, ADAPTIVE, IPC-safe sync of the node's relevant history into {@link HistoryDb} — a verbatim port
- * of the standalone History app's sync.
- *
- * Contract-heavy txpows (pool swaps included) are large — ~40 KB each was measured on-device — so even a small
- * page can blow past the IPC broadcast limit. CRITICAL: over the native broadcast IPC an oversized reply is NOT
- * a catchable "too long" stub — the node broadcasts the raw parcel, the Binder transaction fails, and the OS
- * force-kills the app ("can't deliver broadcast") BEFORE any onError/onResult runs. So the adaptive shrink below
- * can only rescue a CATCHABLE empty/errored page; it can NOT rescue an over-limit first page. The load-bearing
- * safety is therefore the FIRST page size: it must be small enough never to overflow. A single txpow (max:1) is
- * ~40 KB — a large margin under the ~256 KB danger — so we START at 1 (a fixed max:8 first page ≈ 340 KB was the
- * 0.9.14 crash-on-open; see [[minima-ipc-gotchas]]). Two modes: a one-time BACKFILL (pages to the end of what the
- * node retains) and the steady-state INCREMENTAL sync (pages only until the first already-stored txpowid). Both
- * stop on a short page (end of history).
+ * One-TxPoW-at-a-time history sync, adapted from the standalone History app.
+ * Small pages reduce legacy Binder exposure but do not bound serialized bytes: even one large
+ * transaction may overflow the stock node's inline reply transport before an app callback runs.
+ * Adaptive skipping only handles replies/errors actually delivered to the app.
  */
 public class HistorySync {
 
@@ -25,8 +16,7 @@ public class HistorySync {
         void onDone(int totalNew, boolean ok);
     }
 
-    // ONE txpow per page. The overflow is uncatchable (see class note), so the first page must never exceed the
-    // IPC limit — a single ~40 KB txpow is safe; a multi-txpow first page is not. Do NOT raise this.
+    // Keep the smallest possible page. A count of one is not a byte-size guarantee on legacy IPC.
     private static final int  START_MAX = 1;
     private static final long PAGE_DELAY_MS = 450;
     private static final int  MAX_FETCHES = 600;   // safety cap across pages + retries
@@ -78,6 +68,7 @@ public class HistorySync {
                     JSONObject tx = txpows.optJSONObject(i);
                     JSONObject det = (details != null && i < details.length()) ? details.optJSONObject(i) : null;
                     if (tx == null) continue;
+                    ActivityLog.observeHistory(act, tx);
                     HistoryEntry e = HistoryEntry.from(tx, det);
                     if (e.txpowid.isEmpty()) continue;
                     // The repair pass must REWRITE rows it already holds (that is the whole point), so it

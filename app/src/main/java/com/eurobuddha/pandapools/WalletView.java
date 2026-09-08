@@ -49,6 +49,7 @@ public class WalletView extends BaseView {
     /** When the last `balance` reply landed — drives the "updated Ns ago" stamp (AtomiX parity). */
     private long lastBalanceUpdate = 0;
     private boolean unpaired = false;
+    private String balanceError = "";
     /** Every known pool covenant address, so the coin list can say WHICH coins are the locked ones. */
     private PandaAddrBook addrBook;
 
@@ -83,10 +84,12 @@ public class WalletView extends BaseView {
         act.node().cmd("balance", new NodeApi.Cb() {
             @Override public void onResult(JSONObject j) {
                 loading = false;
+                JSONArray arr = FundingCoins.rows(j);
+                if (arr == null) { onError(j.optString("error", j.optString("message", "Balance unavailable."))); return; }
                 unpaired = false;
+                balanceError = "";
                 lastBalanceUpdate = System.currentTimeMillis();
                 balances.clear();
-                JSONArray arr = j.optJSONArray("response");
                 if (arr != null) for (int i = 0; i < arr.length(); i++) {
                     JSONObject b = arr.optJSONObject(i);
                     if (b != null) balances.add(TokenBalance.from(b));
@@ -100,13 +103,13 @@ public class WalletView extends BaseView {
                 });
                 renderCards();
             }
-            // Stamp the attempt either way, so "updated Ns ago" reflects when we last heard from the node
-            // rather than freezing at the last success and implying the figures are fresher than they are.
+            // Preserve the successful-read timestamp. Failed attempts cannot freshen old balances.
             @Override public void onError(String m) {
                 loading = false;
-                lastBalanceUpdate = System.currentTimeMillis();
+                balanceError = m;
                 unpaired = NodeApi.ERR_NOT_ENABLED.equals(m);
-                if (unpaired) { balances.clear(); renderCards(); }
+                if (unpaired) balances.clear();
+                renderCards();
             }
         });
     }
@@ -121,6 +124,8 @@ public class WalletView extends BaseView {
     private void renderCards() {
         container.removeAllViews();
         container.addView(receiveHeader());
+        if (!balanceError.isEmpty()) container.addView(mono("Balance refresh failed: " + balanceError
+                + (balances.isEmpty() ? "" : " Showing the last successful read."), 12f, Design.amber(), false));
         if (balances.isEmpty()) {
             TextView tv = new TextView(act);
             tv.setText(unpaired ? "Connect your node in Minima Core → Apps to see your balances."
@@ -160,6 +165,18 @@ public class WalletView extends BaseView {
         TextView hint = mono("tap to copy your receive address", 10f, Design.dim(), false);
         hint.setPadding(0, dp(3), 0, 0);
         box.addView(hint);
+        TextView tools = mono("Consolidate MINIMA coins", 14f, Design.accent(), true);
+        tools.setPadding(0, dp(12), 0, dp(12));
+        tools.setOnClickListener(v -> new WalletTools(act).showConsolidate(Util.MINIMA_TOKENID, "MINIMA"));
+        box.addView(tools);
+        TextView check = mono("Check node connection", 14f, Design.accent(), true);
+        check.setPadding(0, dp(12), 0, dp(12));
+        check.setOnClickListener(v -> new WalletTools(act).checkNode()); box.addView(check);
+        if (act.node().hasInterruptedWrite()) {
+            TextView resolve = mono("Resolve interrupted write", 14f, Design.amber(), true);
+            resolve.setPadding(0, dp(12), 0, dp(12));
+            resolve.setOnClickListener(v -> new WalletTools(act).resolveInterruptedWrite()); box.addView(resolve);
+        }
         return box;
     }
 
@@ -246,9 +263,8 @@ public class WalletView extends BaseView {
         TextView cnt = mono((b.coins + (b.coins == 1 ? " coin" : " coins")).toUpperCase(), 10f, Design.dim(), false);
         cnt.setLetterSpacing(0.04f); cnt.setGravity(Gravity.END); cnt.setPadding(0, dp(3), 0, 0);
         amtCol.addView(cnt);
-        top.addView(amtCol, new LinearLayout.LayoutParams(WC, WC));
-
         card.addView(top);
+        card.addView(amtCol, new LinearLayout.LayoutParams(MP, WC));
 
         // The full breakdown, ALWAYS — zeros included. Hiding a zero is what made this unreadable: on a node
         // whose funds are all in a pool you saw a headline 0 and nothing explaining where the money went.
@@ -307,6 +323,10 @@ public class WalletView extends BaseView {
         if (notEmpty(b.meta.decimals)) addKv(box, "Decimals", b.meta.decimals);
         if (notEmpty(b.meta.owner)) addKv(box, "Owner", b.meta.owner);
 
+        TextView consolidate = mono("Consolidate " + b.name + " coins", 14f, Design.accent(), true);
+        consolidate.setPadding(0, dp(12), 0, dp(12));
+        consolidate.setOnClickListener(v -> new WalletTools(act).showConsolidate(b.tokenid, b.name));
+        box.addView(consolidate);
         box.addView(sectionLabel("Coins"));
         TextView coinsView = new TextView(act);
         coinsView.setText("Loading coins…");
@@ -353,22 +373,30 @@ public class WalletView extends BaseView {
      * a pool covenant address. That turns the section into a direct answer to "why is confirmed bigger than
      * sendable" — those tagged coins ARE the difference.
      *
-     * BOUNDED deliberately. AtomiX asks for {@code simplestate:false} unbounded; over this app's broadcast
-     * IPC an oversized reply is not a catchable error — the Binder transaction fails and the OS force-kills
-     * the app before any callback runs. So we omit simplestate (which is what inflates the reply) and, if
-     * the node still returns its over-256KB stub, retry once for sendable coins only and SAY the list is
-     * partial rather than quietly showing a subset.
+     * Count first using balance, then list only a small token set. A reactive too-long fallback
+     * alone cannot protect legacy nodes: Android may kill the receiver before delivering a reply.
      */
     private void loadCoins(TokenBalance b, TextView out) {
         if (act.node() == null) { out.setText("No node connection."); return; }
         if (addrBook == null) { addrBook = new PandaAddrBook(act); addrBook.seed(); }
-        final String base = "coins relevant:true tokenid:" + b.tokenid;
-        // First ask WHICH coins the node considers spendable — its own sendable gate (isAddressSimple).
-        // Every coin outside that set is locked, and that set is exactly what the "locked ≈" figure counts.
-        // Best-effort: if this query fails the list still renders, just without the spendable/locked marks.
-        act.node().cmd(base + " sendable:true", new NodeApi.Cb() {
-            @Override public void onResult(JSONObject js) { withSendable(base, sendableIds(js), out); }
-            @Override public void onError(String m) { withSendable(base, null, out); }
+        act.node().cmd("balance tokenid:" + b.tokenid, new NodeApi.Cb() {
+            @Override public void onResult(JSONObject j) {
+                int count = FundingCoins.coinsFor(j, b.tokenid);
+                if (!FundingCoins.listIsSafe(count)) {
+                    out.setText(count < 0 ? "Coin count unavailable. Try again when the node responds."
+                            : "The node reports " + count + " coins. Full coin listing is paused to protect this phone's node connection. "
+                            + "Balances above remain available. Use Consolidate to combine wallet coins."); return;
+                }
+                final String base = "coins relevant:true tokenid:" + b.tokenid;
+                act.node().cmd(base + " sendable:true", new NodeApi.Cb() {
+                    @Override public void onResult(JSONObject js) {
+                        if (FundingCoins.rows(js) == null) { out.setText("Could not read spendable coins. Try again."); return; }
+                        withSendable(base, sendableIds(js), out);
+                    }
+                    @Override public void onError(String m) { out.setText("Could not load coins: " + m); }
+                });
+            }
+            @Override public void onError(String m) { out.setText("Could not load coins: " + m); }
         });
     }
 
@@ -399,8 +427,9 @@ public class WalletView extends BaseView {
     }
 
     private CharSequence renderCoins(JSONObject j, java.util.Set<String> sendable, boolean sendableOnly) {
-        JSONArray arr = j.optJSONArray("response");
-        if (arr == null || arr.length() == 0) return "No coins.";
+        JSONArray arr = FundingCoins.rows(j);
+        if (arr == null) return "Could not read coins. Try again.";
+        if (arr.length() == 0) return "No coins.";
         List<Coin> list = new ArrayList<>();
         for (int i = 0; i < arr.length(); i++) {
             JSONObject c = arr.optJSONObject(i);

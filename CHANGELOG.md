@@ -13,6 +13,18 @@ mirrored across all three.
 
 ---
 
+## [0.9.42] — safety-review source checkpoint; public release pending
+- Proactive funding-count/address checks, reviewed coin consolidation, and complete-transaction input limits.
+- Durable pause after uncertain signing/posting, idempotent signing completion, and input claims that survive queue delays.
+- Full covenant/backup validation, durable pre-funding recipes, and read-only owner-key checks; recipes do not restore current wallet signing state.
+- Node-evidenced confirmations and immutable transaction-ID matching; unknown outcomes are no longer shown as definite failure.
+- Redirect/private-host checks for token metadata, clearer wallet errors, exact swap-confirmation amounts, and preservation of small MINIMA change.
+- Serial IPC request scheduling prevents app-generated reply bursts; diagnostics include reply sizes.
+- See [the review report](REVIEW-0.9.42.md) for evidence, stock-node limitations and unfinished device/family release gates. This entry does not announce a release.
+
+## [0.9.41] — local prototypes; no reproducible release
+- Several different APKs incorrectly reused code 941 before a commit. This violated the versioning rule. Version 0.9.42 checkpoints the complete source; the 0.9.41 prototypes are superseded.
+
 ## [0.9.40] — code-review follow-ups to the owner-txn live re-read (0.9.36)
 - **Add** now re-derives the balanced token side from the LIVE price after the fresh coin read, not the dialog-time amount. Before, if a swap moved the pool between opening the Add dialog and confirming, the deposit could post slightly off-ratio and shift the price — breaking the dialog's "both sides in the pool's ratio so the price doesn't move" promise. It stays balanced against current reserves now.
 - **Close** builds its activity-log summary AFTER the live re-read, so the recorded withdrawal amounts match what was actually swept (not the pre-move snapshot).

@@ -42,29 +42,16 @@ public final class WebValidate {
     }
 
     private static boolean fetchContains(String url, String tokenid) {
-        HttpURLConnection c = null;
         try {
-            if (!url.startsWith("http")) return false;
-            if (ImageLoader.isBlockedHost(new URL(url).getHost())) return false;   // no loopback/LAN webvalidate targets
-            c = (HttpURLConnection) new URL(url).openConnection();
-            c.setConnectTimeout(8000);
-            c.setReadTimeout(10000);
-            c.setInstanceFollowRedirects(true);
-            c.setRequestProperty("User-Agent", "PandaPools");
-            if (c.getResponseCode() != 200) return false;
-            String body;
-            try (InputStream in = c.getInputStream(); ByteArrayOutputStream bos = new ByteArrayOutputStream()) {
-                byte[] buf = new byte[8192]; int n; int total = 0;
-                while ((n = in.read(buf)) > 0 && total < 262144) { bos.write(buf, 0, n); total += n; }  // cap 256KB
-                body = bos.toString("UTF-8").toLowerCase();
-            }
+            // NetFetch: http(s) only, no loopback/LAN targets, redirects re-checked per hop, body capped at 256KB.
+            byte[] bytes = NetFetch.get(url, 262144, 8000, 10000, true);
+            if (bytes == null) return false;
+            String body = new String(bytes, StandardCharsets.UTF_8).toLowerCase();
             String tid = tokenid.toLowerCase();
             String bare = tid.startsWith("0x") ? tid.substring(2) : tid;
             return body.contains(tid) || body.contains(bare);
         } catch (Throwable t) {
             return false;
-        } finally {
-            if (c != null) c.disconnect();
         }
     }
 

@@ -5,6 +5,7 @@ import android.content.Context;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
+import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -30,9 +31,8 @@ public class Recovery {
      *  v2 adds {@code opkuses} + {@code atblock} per pool — the owner key's one-time-signature counter and
      *  the height it was read at. Without them a restore has no way to know where the key left off and
      *  resumes at leaf 0, re-signing leaves the pre-restore node already spent (see {@link KeyUses}).
-     *  v3 adds {@code kidx} per pool — the owner key's derivation index ({@code modifier}), so a restore's
-     *  key hunt is exact and a backup restored onto the WRONG seed is proven foreign with zero minted
-     *  keys (see {@link HuntBudget}). */
+     *  v3 adds {@code kidx}, the owner key's derivation index. These fields describe backup-time state;
+     *  they cannot establish the latest signing state and are never used to regenerate signing keys. */
     static final int BACKUP_VERSION = 3;
 
     public interface BackupCb { void onBackup(String json); void onError(String msg); }
@@ -53,8 +53,7 @@ public class Recovery {
         backup(ctx, fundedMine, 0, cb);
     }
 
-    /** @param chainBlock the current tip, stamped alongside each owner key's use count so a later restore
-     *                    can work out how many keep-fresh signatures could have happened since. */
+    /** @param chainBlock current tip, retained as backup provenance, never a signing-counter estimate. */
     public void backup(Context ctx, List<Pool> fundedMine, final int chainBlock, BackupCb cb) {
         final List<Pool> recipes = OwnPoolStore.all(ctx);
         if (recipes.isEmpty()) { cb.onError("No pools to back up yet — create a pool first."); return; }
@@ -82,9 +81,8 @@ public class Recovery {
     /**
      * Stamp this pool's owner-key use count into the backup entry.
      *
-     * This is the number that makes a restore safe: it is what the key had actually spent at backup time,
-     * measured from the node rather than guessed. Best-effort — a key the node no longer holds (already
-     * restored elsewhere) simply gets no count, and the restore falls back to asking the user.
+     * Records what the key had spent at backup time. Later signatures are not represented here;
+     * safe key restoration requires the matching, current MinimaCore wallet backup.
      */
     private void recordUses(final Context ctx, final Pool r, final JSONObject e,
                             final int chainBlock, final Runnable done) {
@@ -100,7 +98,7 @@ public class Recovery {
                         e.put("kidx", kidx);
                         // Backfill the local recipe too: a pre-v3 pool only reveals its index while the
                         // node still HOLDS the key — this backup is exactly that moment. With it stored,
-                        // a later hunt on this device is exact instead of blind.
+                        // backup retains the node's derivation metadata.
                         if (r.kidx != kidx) { r.kidx = kidx; OwnPoolStore.record(ctx, r); }
                     }
                 } catch (Exception ignore) {}
@@ -169,19 +167,20 @@ public class Recovery {
         restore(ctx, json, 0, cb);
     }
 
-    /** @param chainBlock current tip — used with each entry's stamped height to work out how many
-     *                    keep-fresh signatures could have happened since the backup was taken. */
+    /** @param chainBlock retained for caller compatibility; never used to guess signing state. */
     public void restore(Context ctx, String json, final int chainBlock, RestoreCb cb) {
         final JSONArray pools;
         try {
             JSONObject root = new JSONObject(json);
+            int version = root.optInt("pandapools_backup", 0);
+            if (version < 1 || version > BACKUP_VERSION) throw new IllegalArgumentException("Unsupported backup version");
             pools = root.optJSONArray("pools");
+            if (pools != null && pools.length() > 500) throw new IllegalArgumentException("Too many pool recipes");
             if (pools == null || pools.length() == 0) { cb.onProgress("No pools in that backup file."); cb.onDone(0, 0); return; }
         } catch (Exception e) { cb.onProgress("That doesn't look like a PandaPools backup."); cb.onDone(0, 0); return; }
 
         final int total = pools.length();
-        // Owner keys ($OPK) are newaddress keys a seed-only restore doesn't bring back — regenerate them so
-        // restored pools are actually closeable/collectable, not just re-tracked. Gather them up front.
+        // Check ownership after import. Never regenerate keys or guess their historic signing counts.
         final List<String> opks = new ArrayList<>();
         for (int i = 0; i < total; i++) {
             JSONObject e = pools.optJSONObject(i);
@@ -207,75 +206,15 @@ public class Recovery {
                         if (prev == null || prev < ki) kidx.put(o, ki);
                     }
                     OwnerKeyRecovery.ensure(ctx, node, opks, kidx, (regenerated, unreachable) -> {
-                        if (regenerated > 0) cb.onProgress("Regenerated " + regenerated
-                                + " owner key" + (regenerated == 1 ? "" : "s") + " so your pools are spendable.");
-                        if (!unreachable.isEmpty()) cb.onProgress("! " + unreachable.size() + " owner key"
-                                + (unreachable.size() == 1 ? " was" : "s were") + " created under a DIFFERENT seed — "
-                                + "this node cannot sign for those pools. Restore them on the device/seed that created them.");
-                        // A regenerated key comes back at uses=0. Wind it forward to where it actually left
-                        // off BEFORE anything can sign with it — that ordering is the entire fix.
-                        advanceAll(pools, 0, chainBlock, new HashSet<>(unreachable), cb, () -> cb.onDone(okCount.get(), total));
+                        if (!unreachable.isEmpty()) cb.onProgress("! " + unreachable.size()
+                                + " owner key(s) are missing or could not be verified. Restore the matching MinimaCore wallet backup "
+                                + "before spending. Pool recipes do not restore signing state.");
+                        cb.onDone(okCount.get(), total);
                     });
                 }
             });
         }
     }
-
-    /**
-     * Walk the backup entries, winding each owner key forward to the count it had reached.
-     *
-     * Sequential on purpose: each pass burns real signatures, and firing them concurrently is exactly the
-     * pattern that caused the original reuse. Best-effort per pool — one key that can't be advanced must
-     * not abandon the others — but every failure is REPORTED, never swallowed, because a key left short
-     * is a key that must not be signed with.
-     */
-    private void advanceAll(final JSONArray pools, final int i, final int chainBlock,
-                            final Set<String> unreachable, final RestoreCb cb, final Runnable done) {
-        if (i >= pools.length()) { done.run(); return; }
-        final JSONObject e = pools.optJSONObject(i);
-        final Runnable next = () -> advanceAll(pools, i + 1, chainBlock, unreachable, cb, done);
-        if (e == null) { next.run(); return; }
-
-        final String opk = e.optString("opk", "");
-        final String label = Util.shorten(e.optString("addr", "pool"));
-        if (!opk.isEmpty() && unreachable.contains(opk.toLowerCase())) {
-            // Not this seed's key — there is nothing to advance and never will be. The honest message
-            // here, not the misleading "could not restore the owner key's usage".
-            cb.onProgress("! " + label + ": this pool's owner key belongs to a different seed — "
-                    + "this node cannot sign for it.");
-            next.run();
-            return;
-        }
-        if (opk.isEmpty() || !e.has("opkuses")) {
-            // A pre-v2 backup carries no count. Say so rather than quietly resuming at leaf 0 — the user
-            // needs to know this key may re-sign, and can set it from their own resync keyuses value.
-            if (!opk.isEmpty()) cb.onProgress("! " + label + ": this backup predates key-use tracking, so the "
-                    + "owner key's signature count is unknown. Re-back-up now, and avoid reusing this pool.");
-            next.run();
-            return;
-        }
-
-        final int target = KeyUses.restoreTarget(e.optInt("opkuses", 0), e.optInt("atblock", 0), chainBlock, USES_SLACK);
-        KeyUses.advanceTo(node, opk, target, new KeyUses.AdvanceCb() {
-            @Override public void onProgress(int at, int tgt) {
-                if (at % 50 == 0) cb.onProgress("Restoring " + label + " key usage… " + at + "/" + tgt);
-            }
-            @Override public void onDone(int finalUses) {
-                cb.onProgress("Recovered " + label + " owner key (usage restored to " + finalUses + ").");
-                next.run();
-            }
-            @Override public void onError(String m) {
-                cb.onProgress("! " + label + ": could not restore the owner key's usage (" + m + "). "
-                        + "Do not use this pool until that succeeds — signing now could expose the key.");
-                next.run();
-            }
-        });
-    }
-
-    /** Owner actions other than keep-fresh (deposit / migrate / close / collect) that could also have
-     *  signed between the backup and the restore. A leaf costs nothing against 262,144; falling short
-     *  leaks the key — so this errs high deliberately. */
-    private static final int USES_SLACK = 50;
 
     private void restoreOne(final Context ctx, final JSONObject e, final RestoreCb cb,
                             final Runnable onOk, final Runnable done) {
@@ -285,24 +224,61 @@ public class Recovery {
         final String label = addr.isEmpty() ? "pool" : Util.shorten(addr);
         if (script.isEmpty()) { cb.onProgress("Skipped " + label + " (no covenant in backup)."); done.run(); return; }
 
-        // persist the recipe first so the app knows this pool regardless of what the node does
-        OwnPoolStore.record(ctx, poolFrom(e));
+        if (!validRecipe(e)) { cb.onProgress("Skipped " + label + " (invalid recipe fields)."); done.run(); return; }
+        // Derive the supplied script's address before persisting or importing anything.
+        node.cmd("runscript script:" + Util.scriptArg(script), new NodeApi.Cb() {
+            public void onResult(JSONObject reply) {
+                JSONObject r = reply == null ? null : reply.optJSONObject("response");
+                JSONObject sc = r == null ? null : r.optJSONObject("script");
+                if (!TxPost.truthy(reply, "status") || !TxPost.truthy(r, "parseok") || sc == null
+                        || !addr.equalsIgnoreCase(sc.optString("address", ""))) {
+                    cb.onProgress("Skipped " + label + " (covenant address did not verify)."); done.run(); return;
+                }
+                registerRecipe(ctx, e, cb, onOk, done);
+            }
+            public void onError(String error) { cb.onProgress("Could not verify " + label + ". Nothing imported."); done.run(); }
+        });
+    }
 
+    private void registerRecipe(Context ctx, JSONObject e, RestoreCb cb, Runnable onOk, Runnable done) {
+        String label = Util.shorten(e.optString("addr", "pool"));
+        String script = e.optString("script", "");
+        if (!OwnPoolStore.recordDurably(ctx, poolFrom(e))) {
+            cb.onProgress("Could not save " + label + ". Nothing imported."); done.run(); return;
+        }
         node.cmd("newscript trackall:true script:" + Util.scriptArg(script), new NodeApi.Cb() {
-            @Override public void onResult(JSONObject j) { importCoins(); }
-            @Override public void onError(String m) { importCoins(); }   // recipe kept; discovery/archive can still find it
+            @Override public void onResult(JSONObject j) {
+                if (TxPost.truthy(j, "status")) importCoins();
+                else { cb.onProgress("! Could not track " + label + "; recipe saved."); done.run(); }
+            }
+            @Override public void onError(String m) { cb.onProgress("! Could not track " + label + "; recipe saved."); done.run(); }   // recipe kept; discovery/archive can still find it
             private void importCoins() {
                 importCoin(e.optString("cm", ""), () ->
                     importCoin(e.optString("ct", ""), () -> {
-                        cb.onProgress("Recovered " + label + ".");
+                        cb.onProgress("Recipe saved and tracking registered for " + label + ". Coin imports are best-effort; verify live reserves.");
                         onOk.run(); done.run();
                     }));
             }
         });
     }
 
+    static boolean validRecipe(JSONObject e) {
+        if (e == null) return false;
+        for (String field : new String[]{"addr", "opk", "oadr", "tok"})
+            if (!FundingCoins.hex(e.optString(field, ""))) return false;
+        for (String field : new String[]{"cm", "ct"}) {
+            String data = e.optString(field, "");
+            if (!data.isEmpty() && !FundingCoins.hex(data)) return false;
+        }
+        int dec;
+        try { dec = new BigDecimal(e.get("dec").toString()).intValueExact(); }
+        catch (Exception invalid) { return false; }
+        return dec >= 0 && dec <= 44 && PoolCovenant.matches(e.optString("script", ""),
+                e.optString("opk", ""), e.optString("oadr", ""), e.optString("tok", ""), e.optString("kmin", ""));
+    }
+
     private void importCoin(String data, final Runnable next) {
-        if (data == null || data.isEmpty()) { next.run(); return; }
+        if (data == null || data.isEmpty() || !FundingCoins.hex(data)) { next.run(); return; }
         node.cmd("coinimport track:true data:" + data, new NodeApi.Cb() {
             @Override public void onResult(JSONObject j) { next.run(); }
             @Override public void onError(String m) { next.run(); }   // best-effort (proof may be stale / coin spent)

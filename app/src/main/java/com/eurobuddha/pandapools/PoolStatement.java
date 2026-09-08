@@ -47,7 +47,7 @@ public final class PoolStatement {
     private static final int MONEY_DP = 6;
     private static final int PRICE_DP = 12;
     private static final String EOL = "\r\n";
-    private static final String BOM = "﻿";     // Excel needs this to read UTF-8
+    private static final String BOM = "\uFEFF";     // Excel needs this to read UTF-8
 
     private PoolStatement() {}
 

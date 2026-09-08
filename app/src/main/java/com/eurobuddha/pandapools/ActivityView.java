@@ -187,17 +187,17 @@ public class ActivityView extends BaseView {
             return;
         }
         if (!inflight.isEmpty()) {
-            container.addView(header("IN FLIGHT"));
+            container.addView(header("SUBMITTED / UNVERIFIED"));
             for (ActivityLog.Entry e : inflight) {
                 container.addView(pendingCard(e, cb));
-                if (e.txpowid != null && !e.txpowid.isEmpty()) shownTx.add(e.txpowid.toLowerCase());
+                if (e.confirmed(cb) && e.txpowid != null && !e.txpowid.isEmpty()) shownTx.add(e.txpowid.toLowerCase());
             }
         }
         if (!confirmed.isEmpty()) {
             container.addView(header("CONFIRMED"));
             for (ActivityLog.Entry e : confirmed) {
                 container.addView(pendingCard(e, cb));
-                if (e.txpowid != null && !e.txpowid.isEmpty()) shownTx.add(e.txpowid.toLowerCase());
+                if (e.confirmed(cb) && e.txpowid != null && !e.txpowid.isEmpty()) shownTx.add(e.txpowid.toLowerCase());
             }
         }
         if (!hist.isEmpty()) {
@@ -205,7 +205,7 @@ public class ActivityView extends BaseView {
             for (HistoryEntry n : hist) {
                 // dedupe: skip an on-chain row already shown above as a local ActivityLog entry
                 if (n.txpowid != null && shownTx.contains(n.txpowid.toLowerCase())) continue;
-                if (!headerShown) { container.addView(header("CONFIRMED ON-CHAIN")); headerShown = true; }
+                if (!headerShown) { container.addView(header("NODE HISTORY · inclusion not independently checked")); headerShown = true; }
                 container.addView(historyRow(n));
             }
         }
@@ -444,6 +444,7 @@ public class ActivityView extends BaseView {
 
     private static String prettyType(String type) {
         switch (type) {
+            case ActivityLog.CONSOLIDATE: return "Consolidate coins";
             case ActivityLog.CREATE:  return "Create pool";
             case ActivityLog.SWAP:    return "Swap";
             case ActivityLog.DEPOSIT: return "Add liquidity";

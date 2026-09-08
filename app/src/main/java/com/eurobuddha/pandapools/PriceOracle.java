@@ -54,7 +54,8 @@ public final class PriceOracle {
     public static BigDecimal cachedMid() { return lastMid; }
 
     public static boolean fresh() {
-        return lastMid != null && lastMid.signum() > 0 && (System.currentTimeMillis() - lastMs) <= FRESH_MS;
+        long age = System.currentTimeMillis() - lastMs;
+        return lastMid != null && lastMid.signum() > 0 && age >= 0 && age <= FRESH_MS;
     }
 
     /** One-shot async fetch of the MINIMA/USDT mid (robust: depth effective-level + spread check, bookTicker

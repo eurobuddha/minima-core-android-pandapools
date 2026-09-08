@@ -15,6 +15,15 @@ import java.math.BigDecimal;
  * the KMIN canonical form, and the overflow guard against silent regression.
  */
 public class PoolCovenantTest {
+    @Test public void fullContractValidationRejectsFingerprintSpoofAndRetainsRecordedFee() {
+        String current = PoolCovenant.script(OPK, OADR, TOK, KMIN);
+        assertTrue(PoolCovenant.matches(current, OPK, OADR, TOK, KMIN));
+        assertTrue(PoolCovenant.matches(current.replace("*5/1000", "*3/1000"), OPK, OADR, TOK, KMIN));
+        assertFalse(PoolCovenant.matches("RETURN TRUE " + current, OPK, OADR, TOK, KMIN));
+        assertFalse(PoolCovenant.matches(current.replace("GTE MAX(x*y", "LTE MAX(x*y"), OPK, OADR, TOK, KMIN));
+        assertFalse(PoolCovenant.matches(current.replace("*5/1000", "*5/0"), OPK, OADR, TOK, KMIN));
+        assertFalse(PoolCovenant.matches(current, OPK, "0xaabb", TOK, KMIN));
+    }
 
     // A real mainnet pool's params observed on-device (MINIMA/mxUSDT).
     private static final String OPK  = "0xFC8E05CACC5D101B79A13635B81854607A9B485C1AC19D95D7AA1B3A6C952A11";

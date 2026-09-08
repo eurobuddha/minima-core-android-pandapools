@@ -42,7 +42,7 @@ public final class CmdChain {
     }
 
     private static void fail(NodeApi node, String cleanup, Done done, String msg) {
-        if (cleanup != null && !cleanup.isEmpty()) {
+        if (!NodeApi.ERR_WRITE_UNCERTAIN.equals(msg) && cleanup != null && !cleanup.isEmpty()) {
             node.cmd(cleanup, new NodeApi.Cb() {
                 @Override public void onResult(JSONObject json) {}
                 @Override public void onError(String message) {}

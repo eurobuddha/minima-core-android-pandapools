@@ -398,7 +398,7 @@ public class MyLpView extends BaseView {
                             + " — fresh reserves + registry beacon; other nodes will rediscover it shortly."); act.pools().refresh(); });
                 }
                 @Override public void onFailed(String message) {
-                    act.runOnUiThread(() -> { busy = false; status("Re-publish failed: " + message); });
+                    act.runOnUiThread(() -> { busy = false; status("Re-publish: " + message); });
                 }
             }));
         });
@@ -686,7 +686,7 @@ public class MyLpView extends BaseView {
             }
             @Override public void onFailed(String message) {
                 ActivityLog.recordFailed(act, ActivityLog.CREATE, "Create MINIMA / " + tokenName + " pool", message);
-                act.runOnUiThread(() -> { busy = false; status("Create failed: " + message); });
+                act.runOnUiThread(() -> { busy = false; status("Create: " + message); });
             }
         });
     }
@@ -750,7 +750,7 @@ public class MyLpView extends BaseView {
                 }
                 @Override public void onFailed(String message) {
                     ActivityLog.recordFailed(act, ActivityLog.DEPOSIT, "Add to MINIMA / " + p.tokenLabel(), message);
-                    act.runOnUiThread(() -> { busy = false; status("Add failed: " + message); });
+                    act.runOnUiThread(() -> { busy = false; status("Add: " + message); });
                 }
             });
         });
@@ -791,7 +791,7 @@ public class MyLpView extends BaseView {
      *  256 fresh wallet keys per attempt, forever. */
     private void ensureOwner(List<String> opks, OwnerKeyRecovery.Cb cb) {
         NodeApi n = act.node();
-        if (n == null) { cb.done(0, java.util.Collections.emptyList()); return; }
+        if (n == null) { cb.done(0, new ArrayList<>(opks)); return; }
         OwnerKeyRecovery.ensure(act, n, opks, cb);
     }
 
@@ -801,8 +801,8 @@ public class MyLpView extends BaseView {
     }
 
     private static final String FOREIGN_KEY_MSG =
-            "This pool's owner key belongs to a different seed — this node cannot sign for it. "
-                    + "Manage this pool on the device/seed that created it.";
+            "The owner key is missing or could not be verified. "
+                    + "Restore the matching MinimaCore wallet backup before spending. A pool recipe does not restore signing state.";
 
     /** Re-read the pool's LIVE covenant coin right before an owner txn (close / add / migrate) so we
      *  spend its CURRENT coin, not a stale snapshot — a swap, or this node's own keep-fresh, may have
@@ -847,7 +847,7 @@ public class MyLpView extends BaseView {
                 }
                 @Override public void onFailed(String message) {
                     ActivityLog.recordFailed(act, ActivityLog.MIGRATE, "Migrate MINIMA / " + p.tokenLabel() + " pool", message);
-                    act.runOnUiThread(() -> { busy = false; status("Migrate failed: " + message); });
+                    act.runOnUiThread(() -> { busy = false; status("Migrate: " + message); });
                 }
             }));
         });
@@ -903,7 +903,7 @@ public class MyLpView extends BaseView {
                                     return;
                                 }
                                 ActivityLog.recordFailed(act, ActivityLog.CLOSE, closeSummary, message);
-                                act.runOnUiThread(() -> { busy = false; status("Close failed: " + message); });
+                                act.runOnUiThread(() -> { busy = false; status("Close: " + message); });
                             }
                             });
                         });
@@ -946,15 +946,19 @@ public class MyLpView extends BaseView {
         // first (no-op when already held) so an explicit Collect self-heals after a seed restore. A foreign-seed
         // key doesn't abort the sweep — the OTHER pools' funds still move — it's just reported.
         ensureOwner(opks, (regenerated, unreachable) -> {
-            final int foreign = unreachable == null ? 0 : unreachable.size();
+            if (unreachable != null && !unreachable.isEmpty()) { status(FOREIGN_KEY_MSG); return; }
+            final int foreign = 0;
             final String skipped = foreign == 0 ? "" : "  (" + foreign + " owner key" + (foreign == 1 ? "" : "s")
                     + " belong" + (foreign == 1 ? "s" : "") + " to a different seed — those pools can't sign here)";
-            mgr.sweepOwnerFunds(oadrs, (addressesForwarded, coins) -> act.runOnUiThread(() -> {
+            mgr.sweepOwnerFunds(oadrs, (addressesForwarded, coins, error) -> act.runOnUiThread(() -> {
                 if (addressesForwarded > 0) {
-                    status("Moved withdrawn funds from " + addressesForwarded + " pool"
-                            + (addressesForwarded == 1 ? "" : "s") + " to your wallet ✓" + skipped);
+                    status("Submitted collection from " + addressesForwarded + " pool"
+                            + (addressesForwarded == 1 ? "" : "s") + " to your wallet. Check Activity for confirmation." + skipped);
                     act.pools().refresh();
-                } else status("Nothing to collect — no spendable funds are waiting at your pool payout addresses." + skipped);
+                } else status(error.isEmpty() ? "No available, stateless coins to collect at your pool payout addresses." + skipped
+                        : "Collection could not finish: " + error);
+                if (addressesForwarded > 0 && !error.isEmpty()) status("Submitted collection from " + addressesForwarded
+                        + " address(es). Other collection attempts failed: " + error);
             }));
         });
     }
@@ -1082,7 +1086,7 @@ public class MyLpView extends BaseView {
                     if (uri == null) { status("Backup cancelled."); return; }
                     if (writeUri(uri, json)) {
                         status("Backup saved ✓");
-                        info("Backup saved", "Your pool recovery file is saved. Keep it somewhere safe (a cloud drive, "
+                        info("Backup saved", "Your pool recipe file is saved. Also keep a current MinimaCore wallet backup: it preserves signing state. Keep both safe (a private drive, "
                                 + "another device). To recover on a new or wiped node: open PandaPools there → My LP → "
                                 + "Back up / Restore → Restore.");
                     } else status("Could not write the backup file.");
@@ -1108,8 +1112,8 @@ public class MyLpView extends BaseView {
                                 + "pandapools-backup.json you saved from Back up.");
                         return;
                     }
-                    status("Restore complete ✓  " + restored + " of " + total + " pool(s).");
-                    info("Restore complete", restored + " of " + total + " pool(s) recovered and re-tracked.\n\n"
+                    status("Recipe restore finished ·  " + restored + " of " + total + " pool(s).");
+                    info("Restore complete", restored + " of " + total + " pool recipe(s) saved and tracking registered.\n\n"
                             + log.toString().trim() + "\n\nThey'll appear below as the node confirms their coins.");
                     loadKeys();              // ownership set may now include restored pools
                     act.pools().refresh();   // pull them into discovery
@@ -1119,16 +1123,11 @@ public class MyLpView extends BaseView {
     }
 
     private void showRecoveryGuide() {
-        info("How pool recovery works",
-                "Your pools live on-chain and are controlled by your seed. This app keeps a local recipe for every "
-                + "pool you own and re-tracks them on every launch, so a re-synced node rediscovers them automatically.\n\n"
-                + "• BELT & BRACES — nothing to do: your pools reappear after a node re-sync.\n\n"
-                + "• SUSPENDERS — tap ‘Back up my pools’ and keep the file safe (a cloud drive, another device). On a NEW "
-                + "or WIPED device, install PandaPools, pair your node, then ‘Restore pools from a file’ — it re-tracks each "
-                + "pool and re-imports its coins.\n\n"
-                + "• STRING (last resort) — even with only your seed: reinstall Minima and restore your seed (or resync from "
-                + "an archive node), then Restore this backup. The covenant is signed by your seed key, so your funds are "
-                + "always reclaimable.");
+        info("How pool recovery works", "Keep both a current MinimaCore wallet backup and your PandaPools recipe file. "
+                + "The wallet backup preserves keys and signing state; the recipe records the pool contracts.\n\n"
+                + "Restore the matching wallet in MinimaCore, then restore the recipes here. Check live reserves before spending. "
+                + "A seed or recipe alone does not establish which one-time signatures were used. PandaPools will not automatically recreate missing owner keys. "
+                + "Do not run two restored copies of the same wallet and sign from both.");
     }
 
     private boolean writeUri(android.net.Uri uri, String content) {
@@ -1144,7 +1143,10 @@ public class MyLpView extends BaseView {
             if (is == null) return null;
             java.io.ByteArrayOutputStream bo = new java.io.ByteArrayOutputStream();
             byte[] buf = new byte[8192]; int n;
-            while ((n = is.read(buf)) > 0) bo.write(buf, 0, n);
+            while ((n = is.read(buf)) > 0) {
+                if (bo.size() + n > 8 * 1024 * 1024) return null;
+                bo.write(buf, 0, n);
+            }
             return new String(bo.toByteArray(), java.nio.charset.StandardCharsets.UTF_8);
         } catch (Exception e) { return null; }
     }

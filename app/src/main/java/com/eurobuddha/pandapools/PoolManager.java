@@ -28,7 +28,7 @@ public class PoolManager {
     public interface Result { void onPosted(String txpowid); void onFailed(String message); }
     public interface CreateResult { void onCreated(Pool pool, String txpowid); void onFailed(String message); }
     public interface ForwardResult { void onForwarded(String txpowid, int coins); void onNothing(); void onFailed(String message); }
-    public interface SweepResult { void onSwept(int addressesForwarded, int coins); }
+    public interface SweepResult { void onSwept(int addressesForwarded, int coins, String error); }
 
     /** The discovery beacon carries only dust — it is a rendezvous coin, not spendable liquidity.
      *  Public because {@link TxClassifier} identifies a keep-alive/re-announce transaction by this exact
@@ -46,6 +46,8 @@ public class PoolManager {
 
     /** Create a MINIMA/token pool seeded with x0 MINIMA and y0 token. Mints a fresh owner key+address. */
     public void createPool(String tokenid, int tokDecimals, BigDecimal x0, BigDecimal y0, CreateResult cb) {
+        if (!FundingCoins.hex(tokenid) || Util.MINIMA_TOKENID.equalsIgnoreCase(tokenid)
+                || tokDecimals < 0 || tokDecimals > 44) { cb.onFailed("Invalid paired token or precision"); return; }
         if (x0 == null || y0 == null || x0.signum() <= 0 || y0.signum() <= 0) {
             cb.onFailed("both reserves must be greater than zero"); return;
         }
@@ -62,7 +64,9 @@ public class PoolManager {
                 JSONObject r = j.optJSONObject("response");
                 String oadr = r != null ? r.optString("address", "") : "";
                 String opk  = r != null ? r.optString("publickey", "") : "";
-                if (oadr.isEmpty() || opk.isEmpty()) { cb.onFailed("could not mint an owner key"); return; }
+                if (!TxPost.truthy(j, "status") || !FundingCoins.hex(oadr) || !FundingCoins.hex(opk)) {
+                    cb.onFailed("could not mint an owner key"); return;
+                }
                 // the reply's `total` is the key count AFTER this mint → this key's derivation index
                 final int newTotal = r.optInt("total", 0);
                 final int kidx = newTotal > 0 ? newTotal - 1 : -1;
@@ -73,8 +77,11 @@ public class PoolManager {
                     @Override public void ok(String address, String mx) {
                         // 3. register so the node tracks + can later spend the pool coins
                         node.cmd("newscript trackall:true script:" + Util.scriptArg(script), new NodeApi.Cb() {
-                            @Override public void onResult(JSONObject nj) { fundAndPost(); }
-                            @Override public void onError(String m) { fundAndPost(); }   // best-effort; post still validates
+                            @Override public void onResult(JSONObject nj) {
+                                if (TxPost.truthy(nj, "status")) fundAndPost();
+                                else cb.onFailed("Could not register the recovery covenant. Nothing was posted.");
+                            }
+                            @Override public void onError(String m) { cb.onFailed(m); }
                             private void fundAndPost() {
                                 Pool p = new Pool();
                                 p.address = address; p.mxaddress = mx; p.opk = opk; p.oadr = oadr;
@@ -100,6 +107,10 @@ public class PoolManager {
             @Override public void ok(List<Coin> mfunds, BigDecimal msum) {
                 selectCoins(tokenid, y0, p.address, p.oadr, new SelCb() {
                     @Override public void ok(List<Coin> tfunds, BigDecimal tsum) {
+                        if (!OwnPoolStore.recordDurably(node.context(), p)) {
+                            CoinLock.release(mfunds); CoinLock.release(tfunds);
+                            cb.onFailed("Could not save the pool recovery recipe. Nothing was posted."); return;
+                        }
                         String txid = "ppcreate_" + tag();
                         String tokArg = " tokenid:" + tokenid;
                         List<String> cmds = new ArrayList<>();
@@ -130,10 +141,10 @@ public class PoolManager {
                             @Override public void fail(String message) { cb.onFailed(message); }
                         });
                     }
-                    @Override public void none() { cb.onFailed("insufficient token balance to seed the pool"); }
+                    @Override public void fail(String message) { CoinLock.release(mfunds); cb.onFailed(message); }
                 });
             }
-            @Override public void none() { cb.onFailed("insufficient MINIMA to seed the pool"); }
+            @Override public void fail(String message) { cb.onFailed(message); }
         });
     }
 
@@ -177,10 +188,10 @@ public class PoolManager {
                             cmds.add("txnoutput id:" + txid + " amount:" + amt(tchange) + " address:" + tChg + tokArg + " storestate:false");
                         ownerSignPost(txid, p.opk, cmds, cb);
                     }
-                    @Override public void none() { cb.onFailed("insufficient token balance to add"); }
+                    @Override public void fail(String message) { CoinLock.release(mfunds); cb.onFailed(message); }
                 });
             }
-            @Override public void none() { cb.onFailed("insufficient MINIMA to add"); }
+            @Override public void fail(String message) { cb.onFailed(message); }
         });
     }
 
@@ -203,8 +214,11 @@ public class PoolManager {
                     return;
                 }
                 node.cmd("newscript trackall:true script:" + Util.scriptArg(script2), new NodeApi.Cb() {
-                    @Override public void onResult(JSONObject nj) { go(); }
-                    @Override public void onError(String m) { go(); }
+                    @Override public void onResult(JSONObject nj) {
+                        if (TxPost.truthy(nj, "status")) go();
+                        else cb.onFailed("Could not register the recovery covenant. Nothing was posted.");
+                    }
+                    @Override public void onError(String m) { cb.onFailed(m); }
                     private void go() {
                         Pool np = new Pool();
                         np.address = a2; np.mxaddress = mx2; np.opk = p.opk; np.oadr = p.oadr;
@@ -228,6 +242,10 @@ public class PoolManager {
             @Override public void ok(List<Coin> mfunds, BigDecimal msum) {
                 selectCoins(tok, newY, p.address, p.oadr, new SelCb() {
                     @Override public void ok(List<Coin> tfunds, BigDecimal tsum) {
+                        if (!OwnPoolStore.recordDurably(node.context(), np)) {
+                            CoinLock.release(mfunds); CoinLock.release(tfunds);
+                            cb.onFailed("Could not save the pool recovery recipe. Nothing was posted."); return;
+                        }
                         String txid = "ppmig_" + tag();
                         List<String> cmds = new ArrayList<>();
                         cmds.add("txncreate id:" + txid);
@@ -260,10 +278,10 @@ public class PoolManager {
                             @Override public void fail(String message) { cb.onFailed(message); }
                         });
                     }
-                    @Override public void none() { cb.onFailed("insufficient token balance for the new pool"); }
+                    @Override public void fail(String message) { CoinLock.release(mfunds); cb.onFailed(message); }
                 });
             }
-            @Override public void none() { cb.onFailed("insufficient MINIMA for the new pool"); }
+            @Override public void fail(String message) { cb.onFailed(message); }
         });
     }
 
@@ -296,23 +314,51 @@ public class PoolManager {
      * (e.g. a just-posted close still confirming) — callers retry.
      */
     public void forwardOwnerFunds(final String oadr, final ForwardResult cb) {
-        if (isEmpty(oadr)) { cb.onFailed("no owner address"); return; }
-        node.cmd("coins relevant:true sendable:true address:" + oadr, new NodeApi.Cb() {
+        if (!FundingCoins.hex(oadr)) { cb.onFailed("Invalid owner address."); return; }
+        node.cmd("balance address:" + oadr, new NodeApi.Cb() {
+            public void onResult(JSONObject reply) {
+                JSONArray rows = FundingCoins.rows(reply);
+                int count = 0;
+                if (rows == null) { cb.onFailed("Could not count owner-address coins."); return; }
+                try {
+                    for (int i = 0; i < rows.length(); i++) {
+                        int n = new BigDecimal(rows.getJSONObject(i).get("coins").toString()).intValueExact();
+                        if (n < 0) throw new IllegalArgumentException();
+                        count = Math.addExact(count, n);
+                    }
+                } catch (Exception invalid) { cb.onFailed("Invalid owner-address coin count."); return; }
+                if (!FundingCoins.listIsSafe(count)) {
+                    cb.onFailed("Owner address has " + count + " coins. Collection is paused because this node cannot safely list that group."); return;
+                }
+                forwardSmallAddress(oadr, cb);
+            }
+            public void onError(String error) { cb.onFailed(error); }
+        });
+    }
+
+    private void forwardSmallAddress(String oadr, ForwardResult cb) {
+        node.cmd("coins relevant:true sendable:true checkmempool:true coinage:3 address:" + oadr, new NodeApi.Cb() {
             @Override public void onResult(JSONObject j) {
-                JSONArray arr = j.optJSONArray("response");
-                if (arr == null || arr.length() == 0) { cb.onNothing(); return; }
+                JSONArray arr = FundingCoins.rows(j);
+                if (arr == null) { cb.onFailed("Could not read owner-address coins."); return; }
+                if (arr.length() == 0) { cb.onNothing(); return; }
                 final List<String> coinids = new ArrayList<>();
                 final Map<String, BigDecimal> byTok = new LinkedHashMap<>();   // tokenid -> summed human amount
                 for (int i = 0; i < arr.length(); i++) {
                     JSONObject c = arr.optJSONObject(i);
                     if (c == null || c.optBoolean("spent", false)) continue;
-                    String tid = c.optString("tokenid", "");
-                    String cid = c.optString("coinid", "");
-                    if (tid.isEmpty() || cid.isEmpty()) continue;
-                    BigDecimal a = "0x00".equals(tid)
-                            ? new BigDecimal(c.optString("amount", "0"))
-                            : new BigDecimal(c.optString("tokenamount", c.optString("amount", "0")));
-                    if (a.signum() <= 0) continue;
+                    Coin coin;
+                    try { coin = FundingCoins.fundingCoin(c); }
+                    catch (IllegalArgumentException invalid) { cb.onFailed(invalid.getMessage()); return; }
+                    Object state = c.opt("state");
+                    if ((state instanceof JSONArray && ((JSONArray)state).length() > 0)
+                            || (state instanceof JSONObject && ((JSONObject)state).length() > 0)) continue;
+                    String tid = coin.tokenid, cid = coin.coinid;
+                    if (!FundingCoins.hex(cid) || !oadr.equalsIgnoreCase(coin.address)) {
+                        cb.onFailed("Unexpected owner-address coin."); return;
+                    }
+                    if (CoinLock.isReserved(cid)) continue;
+                    BigDecimal a = new BigDecimal(coin.amount);
                     coinids.add(cid);
                     BigDecimal prev = byTok.get(tid);
                     byTok.put(tid, prev == null ? a : prev.add(a));
@@ -323,7 +369,7 @@ public class PoolManager {
                     @Override public void onResult(JSONObject aj) {
                         JSONObject r = aj.optJSONObject("response");
                         String dest = r != null ? r.optString("address", "") : "";
-                        if (isEmpty(dest)) { cb.onFailed("could not get a wallet address"); return; }
+                        if (!TxPost.truthy(aj, "status") || !FundingCoins.hex(dest)) { cb.onFailed("could not get a wallet address"); return; }
                         String txid = "ppfwd_" + tag();
                         List<String> cmds = new ArrayList<>();
                         cmds.add("txncreate id:" + txid);
@@ -355,16 +401,17 @@ public class PoolManager {
     public void sweepOwnerFunds(final List<String> oadrs, final SweepResult cb) {
         final LinkedHashSet<String> uniq = new LinkedHashSet<>();
         for (String a : oadrs) if (a != null && !a.isEmpty()) uniq.add(a);
-        if (uniq.isEmpty()) { cb.onSwept(0, 0); return; }
+        if (uniq.isEmpty()) { cb.onSwept(0, 0, ""); return; }
         final AtomicInteger pending = new AtomicInteger(uniq.size());
         final AtomicInteger addrs = new AtomicInteger(0);
         final AtomicInteger coins = new AtomicInteger(0);
+        final java.util.concurrent.atomic.AtomicReference<String> error = new java.util.concurrent.atomic.AtomicReference<>("");
         for (String oadr : uniq) {
             forwardOwnerFunds(oadr, new ForwardResult() {
                 @Override public void onForwarded(String txpowid, int n) { addrs.incrementAndGet(); coins.addAndGet(n); tick(); }
                 @Override public void onNothing() { tick(); }
-                @Override public void onFailed(String message) { tick(); }
-                private void tick() { if (pending.decrementAndGet() == 0) cb.onSwept(addrs.get(), coins.get()); }
+                @Override public void onFailed(String message) { error.compareAndSet("", message); tick(); }
+                private void tick() { if (pending.decrementAndGet() == 0) cb.onSwept(addrs.get(), coins.get(), error.get()); }
             });
         }
     }
@@ -401,7 +448,7 @@ public class PoolManager {
                     @Override public void fail(String message) { cb.onFailed(message); }
                 });
             }
-            @Override public void none() { cb.onFailed("no spare MINIMA to re-announce"); }
+            @Override public void fail(String message) { cb.onFailed(message); }
         });
     }
 
@@ -449,7 +496,7 @@ public class PoolManager {
                 addAnnounceState(cmds, txid, p);
                 ownerSignPost(txid, p.opk, cmds, cb);   // txnsign auto (funding) + txnsign $OPK (owner grow branch)
             }
-            @Override public void none() { cb.onFailed("no spare MINIMA to refresh the pool"); }
+            @Override public void fail(String message) { cb.onFailed(message); }
         });
     }
 
@@ -494,9 +541,8 @@ public class PoolManager {
      * Derive the covenant address via the node's own runscript AND enforce the fund-safety pre-flight
      * guard: the covenant MUST parse ({@code parseok=true}). If it doesn't (e.g. a bad quoting/escaping
      * regression), we ABORT here — before any funds are committed — because a coin at a non-parsing
-     * script's address is unspendable by anyone, forever. Because a parsing covenant always has a working
-     * owner-close branch, passing this guard means the pool is always owner-recoverable even if discovery
-     * were to mismatch. This is the structural guarantee that a create/migrate can never strand funds.
+     * script's address is unspendable by anyone, forever. The known template also provides an owner-close branch. Recovery still requires
+     * the matching owner key and current wallet signing state; parsing alone cannot establish that.
      */
     private void deriveAddress(String script, AddrCb cb) {
         node.cmd("runscript script:" + Util.scriptArg(script), new NodeApi.Cb() {
@@ -506,7 +552,7 @@ public class PoolManager {
                 JSONObject sc = resp != null ? resp.optJSONObject("script") : null;
                 String a = sc != null ? sc.optString("address", "") : "";
                 String mx = sc != null ? sc.optString("mxaddress", "") : "";
-                if (a.isEmpty()) { cb.fail("could not derive the pool address"); return; }
+                if (!TxPost.truthy(j, "status") || !FundingCoins.hex(a)) { cb.fail("could not derive the pool address"); return; }
                 if (!parseok) { cb.fail("the pool covenant failed to compile (parse error) — aborted before "
                         + "any funds moved, to protect your coins"); return; }
                 cb.ok(a, mx);
@@ -515,7 +561,7 @@ public class PoolManager {
         });
     }
 
-    private interface SelCb { void ok(List<Coin> coins, BigDecimal sum); void none(); }
+    private interface SelCb { void ok(List<Coin> coins, BigDecimal sum); void fail(String message); }
 
     /**
      * Plain sendable wallet coins for a token, largest-first, summing to at least {@code need}.
@@ -533,41 +579,12 @@ public class PoolManager {
      * coin, because for beacon dust the first coin always covers {@code need}.
      */
     private void selectCoins(String tokenid, BigDecimal need, String excludeAddress, String ownerAddress, SelCb cb) {
-        if (need.signum() <= 0) { cb.ok(new ArrayList<>(), BigDecimal.ZERO); return; }
-        node.cmd("coins relevant:true sendable:true tokenid:" + tokenid, new NodeApi.Cb() {
-            @Override public void onResult(JSONObject json) {
-                JSONArray arr = json.optJSONArray("response");
-                if (arr == null || arr.length() == 0) { cb.none(); return; }
-                CoinLock.prune();
-                List<Coin> avail = new ArrayList<>();
-                for (int i = 0; i < arr.length(); i++) {
-                    JSONObject jc = arr.optJSONObject(i);
-                    if (jc == null) continue;
-                    Coin c = Coin.from(jc);
-                    if (excludeAddress != null && c.address != null && c.address.equalsIgnoreCase(excludeAddress)) continue;
-                    if (ownerAddress != null && c.address != null && c.address.equalsIgnoreCase(ownerAddress)) continue;
-                    if (CoinLock.isReserved(c.coinid)) continue;   // held by another in-flight transaction
-                    avail.add(c);
-                }
-                avail.sort((a, b) -> new BigDecimal(b.amount).compareTo(new BigDecimal(a.amount)));
-                List<Coin> sel = new ArrayList<>();
-                BigDecimal sum = BigDecimal.ZERO;
-                for (Coin c : avail) {
-                    sel.add(c);
-                    sum = sum.add(new BigDecimal(c.amount));
-                    if (sum.compareTo(need) >= 0) {
-                        // Claim them before handing them over, so a parallel builder can't pick the same
-                        // coin. Released by the TTL rather than explicitly: the chain has many exit paths
-                        // and a coin that stays claimed for a few minutes after a failure is harmless —
-                        // the keep-fresh cycle is 15 minutes.
-                        CoinLock.reserve(sel);
-                        cb.ok(sel, sum);
-                        return;
-                    }
-                }
-                cb.none();
-            }
-            @Override public void onError(String message) { cb.none(); }
+        java.util.Set<String> exclude = new java.util.HashSet<>();
+        if (excludeAddress != null) exclude.add(excludeAddress);
+        if (ownerAddress != null) exclude.add(ownerAddress);
+        FundingCoins.select(node::cmd, tokenid, need, exclude, new FundingCoins.Done() {
+            @Override public void ok(List<Coin> coins, BigDecimal sum) { cb.ok(coins, sum); }
+            @Override public void fail(String message) { cb.fail(message); }
         });
     }
 

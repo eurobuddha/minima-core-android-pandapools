@@ -81,6 +81,28 @@ public final class PoolCovenant {
             .replace("$KMIN", kmin);
     }
 
+    /** A fingerprint is insufficient: an arbitrary contract can contain the same snippets.
+     * Compare the entire existing template, allowing its recorded fractional fee on both legs. */
+    static boolean matches(String actual, String opk, String oadr, String tok, String kmin) {
+        if (actual == null || !validParams(opk, oadr, tok, kmin)) return false;
+        String normalized = actual.trim().replaceAll("\\s+", " ");
+        java.util.regex.Matcher fee = java.util.regex.Pattern.compile(
+                "LET fx=MAX\\(dx 0\\)\\*([0-9]+)/([0-9]+) LET fy=MAX\\(dy 0\\)\\*\\1/\\2 ").matcher(normalized);
+        if (!fee.find()) return false;
+        BigDecimal numerator = new BigDecimal(fee.group(1)), denominator = new BigDecimal(fee.group(2));
+        if (denominator.signum() <= 0 || numerator.compareTo(denominator) >= 0) return false;
+        String expected = script(opk, oadr, tok, kmin).replace("*5/1000", "*" + fee.group(1) + "/" + fee.group(2));
+        return expected.equals(normalized);
+    }
+
+    static boolean validParams(String opk, String oadr, String tok, String kmin) {
+        if (!FundingCoins.hex(opk) || !FundingCoins.hex(oadr) || !FundingCoins.hex(tok)
+                || "0x00".equalsIgnoreCase(tok) || kmin == null || kmin.length() > 80
+                || !kmin.matches("[0-9]+(?:\\.[0-9]+)?")) return false;
+        BigDecimal k = new BigDecimal(kmin);
+        return k.signum() > 0 && k.compareTo(MININUMBER_MAX) < 0;
+    }
+
     /** KMIN = SIGDIG(20, x0*y0) rounded DOWN — the creation product to 20 sig-figs (matches genpool.py).
      *  stripTrailingZeros is CRITICAL: BigDecimal multiply keeps the operands' scale (a grain-clamped
      *  8-dp token gives e.g. 716.2041200000000), but the node normalizes the announce's stored KMIN to

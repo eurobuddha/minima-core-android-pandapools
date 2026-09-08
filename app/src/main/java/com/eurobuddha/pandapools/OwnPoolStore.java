@@ -18,8 +18,8 @@ import java.util.Map;
  * Persisted per pool (keyed by covenant address): the covenant SCRIPT (authoritative — the node re-tracks
  * with {@code newscript trackall script:<this>}) plus its params (opk/oadr/tok/decimals/kmin) and the
  * derived addresses. The owner key (opk) is seed-derived and the covenant embeds {@code SIGNEDBY(opk)}, so
- * seed + this recipe = always reclaimable. Purely local best-effort; a missing recipe just means that pool
- * falls back to normal beacon/tracked-contract discovery.
+ * spending also requires the matching wallet's current one-time-signature state. A seed and recipe alone
+ * do not provide that state. A missing recipe falls back to normal beacon/tracked-contract discovery.
  */
 public final class OwnPoolStore {
 
@@ -28,10 +28,13 @@ public final class OwnPoolStore {
     private OwnPoolStore() {}
 
     /** Persist (or refresh) the recipe for an owned pool. Idempotent by covenant address. */
-    public static void record(Context c, Pool p) {
-        if (c == null || p == null || p.address == null || p.address.isEmpty()) return;
+    public static void record(Context c, Pool p) { recordDurably(c, p); }
+
+    /** Must succeed before funding a new covenant; survives process death during posting. */
+    public static boolean recordDurably(Context c, Pool p) {
+        if (c == null || p == null || p.address == null || p.address.isEmpty()) return false;
         // need at least the params to be able to reconstruct/verify the covenant
-        if (isEmpty(p.opk) || isEmpty(p.oadr) || isEmpty(p.tok) || isEmpty(p.kmin)) return;
+        if (isEmpty(p.opk) || isEmpty(p.oadr) || isEmpty(p.tok) || isEmpty(p.kmin)) return false;
         try {
             JSONObject o = new JSONObject();
             o.put("addr", p.address);                 // original-case derived address (hex is case-insensitive)
@@ -46,8 +49,8 @@ public final class OwnPoolStore {
             // carry it (exact only for this app's fee — legacy-fee pools should always carry their own script)
             String script = (!isEmpty(p.covenantScript)) ? p.covenantScript : reconstruct(p);
             o.put("script", nz(script));
-            prefs(c).edit().putString(key(p.address), o.toString()).apply();
-        } catch (Exception ignore) {}
+            return prefs(c).edit().putString(key(p.address), o.toString()).commit();
+        } catch (Exception ignore) { return false; }
     }
 
     public static void remove(Context c, String address) {

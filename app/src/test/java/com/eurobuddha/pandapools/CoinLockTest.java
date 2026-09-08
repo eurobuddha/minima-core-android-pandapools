@@ -90,4 +90,26 @@ public class CoinLockTest {
         assertFalse("better to find no funding than to double-spend and double-sign", found);
         CoinLock.release(wallet);
     }
+
+    @Test public void queuedInputsStayClaimedEvenWhenSelectionReservationIsReleased() {
+        List<String> ids = Arrays.asList("0xaa", "0xbb");
+        assertTrue(CoinLock.claimInputs(ids));
+        try {
+            CoinLock.release(Arrays.asList(coin("0xAA", "1")));
+            CoinLock.prune();
+            assertTrue(CoinLock.isReserved("0xAA"));
+            assertFalse(CoinLock.claimInputs(Arrays.asList("0xAA", "0xcc")));
+            assertTrue("a failed claim must not retain its unrelated inputs", CoinLock.claimInputs(Arrays.asList("0xcc")));
+            CoinLock.finishInputs(Arrays.asList("0xcc"));
+        } finally { CoinLock.finishInputs(ids); }
+        CoinLock.release(Arrays.asList(coin("0xaa", "1"), coin("0xbb", "1"), coin("0xcc", "1")));
+        assertFalse(CoinLock.isReserved("0xAA"));
+    }
+
+    @Test public void repeatedInputIsRejectedBeforeSigning() {
+        assertFalse(CoinLock.claimInputs(Arrays.asList("0xaa", "0xAA")));
+        assertTrue(CoinLock.claimInputs(Arrays.asList("0xaa")));
+        CoinLock.finishInputs(Arrays.asList("0xaa"));
+        CoinLock.release(Arrays.asList(coin("0xaa", "1")));
+    }
 }

@@ -27,9 +27,6 @@ public class PoolTxn {
 
     public interface Result { void onPosted(String txpowid); void onFailed(String message); }
 
-    /** Below this a MINIMA change output is dropped (dust not worth a UTXO; MINIMA may be burned). */
-    private static final BigDecimal DUST = new BigDecimal("0.000000001");
-
     private final NodeApi node;
 
     public PoolTxn(NodeApi node) { this.node = node; }
@@ -76,9 +73,7 @@ public class PoolTxn {
                 reserve(funds);
                 ensureTrackedAll(route.allocs, 0, () -> buildRouted(route, minimaToToken, tok, funds, sum, cb));
             }
-            @Override public void onNone() {
-                cb.onFailed("insufficient " + (minimaToToken ? "MINIMA" : "token") + " in the wallet to fund this swap");
-            }
+            @Override public void onFailure(String message) { cb.onFailed(message); }
         });
     }
 
@@ -92,7 +87,7 @@ public class PoolTxn {
             @Override public void onResult(JSONObject j) {
                 String taddr = j.optJSONObject("response") != null
                         ? j.optJSONObject("response").optString("address", "") : "";
-                if (taddr.isEmpty()) { release(funds); cb.onFailed("could not get a payout address"); return; }
+                if (!TxPost.truthy(j, "status") || !FundingCoins.hex(taddr)) { release(funds); cb.onFailed("could not get a payout address"); return; }
 
                 List<String> cmds = new ArrayList<>();
                 cmds.add("txncreate id:" + txid);
@@ -113,7 +108,7 @@ public class PoolTxn {
                 if (minimaToToken) {
                     // aggregate token proceeds to the taker; MINIMA change back
                     cmds.add("txnoutput id:" + txid + " amount:" + amt(route.totalOut) + " address:" + taddr + tokArg + " storestate:false");
-                    if (change.compareTo(DUST) > 0)
+                    if (change.signum() > 0)
                         cmds.add("txnoutput id:" + txid + " amount:" + amt(change) + " address:" + taddr + " storestate:false");
                 } else {
                     // aggregate MINIMA proceeds to the taker; token change back (a token can't be burned →
@@ -179,38 +174,12 @@ public class PoolTxn {
 
     // ---- funding coin selection (port of the limit app's findCoins) --------
 
-    private interface FundCb { void onFunds(List<Coin> funds, BigDecimal sum); void onNone(); }
+    private interface FundCb { void onFunds(List<Coin> funds, BigDecimal sum); void onFailure(String message); }
 
     private void findFunding(String tokenid, BigDecimal need, Set<String> excludeAddrsLower, FundCb cb) {
-        node.cmd("coins relevant:true sendable:true tokenid:" + tokenid, new NodeApi.Cb() {
-            @Override public void onResult(JSONObject json) {
-                JSONArray arr = json.optJSONArray("response");
-                if (arr == null || arr.length() == 0) { cb.onNone(); return; }
-                List<Coin> avail = new ArrayList<>();
-                for (int i = 0; i < arr.length(); i++) {
-                    JSONObject jc = arr.optJSONObject(i);
-                    if (jc == null) continue;
-                    Coin c = Coin.from(jc);
-                    if (c.address != null && excludeAddrsLower.contains(c.address.toLowerCase())) continue; // never a pool coin
-                    if (isReserved(c.coinid)) continue;                                          // held by an in-flight swap
-                    avail.add(c);
-                }
-                // prune expired reservations by TTL (token-agnostic — this scan only sees one token's coins,
-                // so pruning against `present` would wrongly drop the other side's live reservations)
-                long now = System.currentTimeMillis();
-                CoinLock.prune();
-                if (avail.isEmpty()) { cb.onNone(); return; }
-                avail.sort((a, b) -> new BigDecimal(b.amount).compareTo(new BigDecimal(a.amount)));
-                List<Coin> sel = new ArrayList<>();
-                BigDecimal sum = BigDecimal.ZERO;
-                for (Coin c : avail) {
-                    sel.add(c);
-                    sum = sum.add(new BigDecimal(c.amount));
-                    if (sum.compareTo(need) >= 0) { cb.onFunds(sel, sum); return; }
-                }
-                cb.onNone();   // not enough across all available coins
-            }
-            @Override public void onError(String message) { cb.onNone(); }
+        FundingCoins.select(node::cmd, tokenid, need, excludeAddrsLower, new FundingCoins.Done() {
+            @Override public void ok(List<Coin> coins, BigDecimal sum) { cb.onFunds(coins, sum); }
+            @Override public void fail(String message) { cb.onFailure(message); }
         });
     }
 

@@ -68,10 +68,10 @@ public class PoolBook {
             String sc = s == null ? "" : s.optString("script", "");
             if (!sc.contains("VERIFYOUT(@INPUT @ADDRESS") || !sc.contains("GTE MAX(x*y")) continue;   // a PandaPools covenant
             String opk = group(P_OPK, sc), oadr = group(P_OADR, sc), tok = group(P_TOK, sc), kmin = group(P_KMIN, sc);
-            if (opk == null || oadr == null || tok == null || kmin == null) continue;
+            if (!PoolCovenant.matches(sc, opk, oadr, tok, kmin)) continue;
             // carry the ACTUAL tracked covenant script (any fee) — derivePools runscripts it to confirm it
             // compiles and to get its address; lowercase dedup key so Source 1 ∪ Source 2 collapse.
-            params.putIfAbsent((opk + "|" + tok + "|" + kmin).toLowerCase(), new String[]{opk, oadr, tok, kmin, sc});
+            params.putIfAbsent(ReAnnouncer.key(opk, oadr, tok, kmin), new String[]{opk, oadr, tok, kmin, sc});
         }
     }
 
@@ -87,8 +87,8 @@ public class PoolBook {
                 for (int i = 0; i < coins.length(); i++) {
                     JSONObject c = coins.optJSONObject(i);
                     String tok = state(c, 2), oadr = state(c, 3), opk = state(c, 4), kmin = state(c, 5);
-                    if (tok == null || oadr == null || opk == null || kmin == null) continue;
-                    params.putIfAbsent((opk + "|" + tok + "|" + kmin).toLowerCase(), new String[]{opk, oadr, tok, kmin});
+                    if (!PoolCovenant.validParams(opk, oadr, tok, kmin)) continue;
+                    params.putIfAbsent(ReAnnouncer.key(opk, oadr, tok, kmin), new String[]{opk, oadr, tok, kmin});
                 }
                 finishScan(params, cb);
             }
@@ -128,7 +128,7 @@ public class PoolBook {
                         // ONLY surface a covenant that actually compiles. A non-parsing script can never
                         // execute → its coins are permanently unspendable, so it must not appear as a live,
                         // closeable or routable pool (it would just make every swap through it fail).
-                        if (TxPost.truthy(resp, "parseok")) {   // type-tolerant, matching the fund-path guard in PoolManager.deriveAddress
+                        if (TxPost.truthy(j, "status") && TxPost.truthy(resp, "parseok")) {
                             JSONObject sc = resp.getJSONObject("script");
                             Pool pool = new Pool();
                             pool.opk = opk; pool.oadr = oadr; pool.tok = tok; pool.kmin = kmin;
@@ -136,7 +136,7 @@ public class PoolBook {
                             pool.mxaddress = sc.optString("mxaddress", "");
                             // carry the reconstructed covenant for a registry-discovered pool so MyLpView can
                             // stamp an OwnPoolStore recipe if it turns out to be ours (backfill on discovery).
-                            if (tracked == null) pool.covenantScript = fscript;
+                            pool.covenantScript = fscript;
                             synchronized (pools) { pools.add(pool); }
                         }
                     } catch (Exception ignore) {}
@@ -160,6 +160,13 @@ public class PoolBook {
                     for (int i = 0; i < cs.length(); i++) {
                         JSONObject c = cs.optJSONObject(i);
                         if (c == null || c.optBoolean("spent", false)) continue;
+                        Coin validCoin;
+                        try { validCoin = FundingCoins.fundingCoin(c); }
+                        catch (RuntimeException invalid) { continue; }
+                        Object state = c.opt("state");
+                        if (!FundingCoins.hex(validCoin.coinid) || !pool.address.equalsIgnoreCase(validCoin.address)
+                                || (state instanceof JSONArray && ((JSONArray) state).length() > 0)
+                                || (state instanceof JSONObject && ((JSONObject) state).length() > 0)) continue;
                         // keep the LARGEST coin per leg — the real reserve. If the pool address is polluted
                         // with a dust coin (the forged-dust attack the KMIN floor defends against), the dust
                         // must never be mistaken for the reserve, so the quote is built on the true amounts.
@@ -172,7 +179,7 @@ public class PoolBook {
                                 mBlk[0] = c.optInt("created", 0);
                             }
                         } else if (pool.tok.equalsIgnoreCase(tid)) {
-                            BigDecimal amt = new BigDecimal(c.optString("tokenamount", c.optString("amount", "0")));
+                            BigDecimal amt = new BigDecimal(validCoin.amount);
                             if (pool.reserveT == null || amt.compareTo(pool.reserveT) > 0) {
                                 pool.reserveT = amt;
                                 pool.coinidT = c.optString("coinid", "");

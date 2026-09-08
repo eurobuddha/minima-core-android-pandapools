@@ -270,7 +270,7 @@ public class SwapView extends BaseView {
             addRow2("Routed across", r.poolsUsed + " of " + r.poolsAvailable + " pools"
                     + (r.capped ? " (top " + PoolRouter.MAX_POOLS + ")" : ""));
         addRow2("Pool fee (0.50%)", "kept by LPs");
-        addRow2("You receive", "exactly " + trim8(r.totalOut) + " " + (minimaToToken ? pairLabel : "MINIMA"));
+        addRow2("You receive", trim(r.totalOut) + " " + (minimaToToken ? pairLabel : "MINIMA"));
 
         swapBtn.setEnabled(!posting);
         swapBtn.setText(posting ? "SWAPPING…" : "SWAP");
@@ -295,8 +295,8 @@ public class SwapView extends BaseView {
         final PoolRouter.Route r = PoolRouter.route(pin, dir, in);
         if (!r.ok) { toast("That trade is too large for these pools."); return; }
 
-        String pay  = trim8(r.totalIn) + " " + (dir ? "MINIMA" : pairLabel);
-        String recv = trim8(r.totalOut) + " " + (dir ? pairLabel : "MINIMA");
+        String pay  = trim(r.totalIn) + " " + (dir ? "MINIMA" : pairLabel);
+        String recv = trim(r.totalOut) + " " + (dir ? pairLabel : "MINIMA");
         String routed = r.poolsUsed > 1 ? "\nRouted across " + r.poolsUsed + " pools in one transaction." : "";
         new AlertDialog.Builder(act)
                 .setTitle("Confirm swap")
@@ -320,7 +320,7 @@ public class SwapView extends BaseView {
                 act.runOnUiThread(() -> {
                     posting = false;
                     amount.setText("");
-                    setStatus("Swap posted ✓  " + Util.shorten(txpowid) + " — reserves update in ~1–2 blocks.", Design.success());
+                    setStatus("Swap submitted. Check Activity for confirmation. " + Util.shorten(txpowid), Design.amber());
                     swapBtn.setEnabled(true); swapBtn.setText("SWAP"); Ui.primaryButton(swapBtn);
                     act.pools().refresh();
                 });
@@ -329,7 +329,7 @@ public class SwapView extends BaseView {
                 ActivityLog.recordFailed(act, ActivityLog.SWAP, summary, message);
                 act.runOnUiThread(() -> {
                     posting = false;
-                    setStatus("Swap failed: " + message, Design.red());
+                    setStatus("Swap: " + message, NodeApi.ERR_WRITE_UNCERTAIN.equals(message) ? Design.amber() : Design.red());
                     swapBtn.setEnabled(true); swapBtn.setText("SWAP"); Ui.primaryButton(swapBtn);
                 });
             }

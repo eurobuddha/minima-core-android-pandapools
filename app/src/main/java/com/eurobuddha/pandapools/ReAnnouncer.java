@@ -178,7 +178,7 @@ public class ReAnnouncer {
         }
     }
 
-    private static String key(String opk, String oadr, String tok, String kmin) {
+    static String key(String opk, String oadr, String tok, String kmin) {
         return (opk + "|" + oadr + "|" + tok + "|" + kmin).toLowerCase();
     }
 }
