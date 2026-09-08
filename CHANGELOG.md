@@ -13,6 +13,11 @@ mirrored across all three.
 
 ---
 
+## [0.9.36] — Withdraw/Add/Migrate re-read the live pool coin (fixes "the pool moved")
+- **Fixed** Close/Withdraw (and Add, Migrate) failing with *"an input coin was already spent (the pool moved) — nothing was posted"* on an active pool. `PoolManager.close/add/migrate` spent the pool's cached coin ids (`p.coinidM/coinidT`), which are only as fresh as the last registry scan. Any counterparty swap — or this node's own keep-fresh (which recreates the reserve coins every ~900 blocks) — spends and recreates those coins, so the cached id becomes a spent coin and the txn dies at `txncheck` (`mmrproofs=false`). `Pool.funded()` only checks amounts, so the stale pool still passed the guard.
+- **Added** `PoolRefresher.readLiveReserves(node, pool, cb)` (reuses the existing `fillReserves` largest-coin-per-leg logic) and a `MyLpView.withFreshCoins(p, action)` prelude that re-reads the LIVE covenant coin (fresh `coinidM/coinidT` + reserve amounts) immediately before every owner txn. Covenant params (`opk/oadr/tok/kmin/address`) are invariant across coin moves, so only the coin/amounts are refreshed. Close also auto-retries **once** if the pool moves between the read and the post.
+- Native-only guardrail fix so far; the same stale-coin-on-close logic is being checked on the MDS MiniDapp + desktop "Pools" tab for parity.
+
 ## [0.9.35] — docs: correct the stale "debug-signed" signing notes
 - **No app/behaviour change.** Corrected two stale, misleading claims that the release is debug-signed. In reality, since 2026-08-09 the release build is signed with the dedicated **family release key** via `signingConfigs.release` (active whenever the `MINIMA_FAMILY_RELEASE_*` gradle props are present) — verified this release: 0.9.30 and 0.9.34 both carry signer cert SHA-256 `eca1383c9d27683a281fbe6355356267877dc2dd14d963d7cc289ca0700e517f`, not the debug cert. Fixed the `app/build.gradle` release-signing comment (which said "HELD at debug signing… the published catalog is debug-signed") and the CHANGELOG header ("Each release is a debug-signed APK"). Version bumped so the corrected state is a distinct, trackable release even though no code changed.
 

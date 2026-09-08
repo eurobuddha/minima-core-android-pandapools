@@ -684,7 +684,9 @@ public class MyLpView extends BaseView {
     private void doDeposit(Pool p, BigDecimal m, BigDecimal t) {
         busy = true; status("Adding liquidity…");
         final BigDecimal fm = m, ft = t;
-        mgr.deposit(p, m, t, new PoolManager.Result() {
+        // Re-read the live pool coin first — a deposit grows reserves in place and so spends the current
+        // covenant coin; a stale snapshot would fail with "already spent (the pool moved)".
+        withFreshCoins(p, () -> mgr.deposit(p, m, t, new PoolManager.Result() {
             @Override public void onPosted(String txpowid) {
                 // reset the fee baseline to the grown product so the added capital isn't counted as fees
                 LpStore.updateFeeBase(act, p.address, p.reserveM.add(fm), p.reserveT.add(ft));
@@ -696,7 +698,7 @@ public class MyLpView extends BaseView {
                 ActivityLog.recordFailed(act, ActivityLog.DEPOSIT, "Add to MINIMA / " + p.tokenLabel(), message);
                 act.runOnUiThread(() -> { busy = false; status("Add failed: " + message); });
             }
-        });
+        }));
     }
 
     // ---- migrate ----
@@ -747,6 +749,19 @@ public class MyLpView extends BaseView {
             "This pool's owner key belongs to a different seed — this node cannot sign for it. "
                     + "Manage this pool on the device/seed that created it.";
 
+    /** Re-read the pool's LIVE covenant coin right before an owner txn (close / add / migrate) so we
+     *  spend its CURRENT coin, not a stale snapshot — a swap, or this node's own keep-fresh, may have
+     *  moved it since the last scan. Runs {@code action} on success; aborts with a status message if
+     *  the pool can't be read or now shows no reserves. Reuses {@link PoolRefresher#readLiveReserves}. */
+    private void withFreshCoins(Pool p, Runnable action) {
+        NodeApi n = act.node();
+        if (n == null) { act.runOnUiThread(() -> { busy = false; status("No node connection — try again in a moment."); }); return; }
+        PoolRefresher.readLiveReserves(n, p, ok -> act.runOnUiThread(() -> {
+            if (!ok) { busy = false; status("Couldn't read the pool's current reserves — refresh and try again."); return; }
+            action.run();
+        }));
+    }
+
     private void doMigrate(Pool p, BigDecimal x, BigDecimal y) {
         busy = true; status("Migrating your pool…");
         ensureOwner(java.util.Collections.singletonList(p.opk), (regenerated, unreachable) -> {
@@ -760,7 +775,9 @@ public class MyLpView extends BaseView {
                 Integer known = OwnerKeyRecovery.kidxFromStore(act).get(p.opk.toLowerCase());
                 if (known != null) p.kidx = known;
             }
-            mgr.migrate(p, x, y, new PoolManager.CreateResult() {
+            // Re-read the live pool coin first — migrate sweeps the CURRENT reserves to $OADR, so a stale
+            // snapshot would fail with "already spent (the pool moved)".
+            withFreshCoins(p, () -> mgr.migrate(p, x, y, new PoolManager.CreateResult() {
                 @Override public void onCreated(Pool pool, String txpowid) {
                     pool.tokName = p.tokName;
                     LpStore.record(act, pool.address, pool.reserveM, pool.reserveT, act.chainBlock());
@@ -777,7 +794,7 @@ public class MyLpView extends BaseView {
                     ActivityLog.recordFailed(act, ActivityLog.MIGRATE, "Migrate MINIMA / " + p.tokenLabel() + " pool", message);
                     act.runOnUiThread(() -> { busy = false; status("Migrate failed: " + message); });
                 }
-            });
+            }));
         });
     }
 
@@ -799,7 +816,13 @@ public class MyLpView extends BaseView {
                             act.runOnUiThread(() -> { busy = false; status(FOREIGN_KEY_MSG); });
                             return;
                         }
-                        mgr.close(p, new PoolManager.Result() {
+                        // The cached pool coin can be stale — a counterparty swap, or this node's own
+                        // keep-fresh, spends and recreates the reserve coins, so the coin id from the last
+                        // scan is a SPENT coin and close dies at txncheck ("already spent — the pool moved").
+                        // Re-read the LIVE coin right before building, and retry ONCE if it moves under us.
+                        final boolean[] retried = { false };
+                        final Runnable[] attempt = new Runnable[1];
+                        attempt[0] = () -> withFreshCoins(p, () -> mgr.close(p, new PoolManager.Result() {
                             @Override public void onPosted(String txpowid) {
                                 LpStore.remove(act, p.address);   // pool closed — drop its display snapshot
                                 // KEEP the OwnPoolStore recovery recipe here: a posted-but-unconfirmed close that
@@ -817,10 +840,16 @@ public class MyLpView extends BaseView {
                                 });
                             }
                             @Override public void onFailed(String message) {
+                                if (!retried[0] && message != null && message.contains("already spent")) {
+                                    retried[0] = true;   // the pool moved between our read and the post — re-read once
+                                    act.runOnUiThread(() -> { status("The pool moved — retrying with its current coin…"); attempt[0].run(); });
+                                    return;
+                                }
                                 ActivityLog.recordFailed(act, ActivityLog.CLOSE, closeSummary, message);
                                 act.runOnUiThread(() -> { busy = false; status("Close failed: " + message); });
                             }
-                        });
+                        }));
+                        attempt[0].run();
                     });
                 })
                 .setNegativeButton("Cancel", null)

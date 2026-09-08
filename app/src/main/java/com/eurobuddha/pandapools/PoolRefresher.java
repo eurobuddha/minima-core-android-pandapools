@@ -122,6 +122,34 @@ public class PoolRefresher {
         p.reserveBlock = Math.max(mBlk, tBlk);
     }
 
+    /** Callback for {@link #readLiveReserves}: {@code ok} = the covenant address was read AND the
+     *  pool is still funded (a live reserve coin present on each leg). */
+    public interface LiveReadCb { void done(boolean ok); }
+
+    /**
+     * Re-read a SINGLE pool's live reserve coins at its covenant address and overwrite
+     * {@code coinidM/coinidT/reserveM/reserveT} with the current largest coin per leg. Call this
+     * immediately before an owner transaction (close / add / migrate) so the pool is spent at its
+     * CURRENT coin, not a stale snapshot: a counterparty swap — or this node's own keep-fresh
+     * ({@link #REFRESH_BLOCKS}) — spends and recreates the reserve coins, so a coin id cached at the
+     * last registry scan becomes a SPENT coin and the txn dies at {@code txncheck} with
+     * "an input coin was already spent (the pool moved)". Covenant params
+     * ({@code opk/oadr/tok/kmin/address}) are invariant across coin moves and are left untouched.
+     * The snapshot is cleared first because {@link #fillReserves} only overwrites when the new
+     * amount is larger. Runs on the node-callback (main) thread, like every {@link NodeApi} reply.
+     */
+    public static void readLiveReserves(NodeApi node, final Pool p, final LiveReadCb cb) {
+        if (node == null || p == null || p.address == null || p.address.isEmpty()) { cb.done(false); return; }
+        node.cmd("coins address:" + p.address, new NodeApi.Cb() {
+            @Override public void onResult(JSONObject j) {
+                p.reserveM = null; p.reserveT = null; p.coinidM = null; p.coinidT = null; p.reserveBlock = 0;
+                fillReserves(p, j);
+                cb.done(p.funded());
+            }
+            @Override public void onError(String m) { cb.done(false); }
+        });
+    }
+
     private void post(List<Pool> aging, final Listener cb) {
         if (aging.isEmpty()) { cb.onRefreshed(0); return; }
         if (aging.size() > MAX_PER_RUN) { Collections.shuffle(aging); aging = new ArrayList<>(aging.subList(0, MAX_PER_RUN)); }
