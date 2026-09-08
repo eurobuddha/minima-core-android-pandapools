@@ -729,24 +729,31 @@ public class MyLpView extends BaseView {
                 .show();
     }
 
-    private void doDeposit(Pool p, BigDecimal m, BigDecimal t) {
+    private void doDeposit(Pool p, BigDecimal m, BigDecimal tPreview) {
         busy = true; status("Adding liquidity…");
-        final BigDecimal fm = m, ft = t;
+        final BigDecimal fm = m;
         // Re-read the live pool coin first — a deposit grows reserves in place and so spends the current
         // covenant coin; a stale snapshot would fail with "already spent (the pool moved)".
-        withFreshCoins(p, () -> mgr.deposit(p, m, t, new PoolManager.Result() {
-            @Override public void onPosted(String txpowid) {
-                // reset the fee baseline to the grown product so the added capital isn't counted as fees
-                LpStore.updateFeeBase(act, p.address, p.reserveM.add(fm), p.reserveT.add(ft));
-                ActivityLog.record(act, ActivityLog.DEPOSIT, "Add to MINIMA / " + p.tokenLabel() + "  ·  "
-                        + trim(fm) + " MINIMA + " + trim(ft) + " " + p.tokenLabel(), txpowid, act.chainBlock());
-                act.runOnUiThread(() -> { busy = false; status("Liquidity added ✓ " + Util.shorten(txpowid) + " — confirming on-chain."); act.pools().refresh(); });
-            }
-            @Override public void onFailed(String message) {
-                ActivityLog.recordFailed(act, ActivityLog.DEPOSIT, "Add to MINIMA / " + p.tokenLabel(), message);
-                act.runOnUiThread(() -> { busy = false; status("Add failed: " + message); });
-            }
-        }));
+        withFreshCoins(p, () -> {
+            // Re-derive the balanced token side from the LIVE price (same formula the dialog previewed,
+            // against current reserves). If a swap moved the pool between the dialog and now, the
+            // dialog-time amount would be off-ratio and shift the price; this keeps the add balanced,
+            // honouring the dialog's "both sides in the pool's ratio so the price doesn't move" promise.
+            final BigDecimal ft = m.multiply(p.spotPrice()).setScale(p.tokDecimals, RoundingMode.DOWN);
+            mgr.deposit(p, m, ft, new PoolManager.Result() {
+                @Override public void onPosted(String txpowid) {
+                    // reset the fee baseline to the grown product so the added capital isn't counted as fees
+                    LpStore.updateFeeBase(act, p.address, p.reserveM.add(fm), p.reserveT.add(ft));
+                    ActivityLog.record(act, ActivityLog.DEPOSIT, "Add to MINIMA / " + p.tokenLabel() + "  ·  "
+                            + trim(fm) + " MINIMA + " + trim(ft) + " " + p.tokenLabel(), txpowid, act.chainBlock());
+                    act.runOnUiThread(() -> { busy = false; status("Liquidity added ✓ " + Util.shorten(txpowid) + " — confirming on-chain."); act.pools().refresh(); });
+                }
+                @Override public void onFailed(String message) {
+                    ActivityLog.recordFailed(act, ActivityLog.DEPOSIT, "Add to MINIMA / " + p.tokenLabel(), message);
+                    act.runOnUiThread(() -> { busy = false; status("Add failed: " + message); });
+                }
+            });
+        });
     }
 
     // ---- migrate ----
@@ -856,8 +863,6 @@ public class MyLpView extends BaseView {
                         + " (including earned fees) back to your wallet.")
                 .setPositiveButton("Withdraw", (d, w) -> {
                     busy = true; status("Closing pool…");
-                    final String closeSummary = "Withdraw MINIMA / " + p.tokenLabel() + "  ·  "
-                            + trim(p.reserveM) + " MINIMA + " + trim(p.reserveT) + " " + p.tokenLabel() + " back to wallet";
                     final String closeOadr = p.oadr;
                     ensureOwner(java.util.Collections.singletonList(p.opk), (regenerated, unreachable) -> {
                         if (foreignKey(p.opk, unreachable)) {
@@ -870,7 +875,11 @@ public class MyLpView extends BaseView {
                         // Re-read the LIVE coin right before building, and retry ONCE if it moves under us.
                         final boolean[] retried = { false };
                         final Runnable[] attempt = new Runnable[1];
-                        attempt[0] = () -> withFreshCoins(p, () -> mgr.close(p, new PoolManager.Result() {
+                        attempt[0] = () -> withFreshCoins(p, () -> {
+                            // Log the ACTUAL (live) swept amounts, read fresh above — not the pre-read snapshot.
+                            final String closeSummary = "Withdraw MINIMA / " + p.tokenLabel() + "  ·  "
+                                    + trim(p.reserveM) + " MINIMA + " + trim(p.reserveT) + " " + p.tokenLabel() + " back to wallet";
+                            mgr.close(p, new PoolManager.Result() {
                             @Override public void onPosted(String txpowid) {
                                 LpStore.remove(act, p.address);   // pool closed — drop its display snapshot
                                 // KEEP the OwnPoolStore recovery recipe here: a posted-but-unconfirmed close that
@@ -896,7 +905,8 @@ public class MyLpView extends BaseView {
                                 ActivityLog.recordFailed(act, ActivityLog.CLOSE, closeSummary, message);
                                 act.runOnUiThread(() -> { busy = false; status("Close failed: " + message); });
                             }
-                        }));
+                            });
+                        });
                         attempt[0].run();
                     });
                 })

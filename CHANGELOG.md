@@ -13,6 +13,10 @@ mirrored across all three.
 
 ---
 
+## [0.9.40] — code-review follow-ups to the owner-txn live re-read (0.9.36)
+- **Add** now re-derives the balanced token side from the LIVE price after the fresh coin read, not the dialog-time amount. Before, if a swap moved the pool between opening the Add dialog and confirming, the deposit could post slightly off-ratio and shift the price — breaking the dialog's "both sides in the pool's ratio so the price doesn't move" promise. It stays balanced against current reserves now.
+- **Close** builds its activity-log summary AFTER the live re-read, so the recorded withdrawal amounts match what was actually swept (not the pre-move snapshot).
+
 ## [0.9.39] — MY LP: see if your pool is discoverable, and Re-publish on demand
 - **Added** a discoverability hint + **Re-publish** button on each MY LP pool card. Other nodes can find a pool only while a fresh registry beacon and young reserve coins exist — both maintained by the owner node's keep-fresh (~every 900 blocks). If the owner's phone hasn't stayed resident, the beacon prunes and the reserves age out, so the pool goes dark to everyone else while still visible to the owner. The card now shows "Others can find this pool ✓" vs "Others may not see this pool now" (proxied from the reserve coin's age), and **Re-publish** forces an immediate keep-fresh — recreates the reserves young AND posts a fresh beacon in one owner-signed transaction (no funds moved) so other nodes rediscover it. Reuses `PoolManager.refresh`; re-reads the live coin first via the 0.9.36 prelude.
 - Reminder: the core fix is operational — keep the app resident with Android battery-optimisation OFF so keep-alive re-announces automatically.
