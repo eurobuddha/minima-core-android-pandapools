@@ -296,6 +296,7 @@ public class MyLpView extends BaseView {
         BigDecimal ratio = kmin.signum() > 0 ? p.k().divide(kmin, MC) : BigDecimal.ONE;
         card.addView(healthBar(ratio));
 
+        card.addView(discoverabilityRow(p));
         card.addView(actionRow(p, ratio));
         // what-if: open the calculator seeded with THIS pool's live reserves (display only, nothing posted)
         TextView calc = text("What if the price moves?  Pool calculator ›", Design.accent(), 12, true);
@@ -354,6 +355,53 @@ public class MyLpView extends BaseView {
         row.addView(gap());
         row.addView(actionBtn("Close", () -> confirmClose(p), false));
         return row;
+    }
+
+    /** Best-effort discoverability hint + manual Re-publish. Other nodes find a pool only while a fresh registry
+     *  beacon + young reserves exist (both maintained by keep-fresh every ~900 blocks). We proxy that from the
+     *  reserve coin's age: young ⇒ discoverable; aged ⇒ the owner's node hasn't kept it fresh, so it may have gone
+     *  dark to others. Re-publish forces an immediate keep-fresh (re-youths the reserves AND posts a fresh beacon
+     *  in one owner-signed tx). */
+    private View discoverabilityRow(Pool p) {
+        int age = p.reserveAge(act.chainBlock());
+        boolean known = age > 0;
+        boolean fresh = known && age <= PoolRefresher.REFRESH_BLOCKS + 300;   // keep-fresh runs at ~900 blocks
+        LinearLayout row = new LinearLayout(act);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setPadding(0, Ui.dp(act, 10), 0, 0);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        String msg = !known ? "Discoverability: checking…"
+                : fresh ? "Others can find this pool ✓"
+                : "Others may not see this pool now";
+        TextView hint = text(msg, (fresh || !known) ? Design.dim() : Design.amber(), 12, false);
+        hint.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        TextView btn = text("Re-publish", Design.accent(), 12, true);
+        btn.setPadding(Ui.dp(act, 12), Ui.dp(act, 6), 0, Ui.dp(act, 6));
+        btn.setOnClickListener(v -> { if (!busy) republish(p); });
+        row.addView(hint); row.addView(btn);
+        return row;
+    }
+
+    /** Force an immediate keep-fresh for this pool: recreate its reserves young + post a fresh registry beacon
+     *  (owner-signed, no fund movement) so other nodes rediscover it. Re-reads the live coin first — refresh
+     *  spends the covenant coin, so a stale snapshot would fail with "already spent (the pool moved)". */
+    private void republish(Pool p) {
+        busy = true; status("Re-publishing your pool so others can find it…");
+        ensureOwner(java.util.Collections.singletonList(p.opk), (regenerated, unreachable) -> {
+            if (foreignKey(p.opk, unreachable)) {
+                act.runOnUiThread(() -> { busy = false; status(FOREIGN_KEY_MSG); });
+                return;
+            }
+            withFreshCoins(p, () -> mgr.refresh(p, new PoolManager.Result() {
+                @Override public void onPosted(String txpowid) {
+                    act.runOnUiThread(() -> { busy = false; status("Pool re-published ✓ " + Util.shorten(txpowid)
+                            + " — fresh reserves + registry beacon; other nodes will rediscover it shortly."); act.pools().refresh(); });
+                }
+                @Override public void onFailed(String message) {
+                    act.runOnUiThread(() -> { busy = false; status("Re-publish failed: " + message); });
+                }
+            }));
+        });
     }
 
     private TextView actionBtn(String label, Runnable onClick, boolean highlight) {

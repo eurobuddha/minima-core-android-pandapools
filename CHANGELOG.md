@@ -13,6 +13,10 @@ mirrored across all three.
 
 ---
 
+## [0.9.39] — MY LP: see if your pool is discoverable, and Re-publish on demand
+- **Added** a discoverability hint + **Re-publish** button on each MY LP pool card. Other nodes can find a pool only while a fresh registry beacon and young reserve coins exist — both maintained by the owner node's keep-fresh (~every 900 blocks). If the owner's phone hasn't stayed resident, the beacon prunes and the reserves age out, so the pool goes dark to everyone else while still visible to the owner. The card now shows "Others can find this pool ✓" vs "Others may not see this pool now" (proxied from the reserve coin's age), and **Re-publish** forces an immediate keep-fresh — recreates the reserves young AND posts a fresh beacon in one owner-signed transaction (no funds moved) so other nodes rediscover it. Reuses `PoolManager.refresh`; re-reads the live coin first via the 0.9.36 prelude.
+- Reminder: the core fix is operational — keep the app resident with Android battery-optimisation OFF so keep-alive re-announces automatically.
+
 ## [0.9.38] — POOLS: tap a pool address to copy it in full
 - **Added** tap-to-copy on the "pool" row of each POOLS card. The address is still shown truncated (`0x8962BA669233…`) but tapping the row now copies the **complete** address to the clipboard — a truncated identifier with no way to recover the full value is never acceptable.
 
