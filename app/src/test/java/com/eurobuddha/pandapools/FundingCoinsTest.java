@@ -82,10 +82,4 @@ public class FundingCoinsTest {
         coin.put("state", "unexpected");
         assertThrows(IllegalArgumentException.class, () -> FundingCoins.fundingCoin(coin));
     }
-    @Test public void consolidationRejectsStateAndRepeatedInputs() throws Exception {
-        JSONArray ins = new JSONArray().put(coin("0xaa", "0x11", "1")).put(coin("0xbb", "0x11", "2")).put(coin("0xcc", "0x11", "3"));
-        assertEquals(3, WalletTools.previewCoins(ins, "0x00", 8).size());
-        ins.getJSONObject(2).put("coinid", "0xaa");
-        assertThrows(IllegalArgumentException.class, () -> WalletTools.previewCoins(ins, "0x00", 8));
-    }
 }

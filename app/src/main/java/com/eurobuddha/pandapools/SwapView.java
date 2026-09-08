@@ -363,6 +363,8 @@ public class SwapView extends BaseView {
 
     // ---- inline recent-activity strip (borrowed from MinimaSwap: activity right under the swap) ----
 
+    void refreshConfirmations() { renderActivity(); }
+
     private void renderActivity() {
         swapActivity.removeAllViews();
         java.util.List<ActivityLog.Entry> recent = ActivityLog.recent(act, 3);

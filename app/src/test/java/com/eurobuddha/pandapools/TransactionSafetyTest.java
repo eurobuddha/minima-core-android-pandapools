@@ -89,9 +89,12 @@ public class TransactionSafetyTest {
     @Test public void localTimeAndHeightNeverProveInclusion() throws Exception {
         ActivityLog.Entry e = new ActivityLog.Entry("SWAP", "x", "0xaa", 1, 1, false, null);
         assertFalse(e.confirmed(999999));
-        assertTrue(e.statusText(999999).contains("unverified"));
+        assertEquals("Checking on-chain…", e.statusText(999999));
         e.verifiedDepth = 2; assertFalse(e.confirmed(999999));
         e.verifiedDepth = 3; assertTrue(e.confirmed(999999));
+        assertEquals("3 confirmations · on-chain", e.statusText(999999));
+        e.verifiedDepth = 47;
+        assertEquals("47 confirmations · on-chain", e.statusText(999999));
     }
     @Test public void confirmationReplyMustExplicitlyProveInclusion() throws Exception {
         JSONObject r = new TestJson().put("found", true).put("confirmations", "3");

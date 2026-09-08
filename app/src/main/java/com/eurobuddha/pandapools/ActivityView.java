@@ -122,13 +122,17 @@ public class ActivityView extends BaseView {
      *  AND it touches a known PandaPools address. A stranger's swap on a pool I track nets to zero for me
      *  (direction "self") and is excluded; so are plain wallet sends / other dapps (no panda address). */
     private boolean isPersonalPanda(HistoryEntry n) {
-        if (n == null || "self".equals(n.direction)) return false;
+        if (n == null) return false;
+        if (n.isConsolidation()) return true;
+        if ("self".equals(n.direction)) return false;
         return addrBook.hits(n.inputs) || addrBook.hits(n.outputs);
     }
 
     private final HistorySync.Listener syncListener = new HistorySync.Listener() {
         @Override public void onProgress(int totalNew) { act.runOnUiThread(() -> { if (!showGlobal && visible()) scheduleRender(); }); }
-        @Override public void onDone(int totalNew, boolean ok) { act.runOnUiThread(() -> { if (!showGlobal && visible()) scheduleRender(); }); }
+        @Override public void onDone(int totalNew, boolean ok) { act.runOnUiThread(() -> { if (!showGlobal && visible()) scheduleRender();
+            ActivityLog.verify(act, act.node(), act::confirmationsChanged);
+        }); }
     };
 
     /** Foreground fast-poll so the "Confirming n/3" countdown + global feed self-update. Stops when the
@@ -147,7 +151,8 @@ public class ActivityView extends BaseView {
         @Override public void run() {
             polling = false;
             if (!visible()) return;   // left the tab / backgrounded → stop (onShown restarts it)
-            render();                 // refresh the "Confirming n/3" countdown; the shared per-block scan feeds the global feed
+            ActivityLog.verify(act, act.node(), act::confirmationsChanged);
+            render();
             startPoll();
         }
     };
@@ -187,17 +192,17 @@ public class ActivityView extends BaseView {
             return;
         }
         if (!inflight.isEmpty()) {
-            container.addView(header("SUBMITTED / UNVERIFIED"));
+            container.addView(header("RECENT TRANSACTIONS"));
             for (ActivityLog.Entry e : inflight) {
                 container.addView(pendingCard(e, cb));
-                if (e.confirmed(cb) && e.txpowid != null && !e.txpowid.isEmpty()) shownTx.add(e.txpowid.toLowerCase());
+                if (e.verifiedDepth >= 0 && e.txpowid != null && !e.txpowid.isEmpty()) shownTx.add(e.txpowid.toLowerCase());
             }
         }
         if (!confirmed.isEmpty()) {
             container.addView(header("CONFIRMED"));
             for (ActivityLog.Entry e : confirmed) {
                 container.addView(pendingCard(e, cb));
-                if (e.confirmed(cb) && e.txpowid != null && !e.txpowid.isEmpty()) shownTx.add(e.txpowid.toLowerCase());
+                if (e.verifiedDepth >= 0 && e.txpowid != null && !e.txpowid.isEmpty()) shownTx.add(e.txpowid.toLowerCase());
             }
         }
         if (!hist.isEmpty()) {
@@ -205,7 +210,7 @@ public class ActivityView extends BaseView {
             for (HistoryEntry n : hist) {
                 // dedupe: skip an on-chain row already shown above as a local ActivityLog entry
                 if (n.txpowid != null && shownTx.contains(n.txpowid.toLowerCase())) continue;
-                if (!headerShown) { container.addView(header("NODE HISTORY · inclusion not independently checked")); headerShown = true; }
+                if (!headerShown) { container.addView(header("NODE HISTORY")); headerShown = true; }
                 container.addView(historyRow(n));
             }
         }
@@ -254,6 +259,15 @@ public class ActivityView extends BaseView {
         TextView sub = line(meta, Design.dim(), 12f, false);
         sub.setPadding(0, dp(3), 0, 0);
         card.addView(sub);
+        if (e.verifiedAt > 0) card.addView(line("Checked " + relative(e.verifiedAt), Design.dim(), 11f, false));
+        card.setOnClickListener(v -> new androidx.appcompat.app.AlertDialog.Builder(act)
+                .setTitle(e.statusText(cb))
+                .setMessage("TxPoW: " + (e.txpowid == null ? "Unavailable" : e.txpowid)
+                        + "\n\nTransaction: " + (e.transactionId.isEmpty() ? "Not saved by the older build" : e.transactionId)
+                        + (e.verifiedAt > 0 ? "\n\nLast node check: " + new java.util.Date(e.verifiedAt) : "")
+                        + (e.transactionId.isEmpty() && e.verifiedDepth < 0
+                        ? "\n\nThis older receipt cannot be matched safely from its amount or time alone. Node history below verifies the actual mined transactions." : ""))
+                .setPositiveButton("OK", null).show());
         return card;
     }
 
@@ -289,6 +303,9 @@ public class ActivityView extends BaseView {
         line2.setText((reshuffle ? n.reshuffleLabel() + "  ·  " : cp) + relative(n.timemilli));
         line2.setTextColor(Design.dim()); line2.setTextSize(12f);
         mid.addView(line1); mid.addView(line2);
+        mid.addView(line(n.verifiedAt == 0 ? "Checking on-chain…" : ActivityLog.confirmationText(n.verifiedDepth),
+                n.verifiedDepth >= ActivityLog.CONFIRM_BLOCKS ? Design.success() : Design.amber(), 11f, false));
+        if (n.verifiedAt > 0) mid.addView(line("Checked " + relative(n.verifiedAt), Design.dim(), 10f, false));
         row.addView(mid);
 
         TextView right = new TextView(act);

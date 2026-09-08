@@ -398,6 +398,13 @@ public class MainActivity extends AppCompatActivity {
         });
     }
 
+    /** Repaint both transaction displays after the asynchronous node checks finish. */
+    void confirmationsChanged() {
+        if (isFinishing() || isDestroyed() || views == null) return;
+        views[TAB_ACTIVITY].refresh();
+        ((SwapView) views[TAB_SWAP]).refreshConfirmations();
+    }
+
     private void pollBlock() {
         if (node == null) return;
         node.cmd("block", new NodeApi.Cb() {
@@ -405,12 +412,9 @@ public class MainActivity extends AppCompatActivity {
                 try {
                     int blk = j.getJSONObject("response").getInt("block");
                     blockNo.setText("#" + blk);
+                    ActivityLog.verify(MainActivity.this, node, MainActivity.this::confirmationsChanged);
                     if (blk != chainBlock) {
                         chainBlock = blk;
-                        ActivityLog.verify(MainActivity.this, node, () -> {
-                            if (!isFinishing() && !isDestroyed() && views != null)
-                                views[TAB_ACTIVITY].refresh();
-                        });
                         // ONE shared registry scan per block (single-flight) — its result is multicast to
                         // every tab. Drives the pool refresh centrally so it doesn't depend on any one view.
                         if (poolRepo != null) poolRepo.refresh();

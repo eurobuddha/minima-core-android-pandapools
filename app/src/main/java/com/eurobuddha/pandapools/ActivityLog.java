@@ -31,6 +31,7 @@ public final class ActivityLog {
         public final long ts;
         public final boolean failed;
         int verifiedDepth = -1;
+        long verifiedAt;
         Entry(String type, String summary, String txpowid, int submitBlock, long ts, boolean failed, String failMsg) {
             this.type=type; this.summary=summary; this.txpowid=txpowid; this.submitBlock=submitBlock;
             this.ts=ts; this.failed=failed && !NodeApi.ERR_WRITE_UNCERTAIN.equals(failMsg); this.failMsg=failMsg;
@@ -44,11 +45,11 @@ public final class ActivityLog {
         }
         /** Short human status for a chip. */
         public String statusText(int chainBlock) {
-            if (NodeApi.ERR_WRITE_UNCERTAIN.equals(failMsg)) return "Outcome unknown · check node history";
             if (failed) return "Failed";
-            if (confirmed(chainBlock)) return "Confirmed · verified by node";
-            if (verifiedDepth >= 0) return "On-chain · " + verifiedDepth + "/" + CONFIRM_BLOCKS + " confirmations";
-            return "Submitted · confirmation unverified";
+            if (verifiedDepth >= 0) return confirmationText(verifiedDepth);
+            if (NodeApi.ERR_WRITE_UNCERTAIN.equals(failMsg)) return "Outcome unknown · check node history";
+            if (verifiedAt > 0) return transactionId.isEmpty() ? "Receipt needs matching" : "Awaiting on-chain inclusion";
+            return "Checking on-chain…";
         }
     }
 
@@ -83,6 +84,7 @@ public final class ActivityLog {
                         o.optInt("b", 0), o.optLong("t", 0), o.optBoolean("f", false),
                         o.has("fm") ? o.optString("fm") : null));
                 out.get(out.size() - 1).verifiedDepth = o.optInt("vd", -1);
+                out.get(out.size() - 1).verifiedAt = o.optLong("va", 0);
                 out.get(out.size() - 1).transactionId = o.optString("tn", "");
             }
         } catch (Exception ignore) {}
@@ -109,7 +111,7 @@ public final class ActivityLog {
                 JSONObject o = new JSONObject();
                 o.put("ty", e.type); o.put("s", e.summary);
                 if (e.txpowid != null) o.put("tx", e.txpowid);
-                o.put("vd", e.verifiedDepth); o.put("tn", e.transactionId);
+                o.put("vd", e.verifiedDepth); o.put("tn", e.transactionId); o.put("va", e.verifiedAt);
                 o.put("b", e.submitBlock); o.put("t", e.ts); o.put("f", e.failed);
                 if (e.failMsg != null) o.put("fm", e.failMsg);
                 arr.put(o);
@@ -162,36 +164,71 @@ public final class ActivityLog {
         if (changed) save(ctx, entries);
     }
 
+    /** Reconcile receipts with history fetched before the receipt existed (UTXO stored resolver). */
+    private static synchronized void resolveStored(Context ctx, HistoryDb db) {
+        List<Entry> entries = list(ctx); boolean changed = false;
+        for (Entry e : entries) {
+            if (e.failed) continue;
+            if (e.transactionId.isEmpty()) e.transactionId = transactionFor(ctx, e.txpowid);
+            String mined = db.minedIdFor(e.transactionId);
+            if (!mined.isEmpty() && !mined.equalsIgnoreCase(e.txpowid)) {
+                e.txpowid = mined; e.verifiedDepth = -1; e.verifiedAt = 0; changed = true;
+            }
+        }
+        if (changed) save(ctx, entries);
+    }
+
+    static String confirmationText(int depth) {
+        if (depth < 0) return "Not found on-chain";
+        return depth + (depth == 1 ? " confirmation" : " confirmations") + " · on-chain";
+    }
+
     private static boolean checking;
-    private static int cursor;
+    private static int cursor, historyCursor;
     private static long lastCheck;
 
-    /** Compact, serial lookups; at most eight per refresh, rotating through the bounded local log. */
+    /** Small, serial node lookups for receipts AND cached history. Never estimate depth from time. */
     static void verify(Context ctx, NodeApi node, Runnable done) {
         long now = android.os.SystemClock.elapsedRealtime();
-        if (checking || now - lastCheck < 30_000) { done.run(); return; }
-        List<Entry> eligible = new ArrayList<>();
-        for (Entry e : list(ctx)) if (!e.failed && FundingCoins.hex(e.txpowid)) eligible.add(e);
-        if (eligible.isEmpty()) { done.run(); return; }
-        List<Entry> batch = new ArrayList<>();
-        for (int i = 0; i < Math.min(8, eligible.size()); i++)
-            batch.add(eligible.get((cursor + i) % eligible.size()));
-        cursor = (cursor + batch.size()) % eligible.size();
+        if (checking || (lastCheck != 0 && now - lastCheck < 10_000)) { done.run(); return; }
+        Context app = ctx.getApplicationContext();
+        HistoryDb db = new HistoryDb(app);
+        resolveStored(app, db);
+        List<String> localIds = new ArrayList<>();
+        for (Entry e : list(app)) if (!e.failed && FundingCoins.hex(e.txpowid)) localIds.add(e.txpowid);
+        java.util.LinkedHashSet<String> batch = new java.util.LinkedHashSet<>();
+        for (int i = 0; i < Math.min(8, localIds.size()); i++)
+            batch.add(localIds.get((cursor + i) % localIds.size()));
+        if (!localIds.isEmpty()) cursor = (cursor + Math.min(8, localIds.size())) % localIds.size();
+        List<HistoryEntry> history = db.list(150, 0, null);
+        // Check the newest rows on every pass; rotate through the rest so old records also get proof.
+        for (int i = 0; i < Math.min(3, history.size()); i++) batch.add(history.get(i).txpowid);
+        for (int i = 0; i < Math.min(8, history.size()); i++)
+            batch.add(history.get((historyCursor + i) % history.size()).txpowid);
+        if (!history.isEmpty()) historyCursor = (historyCursor + Math.min(8, history.size())) % history.size();
+        batch.removeIf(id -> !FundingCoins.hex(id));
+        if (batch.isEmpty()) { db.close(); done.run(); return; }
         checking = true; lastCheck = now;
-        verifyNext(ctx.getApplicationContext(), node, batch, 0, () -> { checking = false; done.run(); });
+        verifyNext(app, node, db, new ArrayList<>(batch), 0, () -> {
+            db.close(); checking = false; done.run();
+        });
     }
-    private static void verifyNext(Context ctx, NodeApi node, List<Entry> batch, int i, Runnable done) {
+    private static void verifyNext(Context ctx, NodeApi node, HistoryDb db, List<String> batch, int i, Runnable done) {
         if (i == batch.size()) { done.run(); return; }
-        Entry e = batch.get(i);
-        node.cmd("txpow onchain:" + e.txpowid, new NodeApi.Cb() {
+        String id = batch.get(i);
+        node.cmd("txpow onchain:" + id, new NodeApi.Cb() {
             public void onResult(JSONObject reply) {
-                // A failed/unsupported lookup cannot erase previous evidence or invent confirmation.
                 JSONObject r = reply == null ? null : reply.optJSONObject("response");
-                if (TxPost.truthy(reply, "status") && r != null && r.has("found"))
-                    setDepth(ctx, e.txpowid, confirmationDepth(reply));
-                verifyNext(ctx, node, batch, i + 1, done);
+                if (TxPost.truthy(reply, "status") && r != null && r.has("found")) {
+                    int depth = confirmationDepth(reply); long at = System.currentTimeMillis();
+                    setDepth(ctx, id, depth, at); db.setConfirmation(id, depth, at);
+                    android.util.Log.d("PandaPoolsChain", "txpow=" + id + " found=" + r.opt("found")
+                            + " confirmations=" + r.opt("confirmations") + " block=" + r.opt("block")
+                            + " tip=" + r.opt("tip"));
+                }
+                verifyNext(ctx, node, db, batch, i + 1, done);
             }
-            public void onError(String message) { verifyNext(ctx, node, batch, i + 1, done); }
+            public void onError(String message) { verifyNext(ctx, node, db, batch, i + 1, done); }
         });
     }
     static int confirmationDepth(JSONObject reply) {
@@ -202,9 +239,9 @@ public final class ActivityLog {
             return depth < 0 ? -1 : depth;
         } catch (Exception invalid) { return -1; }
     }
-    private static synchronized void setDepth(Context ctx, String id, int depth) {
+    private static synchronized void setDepth(Context ctx, String id, int depth, long at) {
         List<Entry> entries = list(ctx);
-        for (Entry e : entries) if (id.equals(e.txpowid)) e.verifiedDepth = depth;
+        for (Entry e : entries) if (id.equalsIgnoreCase(e.txpowid)) { e.verifiedDepth = depth; e.verifiedAt = at; }
         save(ctx, entries);
     }
 

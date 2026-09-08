@@ -20,7 +20,7 @@ public class HistoryDb extends SQLiteOpenHelper {
     /** v2: rows stored before this held the wrong token amount in inputs/outputs (see
      *  {@link HistoryEntry} — `amount` was read where `tokenamount` was meant). The table is never
      *  dropped; instead {@link #onUpgrade} arms a one-time re-sync that rewrites the rows in place. */
-    private static final int VERSION = 2;
+    private static final int VERSION = 3;
     private static final String TX = "tx";
     private static final String META = "meta";
     /** Meta flag driving the v2 token-amount repair: "pending" until a full re-sync has rewritten rows. */
@@ -36,7 +36,7 @@ public class HistoryDb extends SQLiteOpenHelper {
                 "direction TEXT, incoming INTEGER," +
                 "tokenid TEXT, tokenname TEXT, amount TEXT," +
                 "deltas TEXT, counterparty TEXT, inputs TEXT, outputs TEXT," +
-                "synced_at INTEGER)");
+                "synced_at INTEGER, transactionid TEXT DEFAULT '', verified_depth INTEGER DEFAULT -1, verified_at INTEGER DEFAULT 0)");
         db.execSQL("CREATE INDEX IF NOT EXISTS idx_block ON " + TX + "(block)");
         db.execSQL("CREATE INDEX IF NOT EXISTS idx_dir ON " + TX + "(direction)");
         db.execSQL("CREATE INDEX IF NOT EXISTS idx_tok ON " + TX + "(tokenid)");
@@ -55,6 +55,16 @@ public class HistoryDb extends SQLiteOpenHelper {
             db.insertWithOnConflict(META, null, cv, SQLiteDatabase.CONFLICT_REPLACE);
             db.delete(META, "k=?", new String[]{"backfill_done"});
         }
+        if (o < 3) {
+            db.execSQL("ALTER TABLE " + TX + " ADD COLUMN transactionid TEXT DEFAULT ''");
+            db.execSQL("ALTER TABLE " + TX + " ADD COLUMN verified_depth INTEGER DEFAULT -1");
+            db.execSQL("ALTER TABLE " + TX + " ADD COLUMN verified_at INTEGER DEFAULT 0");
+            ContentValues cv = new ContentValues();
+            cv.put("k", META_REPAIR_V2); cv.put("v", "pending");
+            db.insertWithOnConflict(META, null, cv, SQLiteDatabase.CONFLICT_REPLACE);
+            db.delete(META, "k=?", new String[]{"backfill_done"});
+        }
+
     }
 
     /** Insert a row; returns true if it was NEW, false if this txpowid was already stored. Idempotent.
@@ -64,13 +74,19 @@ public class HistoryDb extends SQLiteOpenHelper {
      *  caught-up test would never fire, and an incremental sync would page forever. Use {@link #upsert}. */
     public boolean insert(HistoryEntry e) {
         long rid = getWritableDatabase().insertWithOnConflict(TX, null, values(e), SQLiteDatabase.CONFLICT_IGNORE);
+        if (rid == -1 && !e.transactionId.isEmpty()) {
+            ContentValues identity = new ContentValues(); identity.put("transactionid", e.transactionId);
+            getWritableDatabase().update(TX, identity, "txpowid=?", new String[]{e.txpowid});
+        }
         return rid != -1;
     }
 
     /** Write a row, overwriting any existing one with the same txpowid. Used only by the v2 repair pass,
      *  which has to rewrite rows that are already stored. */
     public void upsert(HistoryEntry e) {
-        getWritableDatabase().insertWithOnConflict(TX, null, values(e), SQLiteDatabase.CONFLICT_REPLACE);
+        ContentValues v = values(e);
+        v.remove("verified_depth"); v.remove("verified_at");
+        if (getWritableDatabase().update(TX, v, "txpowid=?", new String[]{e.txpowid}) == 0) insert(e);
     }
 
     private static ContentValues values(HistoryEntry e) {
@@ -88,6 +104,9 @@ public class HistoryDb extends SQLiteOpenHelper {
         v.put("inputs", e.inputs);
         v.put("outputs", e.outputs);
         v.put("synced_at", e.syncedAt);
+        v.put("transactionid", e.transactionId);
+        v.put("verified_depth", e.verifiedDepth);
+        v.put("verified_at", e.verifiedAt);
         return v;
     }
 
@@ -107,7 +126,7 @@ public class HistoryDb extends SQLiteOpenHelper {
             args = new String[]{s, s, s, s, s};
         }
         Cursor c = getReadableDatabase().rawQuery(
-                "SELECT txpowid,block,timemilli,direction,incoming,tokenid,tokenname,amount,deltas,counterparty,inputs,outputs,synced_at FROM "
+                "SELECT txpowid,block,timemilli,direction,incoming,tokenid,tokenname,amount,deltas,counterparty,inputs,outputs,synced_at,transactionid,verified_depth,verified_at FROM "
                         + TX + where + " ORDER BY block DESC, timemilli DESC LIMIT " + limit + " OFFSET " + offset, args);
         try {
             while (c.moveToNext()) out.add(read(c));
@@ -126,7 +145,7 @@ public class HistoryDb extends SQLiteOpenHelper {
     public List<HistoryEntry> listChronological(long fromMs, long toMs) {
         List<HistoryEntry> out = new ArrayList<>();
         Cursor c = getReadableDatabase().rawQuery(
-                "SELECT txpowid,block,timemilli,direction,incoming,tokenid,tokenname,amount,deltas,counterparty,inputs,outputs,synced_at FROM "
+                "SELECT txpowid,block,timemilli,direction,incoming,tokenid,tokenname,amount,deltas,counterparty,inputs,outputs,synced_at,transactionid,verified_depth,verified_at FROM "
                         + TX + " WHERE timemilli BETWEEN ? AND ? ORDER BY block ASC, timemilli ASC",
                 new String[]{String.valueOf(fromMs), String.valueOf(toMs)});
         try {
@@ -152,7 +171,22 @@ public class HistoryDb extends SQLiteOpenHelper {
         e.tokenid = c.getString(5); e.tokenName = c.getString(6); e.amount = c.getString(7);
         e.deltas = c.getString(8); e.counterparty = c.getString(9);
         e.inputs = c.getString(10); e.outputs = c.getString(11); e.syncedAt = c.getLong(12);
+        e.transactionId = c.getString(13); e.verifiedDepth = c.getInt(14); e.verifiedAt = c.getLong(15);
         return e;
+    }
+
+    /** Exact transaction identity resolves a receipt even when its mined row was already cached. */
+    public String minedIdFor(String transactionId) {
+        if (!FundingCoins.hex(transactionId)) return "";
+        Cursor c = getReadableDatabase().rawQuery("SELECT txpowid FROM " + TX
+                + " WHERE transactionid=? COLLATE NOCASE ORDER BY verified_depth DESC, block DESC LIMIT 1",
+                new String[]{transactionId});
+        try { return c.moveToFirst() ? c.getString(0) : ""; } finally { c.close(); }
+    }
+
+    public void setConfirmation(String id, int depth, long at) {
+        ContentValues v = new ContentValues(); v.put("verified_depth", depth); v.put("verified_at", at);
+        getWritableDatabase().update(TX, v, "txpowid=?", new String[]{id});
     }
 
     public void setMeta(String k, String v) {

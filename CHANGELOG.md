@@ -13,6 +13,13 @@ mirrored across all three.
 
 ---
 
+## [0.9.43] — stock-node consolidation and live confirmation counts
+- Consolidation now calls exactly `consolidate tokenid:0x00` for MINIMA, following UTXO WalletTools, inside the existing signing gate. Removed the custom 3–8-coin preview and one-output transaction builder.
+- Show the node's actual confirmation count, including counts above three. Check on each foreground node poll and every ten seconds while Activity is open; repaint both Activity and Swap's recent-activity strip when checks complete.
+- Persist immutable transaction identity in node history and reconcile receipts against cached rows. Upgrade the history database without deleting transactions and backfill identity from retained node history.
+- Verify cached node-history rows with `txpow onchain`, including consolidations, and display the last check time. Older receipts with no saved transaction identity remain explicitly unmatched; matching by amount/time would falsely confirm unrelated transactions.
+- Native validation/update checkpoint; wider safety review and family parity remain pending. See [review](REVIEW-0.9.43.md).
+
 ## [0.9.42] — safety-review source checkpoint; public release pending
 - Proactive funding-count/address checks, reviewed coin consolidation, and complete-transaction input limits.
 - Durable pause after uncertain signing/posting, idempotent signing completion, and input claims that survive queue delays.

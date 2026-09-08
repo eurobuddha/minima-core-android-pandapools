@@ -17,6 +17,9 @@ import java.util.Iterator;
 public class HistoryEntry {
 
     public String txpowid;
+    public String transactionId = "";
+    public int verifiedDepth = -1;
+    public long verifiedAt;
     public long block, timemilli, syncedAt;
     public String direction;        // received | sent | self
     public boolean incoming;
@@ -28,6 +31,7 @@ public class HistoryEntry {
     public static HistoryEntry from(JSONObject txpow, JSONObject detail) {
         HistoryEntry e = new HistoryEntry();
         e.txpowid = txpow.optString("txpowid", "");
+        e.transactionId = ActivityLog.transactionId(txpow);
         JSONObject hdr = txpow.optJSONObject("header");
         if (hdr != null) { e.block = hdr.optLong("block", 0); e.timemilli = hdr.optLong("timemilli", 0); }
 
