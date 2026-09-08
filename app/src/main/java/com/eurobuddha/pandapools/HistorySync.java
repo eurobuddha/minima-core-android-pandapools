@@ -34,6 +34,7 @@ public class HistorySync {
     private int totalNew = 0;
     private int fetches = 0;
     private int skipFails = 0;
+    private boolean hadGap;
 
     public HistorySync(MainActivity act, HistoryDb db, Listener l) { this.act = act; this.db = db; this.listener = l; }
 
@@ -44,12 +45,12 @@ public class HistorySync {
         running = true;
         repair = "pending".equals(db.getMeta(HistoryDb.META_REPAIR_V2, ""));
         backfill = repair || !"true".equals(db.getMeta("backfill_done", ""));
-        pageMax = START_MAX; totalNew = 0; fetches = 0; skipFails = 0;
+        pageMax = START_MAX; totalNew = 0; fetches = 0; skipFails = 0; hadGap = false;
         fetchPage(0);
     }
 
     private void fetchPage(final int offset) {
-        if (++fetches > MAX_FETCHES) { finish(true); return; }
+        if (++fetches > MAX_FETCHES) { finish(false); return; }
         act.node().cmd("history relevant:true max:" + pageMax + " offset:" + offset, new NodeApi.Cb() {
             @Override public void onResult(JSONObject j) {
                 act.markPaired(true);                     // reached the node — hide the pairing banner
@@ -81,7 +82,7 @@ public class HistorySync {
                 totalNew += pageNew;
                 if (pageNew > 0 && listener != null) listener.onProgress(totalNew);
 
-                if (got < pageMax) { markBackfillDone(); finish(true); return; }   // short page = end of history
+                if (got < pageMax) { if (!hadGap) markBackfillDone(); finish(!hadGap); return; }
                 if (!backfill && hitKnown) { finish(true); return; }                // steady state: caught up
                 act.ui().postDelayed(() -> fetchPage(offset + got), PAGE_DELAY_MS); // keep paging
             }
@@ -98,6 +99,7 @@ public class HistorySync {
             pageMax = Math.max(1, pageMax / 2);
             act.ui().postDelayed(() -> fetchPage(offset), PAGE_DELAY_MS);
         } else if (++skipFails <= MAX_SKIP) {
+            hadGap = true; // Keep repair pending: a skipped transaction is not a completed reconciliation.
             // even a single txpow exceeds 256 KB — skip it so it can't stall the whole sync
             act.ui().postDelayed(() -> fetchPage(offset + 1), PAGE_DELAY_MS);
         } else {

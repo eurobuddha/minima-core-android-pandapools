@@ -20,7 +20,7 @@ public class HistoryDb extends SQLiteOpenHelper {
     /** v2: rows stored before this held the wrong token amount in inputs/outputs (see
      *  {@link HistoryEntry} — `amount` was read where `tokenamount` was meant). The table is never
      *  dropped; instead {@link #onUpgrade} arms a one-time re-sync that rewrites the rows in place. */
-    private static final int VERSION = 3;
+    private static final int VERSION = 4;
     private static final String TX = "tx";
     private static final String META = "meta";
     /** Meta flag driving the v2 token-amount repair: "pending" until a full re-sync has rewritten rows. */
@@ -64,7 +64,13 @@ public class HistoryDb extends SQLiteOpenHelper {
             db.insertWithOnConflict(META, null, cv, SQLiteDatabase.CONFLICT_REPLACE);
             db.delete(META, "k=?", new String[]{"backfill_done"});
         }
-
+        if (o < 4) {
+            // Replay retained headers for cryptographic recovery of legacy pre-mining receipts.
+            ContentValues cv = new ContentValues();
+            cv.put("k", META_REPAIR_V2); cv.put("v", "pending");
+            db.insertWithOnConflict(META, null, cv, SQLiteDatabase.CONFLICT_REPLACE);
+            db.delete(META, "k=?", new String[]{"backfill_done"});
+        }
     }
 
     /** Insert a row; returns true if it was NEW, false if this txpowid was already stored. Idempotent.

@@ -10,8 +10,8 @@ android {
         applicationId "com.eurobuddha.pandapools"
         minSdk 28
         targetSdk 35
-        versionCode 943
-        versionName "0.9.43"
+        versionCode 944
+        versionName "0.9.44"
 
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -71,6 +71,8 @@ dependencies {
     implementation 'androidx.work:work-runtime:2.9.1'
 
     implementation files('libs/minimaapi.aar')
+    // PocketWeb's provider-independent SHA3 implementation works on Samsung Android.
+    implementation 'org.bouncycastle:bcprov-jdk15on:1.69'
 
     // Local JVM unit tests (pure-logic + fund-critical facets: covenant/address, curve/token-grain, router, parsing)
     testImplementation 'junit:junit:4.13.2'

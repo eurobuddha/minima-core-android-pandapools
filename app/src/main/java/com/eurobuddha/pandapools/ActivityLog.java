@@ -26,6 +26,7 @@ public final class ActivityLog {
     public static final class Entry {
         public final String type, summary, failMsg;
         public String txpowid;
+        public String originalTxpowid;
         String transactionId = "";
         public final int submitBlock;
         public final long ts;
@@ -33,7 +34,7 @@ public final class ActivityLog {
         int verifiedDepth = -1;
         long verifiedAt;
         Entry(String type, String summary, String txpowid, int submitBlock, long ts, boolean failed, String failMsg) {
-            this.type=type; this.summary=summary; this.txpowid=txpowid; this.submitBlock=submitBlock;
+            this.type=type; this.summary=summary; this.txpowid=txpowid; this.originalTxpowid=txpowid; this.submitBlock=submitBlock;
             this.ts=ts; this.failed=failed && !NodeApi.ERR_WRITE_UNCERTAIN.equals(failMsg); this.failMsg=failMsg;
         }
         /** A local submission is never chain-confirmation evidence. The node history is displayed separately. */
@@ -86,6 +87,7 @@ public final class ActivityLog {
                 out.get(out.size() - 1).verifiedDepth = o.optInt("vd", -1);
                 out.get(out.size() - 1).verifiedAt = o.optLong("va", 0);
                 out.get(out.size() - 1).transactionId = o.optString("tn", "");
+                out.get(out.size() - 1).originalTxpowid = o.optString("original", out.get(out.size() - 1).txpowid);
             }
         } catch (Exception ignore) {}
         return out;
@@ -111,6 +113,7 @@ public final class ActivityLog {
                 JSONObject o = new JSONObject();
                 o.put("ty", e.type); o.put("s", e.summary);
                 if (e.txpowid != null) o.put("tx", e.txpowid);
+                if (e.originalTxpowid != null) o.put("original", e.originalTxpowid);
                 o.put("vd", e.verifiedDepth); o.put("tn", e.transactionId); o.put("va", e.verifiedAt);
                 o.put("b", e.submitBlock); o.put("t", e.ts); o.put("f", e.failed);
                 if (e.failMsg != null) o.put("fm", e.failMsg);
@@ -162,6 +165,36 @@ public final class ActivityLog {
             e.txpowid = minedId; e.verifiedDepth = -1; changed = true;
         }
         if (changed) save(ctx, entries);
+        JSONObject header = txpow.optJSONObject("header");
+        long time = header == null ? 0 : header.optLong("timemilli", 0);
+        boolean candidate = false;
+        for (Entry e : entries) if (!e.failed && e.transactionId.isEmpty()
+                && FundingCoins.hex(e.originalTxpowid) && time > 0
+                && Math.abs(e.ts - time) <= 5 * 60_000L) { candidate = true; break; }
+        if (candidate) {
+            Context app = ctx.getApplicationContext();
+            // Time only narrows candidates; matching requires the exact reconstructed SHA3 header ID.
+            recovery.execute(() -> {
+                String original = ReceiptRecovery.submittedId(txpow);
+                if (!original.isEmpty()) applyRecovered(app, original, minedId, transaction);
+            });
+        }
+    }
+
+    private static final java.util.concurrent.ExecutorService recovery =
+            java.util.concurrent.Executors.newSingleThreadExecutor();
+
+    private static synchronized void applyRecovered(Context ctx, String original, String mined, String transaction) {
+        List<Entry> entries = list(ctx); boolean changed = false;
+        for (Entry e : entries) if (!e.failed && original.equalsIgnoreCase(e.originalTxpowid)
+                && !mined.equalsIgnoreCase(e.txpowid)) {
+            e.txpowid = mined; e.transactionId = transaction;
+            e.verifiedDepth = -1; e.verifiedAt = 0; changed = true;
+        }
+        if (changed) {
+            save(ctx, entries);
+            android.util.Log.i("PandaPoolsChain", "Recovered receipt=" + original + " mined=" + mined);
+        }
     }
 
     /** Reconcile receipts with history fetched before the receipt existed (UTXO stored resolver). */

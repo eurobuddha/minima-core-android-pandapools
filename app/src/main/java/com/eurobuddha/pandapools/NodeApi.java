@@ -71,7 +71,7 @@ public class NodeApi {
         return READ_TIMEOUT_MS;
     }
 
-    private final MinimaAPI mApi;
+    private final NodeTransport mApi;
     private final Handler mMain = new Handler(Looper.getMainLooper());
     private final PairingListener mPairing;
     private final Context mContext;
@@ -88,7 +88,7 @@ public class NodeApi {
         mPairing = pairing;
         // Constructing MinimaAPI auto-sends the REGISTER broadcast; the reply tells us
         // whether the user has enabled this app in Minima Core -> Apps yet.
-        mApi = new MinimaAPI(ctx, new MinimaAPIListener() {
+        mApi = new NodeTransport(ctx, new MinimaAPIListener() {
             @Override
             public void response(JSONObject zResponse) {
                 final boolean enabled = zResponse.optBoolean("enabled", false);
@@ -208,7 +208,8 @@ public class NodeApi {
                     // so the caller resets its loading state / shows a message instead of dying.
                     try {
                         if (!isCompleteReply(zResponse)) {
-                            if (cb != null) cb.onError(funds ? ERR_WRITE_UNCERTAIN : "Incomplete node reply.");
+                            if (cb != null) cb.onError(funds ? ERR_WRITE_UNCERTAIN : zResponse == null
+                                    ? "Incomplete node reply." : zResponse.optString("transporterror", "Incomplete node reply."));
                             return;
                         }
                         // "enabled":false only appears on the gating reply; real command

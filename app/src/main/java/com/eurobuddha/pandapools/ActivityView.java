@@ -263,10 +263,12 @@ public class ActivityView extends BaseView {
         card.setOnClickListener(v -> new androidx.appcompat.app.AlertDialog.Builder(act)
                 .setTitle(e.statusText(cb))
                 .setMessage("TxPoW: " + (e.txpowid == null ? "Unavailable" : e.txpowid)
+                        + (e.originalTxpowid != null && !e.originalTxpowid.equalsIgnoreCase(e.txpowid)
+                        ? "\n\nOriginal submission ID: " + e.originalTxpowid : "")
                         + "\n\nTransaction: " + (e.transactionId.isEmpty() ? "Not saved by the older build" : e.transactionId)
                         + (e.verifiedAt > 0 ? "\n\nLast node check: " + new java.util.Date(e.verifiedAt) : "")
                         + (e.transactionId.isEmpty() && e.verifiedDepth < 0
-                        ? "\n\nThis older receipt cannot be matched safely from its amount or time alone. Node history below verifies the actual mined transactions." : ""))
+                        ? "\n\nHistory sync checks this older receipt against mined transaction headers. A match requires its exact cryptographic hash; amounts and times alone are insufficient." : ""))
                 .setPositiveButton("OK", null).show());
         return card;
     }

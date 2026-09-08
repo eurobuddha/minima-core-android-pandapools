@@ -13,6 +13,12 @@ mirrored across all three.
 
 ---
 
+## [0.9.44] — legacy receipt recovery and separate node reply process
+- Recover pre-mining submission IDs cryptographically from retained mined headers. First reproduce the mined TxPoW hash, then reconstruct the original header hash; never match by amount/time. Preserve original IDs in receipt details and obtain confirmations independently from the stock node.
+- Reuse Maxima's exact header/number/data codecs and PocketWeb's Samsung-compatible SHA3 digest. Replay retained history for old receipts; incomplete history passes keep the repair pending.
+- Run the unchanged native SDK in a private `:nodeipc` service. App-internal replies use private files and small Binder messages, keeping large node broadcasts out of the UI process. Disconnected writes stay uncertain and are never automatically replayed.
+- 172 tests pass for both debug and release, and release lint passes. Native device validation remains a separate gate; see [review](REVIEW-0.9.44.md).
+
 ## [0.9.43] — stock-node consolidation and live confirmation counts
 - Consolidation now calls exactly `consolidate tokenid:0x00` for MINIMA, following UTXO WalletTools, inside the existing signing gate. Removed the custom 3–8-coin preview and one-output transaction builder.
 - Show the node's actual confirmation count, including counts above three. Check on each foreground node poll and every ten seconds while Activity is open; repaint both Activity and Swap's recent-activity strip when checks complete.

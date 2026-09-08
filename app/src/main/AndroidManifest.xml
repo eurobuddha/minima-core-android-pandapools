@@ -48,6 +48,8 @@
             </intent-filter>
         </activity>
 
+        <service android:name=".NodeTransportService" android:exported="false" android:process=":nodeipc" />
+
         <!-- Resident host for the pool keep-alive. specialUse on API 34+ (uncapped, unlike dataSync's ~6h/day
              Android-14 budget); dataSync fallback on 29-33. stopWithTask=false so swiping the app doesn't kill it. -->
         <service
