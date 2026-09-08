@@ -152,11 +152,19 @@ public class PoolsView extends BaseView {
         row.setPadding(0, dp(3), 0, 0);
         TextView kk = new TextView(act);
         kk.setText(k); kk.setTextColor(Design.dim()); kk.setTextSize(12);
-        kk.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        // Label keeps its natural width (capped), NOT weight-1: a weighted label was starved to ~1 char
+        // (and wrapped one glyph per line) whenever the value string filled the row.
+        kk.setLayoutParams(new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        kk.setMaxWidth(dp(190));
         TextView vv = new TextView(act);
         vv.setText(v); vv.setTextColor(Design.text()); vv.setTextSize(12);
         vv.setTypeface(Typeface.MONOSPACE);
         vv.setGravity(Gravity.END);
+        vv.setSingleLine(false);   // a long value wraps within its own column instead of overflowing it
+        // Value takes the remaining width (weight 1) and right-aligns; small gap from the label.
+        LinearLayout.LayoutParams vlp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+        vlp.leftMargin = dp(8);
+        vv.setLayoutParams(vlp);
         row.addView(kk); row.addView(vv);
         return row;
     }

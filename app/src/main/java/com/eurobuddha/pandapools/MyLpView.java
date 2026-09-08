@@ -1135,9 +1135,16 @@ public class MyLpView extends BaseView {
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setPadding(0, Ui.dp(act, 4), 0, 0);
         TextView kk = text(k, Design.dim(), 12, false);
-        kk.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        // Label keeps its natural width (capped), NOT weight-1: a weighted label was starved to ~1 char
+        // (wrapping one glyph per line, e.g. "Your liquidity") whenever the value filled the row.
+        kk.setLayoutParams(new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        kk.setMaxWidth(Ui.dp(act, 190));
         TextView vv = text(v, valueColor, 12, false);
         vv.setGravity(Gravity.END);
+        vv.setSingleLine(false);   // a long value wraps within its own column instead of overflowing it
+        LinearLayout.LayoutParams vlp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+        vlp.leftMargin = Ui.dp(act, 8);
+        vv.setLayoutParams(vlp);
         row.addView(kk); row.addView(vv);
         return row;
     }
