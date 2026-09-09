@@ -23,7 +23,12 @@ import java.util.Map;
  */
 public final class OwnPoolStore {
 
+    private static final java.util.concurrent.atomic.AtomicLong SIGNING_REVISION = new java.util.concurrent.atomic.AtomicLong();
+    static long signingRevision() { return SIGNING_REVISION.get(); }
+    static void signingStateChanged() { SIGNING_REVISION.incrementAndGet(); }
+
     private static final String PREFS = "pandapools_ownpools";
+    private static final java.util.Set<String> FAILED_CONFIRMATIONS = java.util.concurrent.ConcurrentHashMap.newKeySet();
 
     private OwnPoolStore() {}
 
@@ -31,26 +36,60 @@ public final class OwnPoolStore {
     public static void record(Context c, Pool p) { recordDurably(c, p); }
 
     /** Must succeed before funding a new covenant; survives process death during posting. */
-    public static boolean recordDurably(Context c, Pool p) {
+    public static synchronized boolean recordDurably(Context c, Pool p) {
         if (c == null || p == null || p.address == null || p.address.isEmpty()) return false;
         // need at least the params to be able to reconstruct/verify the covenant
         if (isEmpty(p.opk) || isEmpty(p.oadr) || isEmpty(p.tok) || isEmpty(p.kmin)) return false;
         try {
-            JSONObject o = new JSONObject();
-            o.put("addr", p.address);                 // original-case derived address (hex is case-insensitive)
-            o.put("mx", nz(p.mxaddress));
-            o.put("opk", p.opk);
-            o.put("oadr", p.oadr);
-            o.put("tok", p.tok);
-            o.put("dec", p.tokDecimals);
-            o.put("kmin", p.kmin);
-            o.put("kidx", p.kidx);   // $OPK's derivation index (-1 unknown) — exact owner-key recovery
-            // authoritative covenant script for re-tracking; reconstruct from params if the caller didn't
-            // carry it (exact only for this app's fee — legacy-fee pools should always carry their own script)
-            String script = (!isEmpty(p.covenantScript)) ? p.covenantScript : reconstruct(p);
-            o.put("script", nz(script));
+            String previous = prefs(c).getString(key(p.address), "");
+            JSONObject o = mergeRecord(p, previous);
+            if (signingMetadataChanged(previous, o)) signingStateChanged();
             return prefs(c).edit().putString(key(p.address), o.toString()).commit();
-        } catch (Exception ignore) { return false; }
+        } catch (Exception invalid) { return false; }
+    }
+
+    static JSONObject mergeRecord(Pool p, String previous) throws org.json.JSONException {
+        JSONObject o = new JSONObject();
+        o.put("addr", p.address);                 // original-case derived address (hex is case-insensitive)
+        o.put("mx", nz(p.mxaddress));
+        o.put("opk", p.opk);
+        o.put("oadr", p.oadr);
+        o.put("tok", p.tok);
+        o.put("dec", p.tokDecimals);
+        o.put("kmin", p.kmin);
+        o.put("kidx", p.kidx);   // $OPK's derivation index (-1 unknown) — exact owner-key recovery
+        int floor = p.minimumOwnerUses;
+        boolean hold = p.signingStateUnverified || (previous.isEmpty() && !p.newlyCreatedWithCurrentOwnerState);
+        if (!previous.isEmpty()) {
+            JSONObject old = new JSONObject(previous);
+            floor = Math.max(floor, old.optInt("opkuses", -1));
+            hold |= old.optBoolean("signing_unverified", true);
+            if (p.kidx < 0) o.put("kidx", old.optInt("kidx", -1));
+        }
+        if (floor >= 0) o.put("opkuses", floor);
+        o.put("signing_unverified", hold);
+        if (FundingCoins.hex(p.coinidM) && FundingCoins.hex(p.coinidT)) {
+            o.put("last_coinid_m", p.coinidM).put("last_coinid_t", p.coinidT);
+        } else if (!previous.isEmpty()) {
+            JSONObject old = new JSONObject(previous);
+            o.put("last_coinid_m", old.optString("last_coinid_m", ""));
+            o.put("last_coinid_t", old.optString("last_coinid_t", ""));
+        }
+        // authoritative covenant script for re-tracking; reconstruct from params if the caller didn't
+        // carry it (exact only for this app's fee — legacy-fee pools should always carry their own script)
+        String script = (!isEmpty(p.covenantScript)) ? p.covenantScript : reconstruct(p);
+        o.put("script", nz(script));
+        return o;
+    }
+
+    static boolean signingMetadataChanged(String previous, JSONObject current) {
+        try {
+            if (previous.isEmpty()) return true;
+            JSONObject old = new JSONObject(previous);
+            return old.optBoolean("signing_unverified", true) != current.optBoolean("signing_unverified", true)
+                    || old.optInt("opkuses", -1) != current.optInt("opkuses", -1)
+                    || !old.optString("opk").equalsIgnoreCase(current.optString("opk"));
+        } catch (Exception e) { return true; }
     }
 
     public static void remove(Context c, String address) {
@@ -78,6 +117,9 @@ public final class OwnPoolStore {
                 p.tokDecimals = o.optInt("dec", 8);
                 p.kmin = o.optString("kmin", "");
                 p.kidx = o.optInt("kidx", -1);
+                p.minimumOwnerUses = o.optInt("opkuses", -1);
+                p.signingStateUnverified = o.optBoolean("signing_unverified", true);
+                p.coinidM = o.optString("last_coinid_m", ""); p.coinidT = o.optString("last_coinid_t", "");
                 p.covenantScript = o.optString("script", "");
                 if (!isEmpty(p.address) && !isEmpty(p.covenantScript)) out.add(p);
             } catch (Exception ignore) {}
@@ -97,6 +139,60 @@ public final class OwnPoolStore {
     }
 
     // ---- helpers ----
+
+    /** User attestation only; a counter comparison by itself never clears a restored-key hold. */
+    public static synchronized boolean acknowledgeSigningState(Context c, String opk, int uses) {
+        if (c == null || opk == null || uses < 0 || uses >= 262144) return false;
+        SharedPreferences.Editor edit = prefs(c).edit();
+        SharedPreferences.Editor rollback = prefs(c).edit();
+        boolean found = false;
+        try {
+            for (Pool p : all(c)) if (opk.equalsIgnoreCase(p.opk)) {
+                if (uses < p.minimumOwnerUses) return false;
+                JSONObject o = new JSONObject(prefs(c).getString(key(p.address), ""));
+                JSONObject held = new JSONObject(o.toString()).put("signing_unverified", true);
+                rollback.putString(key(p.address), held.toString());
+                o.put("signing_unverified", false).put("opkuses", uses);
+                edit.putString(key(p.address), o.toString()); found = true;
+            }
+            return found && commitConfirmation(opk, edit::commit, rollback::commit);
+        } catch (Exception invalid) { return false; }
+    }
+
+    static boolean confirmationFailed(String opk) {
+        return opk != null && FAILED_CONFIRMATIONS.contains(opk.toLowerCase(java.util.Locale.ROOT));
+    }
+
+    /** commit(false) has already changed SharedPreferences memory. Never interpret it as a rollback. */
+    static boolean commitConfirmation(String opk, java.util.function.BooleanSupplier save, Runnable rollback) {
+        String key = opk.toLowerCase(java.util.Locale.ROOT);
+        signingStateChanged();
+        FAILED_CONFIRMATIONS.add(key);
+        try {
+            if (save.getAsBoolean()) { FAILED_CONFIRMATIONS.remove(key); return true; }
+        } catch (Exception failed) { /* restore a hold below */ }
+        try { rollback.run(); } catch (Exception failed) { /* process latch remains closed */ }
+        return false;
+    }
+
+    static java.util.Set<String> ownerAddresses(Context c) {
+        java.util.Set<String> out = new java.util.HashSet<>();
+        for (Pool p : all(c)) if (!isEmpty(p.oadr)) out.add(p.oadr.toLowerCase(java.util.Locale.ROOT));
+        return out;
+    }
+
+    /** Refresh only coin-ID hints: preserve the exact recipe, derivation index and signing hold. */
+    static synchronized boolean rememberReserves(Context c, Pool p) {
+        if (c == null || !ReserveRecovery.completeReserves(p)) return false;
+        String previous = prefs(c).getString(key(p.address), "");
+        if (previous.isEmpty()) return true; // third-party pool: no owned recipe to update
+        try {
+            JSONObject o = new JSONObject(previous);
+            if (p.coinidM.equalsIgnoreCase(o.optString("last_coinid_m")) && p.coinidT.equalsIgnoreCase(o.optString("last_coinid_t"))) return true;
+            o.put("last_coinid_m", p.coinidM).put("last_coinid_t", p.coinidT);
+            return prefs(c).edit().putString(key(p.address), o.toString()).commit();
+        } catch (Exception invalid) { return false; }
+    }
 
     private static String reconstruct(Pool p) {
         try { return PoolCovenant.script(p.opk, p.oadr, p.tok, p.kmin); } catch (Exception e) { return ""; }

@@ -41,6 +41,7 @@ public class NodeApi {
     private static final String WRITE_PREFS = "pandapools_write_safety";
     private boolean destroyRequested;
     private static String activeWrite = "";
+    private static volatile boolean failedWriteAcknowledgement;
     Context context() { return mContext.getApplicationContext(); }
 
     static boolean writesFunds(String command) {
@@ -51,12 +52,25 @@ public class NodeApi {
     private android.content.SharedPreferences writePrefs() {
         return mContext.getSharedPreferences(WRITE_PREFS, Context.MODE_PRIVATE);
     }
-    private boolean hasPendingWrite() { return !writePrefs().getString("pending", "").isEmpty(); }
+    private boolean hasPendingWrite() { return failedWriteAcknowledgement || !writePrefs().getString("pending", "").isEmpty(); }
     public boolean hasInterruptedWrite() { return hasPendingWrite() && activeWrite.isEmpty(); }
     /** Only invoked after the user's explicit restart-and-reconcile confirmation. */
     public boolean acknowledgeInterruptedWrite() {
-        return activeWrite.isEmpty() && writePrefs().edit().remove("pending").commit();
+        if (!activeWrite.isEmpty()) return false;
+        String previous = writePrefs().getString("pending", "");
+        String marker = previous.isEmpty() ? java.util.UUID.randomUUID().toString() : previous;
+        return commitWriteAcknowledgement(() -> writePrefs().edit().remove("pending").commit(),
+                () -> writePrefs().edit().putString("pending", marker).commit());
     }
+
+    static boolean commitWriteAcknowledgement(java.util.function.BooleanSupplier clear, Runnable rollback) {
+        failedWriteAcknowledgement = true;
+        try { if (clear.getAsBoolean()) { failedWriteAcknowledgement = false; return true; } }
+        catch (Exception e) { /* keep process latch */ }
+        try { rollback.run(); } catch (Exception e) { /* keep process latch */ }
+        return false;
+    }
+    static boolean writeAcknowledgementFailed() { return failedWriteAcknowledgement; }
 
     private static final long READ_TIMEOUT_MS = 30000;
     private static final long WRITE_TIMEOUT_MS = 180000;   // build + proof-of-work + post is slow on mobile
@@ -123,7 +137,8 @@ public class NodeApi {
         if (command == null || command.trim().isEmpty()) { if (cb != null) cb.onError("Empty node command."); return; }
         if (mReleased) { if (cb != null) cb.onError("Node connection closed."); return; }
         queuedCommands++;
-        IPC_QUEUE.submit(finish -> dispatch(command, new Cb() {
+        final long signingRevision = OwnPoolStore.signingRevision();
+        IPC_QUEUE.submit(finish -> dispatch(command, signingRevision, new Cb() {
             private boolean delivered;
             public void onResult(JSONObject reply) { complete(reply, null); }
             public void onError(String message) { complete(null, message); }
@@ -154,8 +169,9 @@ public class NodeApi {
         }));
     }
 
-    private void dispatch(String command, Cb cb) {
+    private void dispatch(String command, long signingRevision, Cb cb) {
         if (mReleased) { cb.onError("Node connection closed."); return; }
+        if (!signingRevisionMatches(command, signingRevision)) { cb.onError("Pool signing state changed while this command was queued. Nothing sent; review recovery state and retry."); return; }
         final boolean funds = writesFunds(command) && !command.contains("dryrun:true");
         final String writeId = java.util.UUID.randomUUID().toString();
         final String verb = command.trim().split("\\s+", 2)[0];
@@ -241,8 +257,14 @@ public class NodeApi {
         finishDestroy();
     }
 
+    static boolean signingRevisionMatches(String command, long revision) {
+        boolean sensitive = writesFunds(command) || command.startsWith("newscript trackall:false ")
+                || command.startsWith("cointrack enable:false ");
+        return !sensitive || revision == OwnPoolStore.signingRevision();
+    }
+
     static boolean isCompleteReply(JSONObject reply) {
-        return reply != null && (reply.opt("status") instanceof Boolean
+        return reply != null && !TxPost.truthy(reply, "pending") && (reply.opt("status") instanceof Boolean
                 || Boolean.FALSE.equals(reply.opt("enabled")));
     }
 

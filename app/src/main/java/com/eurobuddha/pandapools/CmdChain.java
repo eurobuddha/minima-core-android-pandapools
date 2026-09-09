@@ -25,6 +25,22 @@ public final class CmdChain {
 
     private static void step(NodeApi node, List<String> cmds, int i, String cleanup, Done done) {
         if (i >= cmds.size()) { done.ok(null); return; }
+        if (cmds.get(i).startsWith("txnsign ")) {
+            java.util.ArrayList<String> ids = new java.util.ArrayList<>();
+            for (int n = 0; n < i; n++) if (cmds.get(n).startsWith("txninput ")) ids.add(param(cmds.get(n), "coinid"));
+            OwnerKeyRecovery.checkSignature(node::cmd, () -> OwnPoolStore.all(node.context()), ids, param(cmds.get(i), "publickey"), error -> {
+                if (error != null) fail(node, cleanup, done, error);
+                else execute(node, cmds, i, cleanup, done);
+            });
+        } else execute(node, cmds, i, cleanup, done);
+    }
+
+    private static String param(String command, String name) {
+        for (String part : command.split("\\s+")) if (part.startsWith(name + ":")) return part.substring(name.length() + 1);
+        return "";
+    }
+
+    private static void execute(NodeApi node, List<String> cmds, int i, String cleanup, Done done) {
         final boolean last = (i == cmds.size() - 1);
         node.cmd(cmds.get(i), new NodeApi.Cb() {
             @Override public void onResult(JSONObject json) {

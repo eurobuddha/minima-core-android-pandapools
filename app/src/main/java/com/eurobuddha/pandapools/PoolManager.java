@@ -84,6 +84,7 @@ public class PoolManager {
                             @Override public void onError(String m) { cb.onFailed(m); }
                             private void fundAndPost() {
                                 Pool p = new Pool();
+                                p.newlyCreatedWithCurrentOwnerState = true;
                                 p.address = address; p.mxaddress = mx; p.opk = opk; p.oadr = oadr;
                                 p.kidx = kidx;
                                 p.tok = tokenid; p.kmin = kmin; p.tokDecimals = tokDecimals;
@@ -221,6 +222,7 @@ public class PoolManager {
                     @Override public void onError(String m) { cb.onFailed(m); }
                     private void go() {
                         Pool np = new Pool();
+                        np.newlyCreatedWithCurrentOwnerState = true;
                         np.address = a2; np.mxaddress = mx2; np.opk = p.opk; np.oadr = p.oadr;
                         np.kidx = p.kidx;   // same owner key, same derivation index
                         np.tok = p.tok; np.kmin = kmin2; np.tokDecimals = p.tokDecimals;
@@ -270,12 +272,9 @@ public class PoolManager {
                         if (tchange.signum() > 0)
                             cmds.add("txnoutput id:" + txid + " amount:" + amt(tchange) + " address:" + tChg + tokArg + " storestate:false");
                         addAnnounceState(cmds, txid, np);
-                        cmds.add("txnsign id:" + txid + " publickey:auto");
-                        cmds.add("txnsign id:" + txid + " publickey:" + p.opk);   // owner branch
-                        cmds.add("txnbasics id:" + txid);
-                        TxPost.checkThenPost(node, txid, cmds, new TxPost.Done() {
-                            @Override public void ok(String txpowid) { cb.onCreated(np, txpowid); }
-                            @Override public void fail(String message) { cb.onFailed(message); }
+                        ownerSignPost(txid, p.opk, cmds, new Result() {
+                            @Override public void onPosted(String txpowid) { cb.onCreated(np, txpowid); }
+                            @Override public void onFailed(String message) { cb.onFailed(message); }
                         });
                     }
                     @Override public void fail(String message) { CoinLock.release(mfunds); cb.onFailed(message); }
@@ -315,6 +314,15 @@ public class PoolManager {
      */
     public void forwardOwnerFunds(final String oadr, final ForwardResult cb) {
         if (!FundingCoins.hex(oadr)) { cb.onFailed("Invalid owner address."); return; }
+        List<String> owners = new ArrayList<>();
+        for (Pool p : OwnPoolStore.all(node.context())) if (oadr.equalsIgnoreCase(p.oadr)) owners.add(p.opk);
+        OwnerKeyRecovery.ensure(node.context(), node, owners, (n, unavailable) -> {
+            if (!unavailable.isEmpty()) { cb.onFailed("Owner key or current signing state unavailable. Restore the matching MinimaCore wallet backup before collecting."); return; }
+            forwardCheckedOwnerFunds(oadr, cb);
+        });
+    }
+
+    private void forwardCheckedOwnerFunds(final String oadr, final ForwardResult cb) {
         node.cmd("balance address:" + oadr, new NodeApi.Cb() {
             public void onResult(JSONObject reply) {
                 JSONArray rows = FundingCoins.rows(reply);
@@ -381,7 +389,9 @@ public class PoolManager {
                         cmds.add("txnsign id:" + txid + " publickey:auto");
                         cmds.add("txnbasics id:" + txid);
                         final int n = coinids.size();
-                        TxPost.checkThenPost(node, txid, cmds, new TxPost.Done() {
+                        List<String> ownerKeys = new ArrayList<>();
+                        for (Pool p : OwnPoolStore.all(node.context())) if (oadr.equalsIgnoreCase(p.oadr)) ownerKeys.add(p.opk);
+                        TxPost.checkThenPost(node, txid, cmds, ownerKeys, new TxPost.Done() {
                             @Override public void ok(String txpowid) { cb.onForwarded(txpowid, n); }
                             @Override public void fail(String message) { cb.onFailed(message); }
                         });
@@ -505,12 +515,17 @@ public class PoolManager {
     // ===================================================================== helpers
 
     private void ownerSignPost(String txid, String opk, List<String> cmds, Result cb) {
+        OwnerKeyRecovery.ensure(node.context(), node, java.util.Collections.singletonList(opk), (n, unavailable) -> {
+        if (!unavailable.isEmpty()) {
+            cb.onFailed("Owner key or current signing state unavailable. Restore the matching MinimaCore wallet backup before spending."); return;
+        }
         cmds.add("txnsign id:" + txid + " publickey:auto");        // any wallet funding coins
         cmds.add("txnsign id:" + txid + " publickey:" + opk);      // the owner signature the covenant requires
         cmds.add("txnbasics id:" + txid);
         TxPost.checkThenPost(node, txid, cmds, new TxPost.Done() {
             @Override public void ok(String txpowid) { cb.onPosted(txpowid); }
             @Override public void fail(String message) { cb.onFailed(message); }
+        });
         });
     }
 
@@ -580,6 +595,7 @@ public class PoolManager {
      */
     private void selectCoins(String tokenid, BigDecimal need, String excludeAddress, String ownerAddress, SelCb cb) {
         java.util.Set<String> exclude = new java.util.HashSet<>();
+        exclude.addAll(OwnPoolStore.ownerAddresses(node.context()));
         if (excludeAddress != null) exclude.add(excludeAddress);
         if (ownerAddress != null) exclude.add(ownerAddress);
         FundingCoins.select(node::cmd, tokenid, need, exclude, new FundingCoins.Done() {

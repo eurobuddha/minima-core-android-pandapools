@@ -117,6 +117,7 @@ public final class KeyUses {
     /** Pull one key's `uses` out of a `keys action:list` reply. The response nests the rows under
      *  `response.keys`; a publickey-filtered call returns just the one. */
     static Integer extractUses(JSONObject j, String publickey) {
+        if (!TxPost.truthy(j, "status") || publickey == null) return null;
         Object resp = j.opt("response");
         JSONArray arr = null;
         if (resp instanceof JSONArray) arr = (JSONArray) resp;
@@ -127,7 +128,10 @@ public final class KeyUses {
             JSONObject k = arr.optJSONObject(i);
             if (k == null) continue;
             if (want.equals(k.optString("publickey", "").toLowerCase()) && k.has("uses")) {
-                return k.optInt("uses", 0);
+                try {
+                    int uses = new java.math.BigDecimal(k.get("uses").toString()).intValueExact();
+                    return uses >= 0 && uses <= 262144 ? uses : null;
+                } catch (Exception invalid) { return null; }
             }
         }
         return null;

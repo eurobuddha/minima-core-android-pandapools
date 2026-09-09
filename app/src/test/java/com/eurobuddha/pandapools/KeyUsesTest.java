@@ -94,7 +94,7 @@ public class KeyUsesTest {
     @Test public void handlesTheBareArrayResponseShape() {
         try {
             JSONObject k = new JSONObject().put("publickey", "0xABC").put("uses", 5);
-            JSONObject j = new JSONObject().put("response", new JSONArray().put(k));
+            JSONObject j = new JSONObject().put("status", true).put("response", new JSONArray().put(k));
             assertEquals(Integer.valueOf(5), KeyUses.extractUses(j, "0xABC"));
         } catch (Exception e) { throw new RuntimeException(e); }
     }

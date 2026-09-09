@@ -63,15 +63,20 @@ final class WalletTools {
                 message(error);
             }
         });
-        TxPost.submit(() -> act.node().cmd("consolidate tokenid:" + token, new NodeApi.Cb() {
-            public void onResult(JSONObject reply) {
-                if (!TxPost.truthy(reply, "status")) { done.fail(nodeError(reply)); return; }
-                String id = Util.extractTxpowid(reply, "");
-                ActivityLog.rememberSubmission(act, reply, id);
-                done.ok(id);
-            }
-            public void onError(String error) { done.fail(error); }
-        }));
+        TxPost.submit(() -> {
+            OwnerKeyRecovery.checkConsolidation(act.node()::cmd, () -> OwnPoolStore.all(act), error -> {
+                if (error != null) { done.fail(error); return; }
+                act.node().cmd("consolidate tokenid:" + token, new NodeApi.Cb() {
+                    public void onResult(JSONObject reply) {
+                        if (!TxPost.truthy(reply, "status")) { done.fail(nodeError(reply)); return; }
+                        String id = Util.extractTxpowid(reply, "");
+                        ActivityLog.rememberSubmission(act, reply, id);
+                        done.ok(id);
+                    }
+                    public void onError(String error) { done.fail(error); }
+                });
+            });
+        });
     }
     void resolveInterruptedWrite() {
         if (!act.node().hasInterruptedWrite()) { message("There is no interrupted write to resolve."); return; }

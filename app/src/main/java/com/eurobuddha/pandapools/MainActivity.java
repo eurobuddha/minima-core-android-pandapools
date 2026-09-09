@@ -348,10 +348,16 @@ public class MainActivity extends AppCompatActivity {
 
     /** Sequential, best-effort: re-register each still-track:true foreign row with its VERBATIM script
      *  (reconstruction could differ for a legacy-fee covenant, and {@code newscript} REPLACES the row). */
+    private boolean savedOwner(TrackHygiene.Row row) {
+        for (Pool p : OwnPoolStore.all(this)) if (row.address.equalsIgnoreCase(p.address)
+                || (p.opk != null && row.script.contains(p.opk))) return true;
+        return false;
+    }
+
     private void demoteForeign(List<TrackHygiene.Row> foreign, int i) {
         if (i >= foreign.size()) { untrackForeignCoins(foreign); return; }
         TrackHygiene.Row r = foreign.get(i);
-        if (!r.track) { demoteForeign(foreign, i + 1); return; }
+        if (!r.track || savedOwner(r)) { demoteForeign(foreign, i + 1); return; }
         node.cmd("newscript trackall:false script:" + Util.scriptArg(r.script), new NodeApi.Cb() {
             @Override public void onResult(JSONObject j) { demoteForeign(foreign, i + 1); }
             @Override public void onError(String m) { demoteForeign(foreign, i + 1); }
@@ -377,24 +383,25 @@ public class MainActivity extends AppCompatActivity {
             if (touched && poolRepo != null) poolRepo.refresh();   // repaint once the balance is clean
             return;
         }
+        if (savedOwner(foreign.get(i))) { untrackNextAddress(foreign, i + 1, touched); return; }
         final String addr = foreign.get(i).address;
         final Set<String> one = new HashSet<>();
         one.add(addr.toLowerCase());
         node.cmd("coins relevant:true address:" + addr, new NodeApi.Cb() {
             @Override public void onResult(JSONObject j) {
                 List<String> ids = TrackHygiene.coinsToUntrack(j.optJSONArray("response"), one);
-                untrackNextCoin(ids, 0, () -> untrackNextAddress(foreign, i + 1, touched || !ids.isEmpty()));
+                untrackNextCoin(foreign.get(i), ids, 0, () -> untrackNextAddress(foreign, i + 1, touched || !ids.isEmpty()));
             }
             @Override public void onError(String m) { untrackNextAddress(foreign, i + 1, touched); }
         });
     }
 
-    private void untrackNextCoin(List<String> coinids, int i, Runnable then) {
-        if (i >= coinids.size()) { then.run(); return; }
+    private void untrackNextCoin(TrackHygiene.Row row, List<String> coinids, int i, Runnable then) {
+        if (i >= coinids.size() || savedOwner(row)) { then.run(); return; }
         // {"status":false} (already spent / ADMIN denied) arrives via the SUCCESS callback — keep going
         node.cmd("cointrack enable:false coinid:" + coinids.get(i), new NodeApi.Cb() {
-            @Override public void onResult(JSONObject j) { untrackNextCoin(coinids, i + 1, then); }
-            @Override public void onError(String m) { untrackNextCoin(coinids, i + 1, then); }
+            @Override public void onResult(JSONObject j) { untrackNextCoin(row, coinids, i + 1, then); }
+            @Override public void onError(String m) { untrackNextCoin(row, coinids, i + 1, then); }
         });
     }
 

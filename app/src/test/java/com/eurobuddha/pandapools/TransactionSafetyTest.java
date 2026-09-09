@@ -60,6 +60,8 @@ public class TransactionSafetyTest {
         JSONObject reply = new TestJson().put("status", false).put("response", new org.json.JSONArray());
         assertEquals(wanted, new HashSet<>(OwnerKeyRecovery.unavailableKeys(reply, wanted)));
         reply.put("status", true).put("response", new TestJson().put("keys", new org.json.JSONArray().put(new TestJson().put("publickey", "0xaa"))));
+        assertEquals(wanted, new HashSet<>(OwnerKeyRecovery.unavailableKeys(reply, wanted)));
+        reply.getJSONObject("response").getJSONArray("keys").getJSONObject(0).put("uses", 10);
         assertEquals(Collections.singletonList("0xbb"), OwnerKeyRecovery.unavailableKeys(reply, wanted));
     }
     @Test public void duplicateCompletionCannotReleaseAnotherChainOrNotifyTwice() throws Exception {

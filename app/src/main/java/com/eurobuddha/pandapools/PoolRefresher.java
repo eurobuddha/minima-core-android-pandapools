@@ -60,7 +60,7 @@ public class PoolRefresher {
         List<Pool> aging = new ArrayList<>();
         if (ownFunded != null)
             for (Pool p : ownFunded)
-                if (p != null && p.funded() && p.address != null && !refreshedRecently(p.address, now)
+                if (ReserveRecovery.completeReserves(p) && !p.signingStateUnverified && p.address != null && !refreshedRecently(p.address, now)
                         && (p.reserveBlock <= 0 || p.reserveAge(chainBlock) > REFRESH_BLOCKS)) aging.add(p);
         post(aging, cb);
     }
@@ -90,10 +90,9 @@ public class PoolRefresher {
                         if (pending.decrementAndGet() == 0) refreshAging(new ArrayList<>(mine), tip, cb);
                         continue;
                     }
-                    node.cmd("coins address:" + r.address, new NodeApi.Cb() {
-                        @Override public void onResult(JSONObject j) { fillReserves(r, j); if (r.funded()) mine.add(r); tick(); }
-                        @Override public void onError(String m) { tick(); }
-                        private void tick() { if (pending.decrementAndGet() == 0) refreshAging(new ArrayList<>(mine), tip, cb); }
+                    readLiveReserves(node, r, found -> {
+                        if (found && ReserveRecovery.completeReserves(r)) mine.add(r);
+                        if (pending.decrementAndGet() == 0) refreshAging(new ArrayList<>(mine), tip, cb);
                     });
                 }
             }
@@ -103,23 +102,42 @@ public class PoolRefresher {
 
     /** Largest coin per leg at the covenant address = the true reserve (a forged dust coin can't masquerade); also
      *  record the newest kept-coin block so {@link Pool#reserveAge} is right. Mirrors {@link PoolBook}'s fund logic. */
-    private static void fillReserves(Pool p, JSONObject j) {
-        Object resp = j.opt("response");
-        JSONArray cs = resp instanceof JSONArray ? (JSONArray) resp : new JSONArray();
+    static boolean fillReserves(Pool p, JSONObject j) {
+        p.reserveM = null; p.reserveT = null; p.coinidM = null; p.coinidT = null;
+        p.reserveBlock = 0; p.reserveBlockM = 0; p.reserveBlockT = 0;
+        JSONArray cs = FundingCoins.rows(j);
+        if (cs == null) return false;
         int mBlk = 0, tBlk = 0;
         for (int i = 0; i < cs.length(); i++) {
             JSONObject c = cs.optJSONObject(i);
-            if (c == null || c.optBoolean("spent", false)) continue;
+            if (!reserveCoin(p, c)) continue;
             String tid = c.optString("tokenid", "");
             if ("0x00".equals(tid)) {
                 BigDecimal amt = new BigDecimal(c.optString("amount", "0"));
                 if (p.reserveM == null || amt.compareTo(p.reserveM) > 0) { p.reserveM = amt; p.coinidM = c.optString("coinid", ""); mBlk = c.optInt("created", 0); }
             } else if (p.tok != null && p.tok.equalsIgnoreCase(tid)) {
-                BigDecimal amt = new BigDecimal(c.optString("tokenamount", c.optString("amount", "0")));
+                BigDecimal amt = new BigDecimal(c.optString("tokenamount"));
                 if (p.reserveT == null || amt.compareTo(p.reserveT) > 0) { p.reserveT = amt; p.coinidT = c.optString("coinid", ""); tBlk = c.optInt("created", 0); }
+                p.tokName = Util.tokenName(c.opt("token"), tid);
+                p.tokDecimals = Util.tokenDecimals(c.opt("token"));
             }
         }
         p.reserveBlock = Math.max(mBlk, tBlk);
+        p.reserveBlockM = mBlk; p.reserveBlockT = tBlk;
+        return true;
+    }
+
+    /** Reuses PoolBook's address, stateless-coin and human token-amount validation. */
+    static boolean reserveCoin(Pool p, JSONObject raw) {
+        if (p == null || raw == null || !Boolean.FALSE.equals(raw.opt("spent"))) return false;
+        try {
+            Coin c = FundingCoins.fundingCoin(raw);
+            Object state = raw.opt("state");
+            return FundingCoins.hex(c.coinid) && p.address != null && p.address.equalsIgnoreCase(c.address)
+                    && ("0x00".equalsIgnoreCase(c.tokenid) || (p.tok != null && p.tok.equalsIgnoreCase(c.tokenid)))
+                    && (!(state instanceof JSONArray) || ((JSONArray)state).length() == 0)
+                    && (!(state instanceof JSONObject) || ((JSONObject)state).length() == 0);
+        } catch (RuntimeException invalid) { return false; }
     }
 
     /** Callback for {@link #readLiveReserves}: {@code ok} = the covenant address was read AND the
@@ -140,13 +158,18 @@ public class PoolRefresher {
      */
     public static void readLiveReserves(NodeApi node, final Pool p, final LiveReadCb cb) {
         if (node == null || p == null || p.address == null || p.address.isEmpty()) { cb.done(false); return; }
-        node.cmd("coins address:" + p.address, new NodeApi.Cb() {
-            @Override public void onResult(JSONObject j) {
-                p.reserveM = null; p.reserveT = null; p.coinidM = null; p.coinidT = null; p.reserveBlock = 0;
-                fillReserves(p, j);
-                cb.done(p.funded());
+        if (!FundingCoins.hex(p.coinidM) || !FundingCoins.hex(p.coinidT)) {
+            for (Pool saved : OwnPoolStore.all(node.context())) if (p.address.equalsIgnoreCase(saved.address)) {
+                p.coinidM = saved.coinidM; p.coinidT = saved.coinidT; break;
             }
-            @Override public void onError(String m) { cb.done(false); }
+        }
+        ReserveRecovery.readCoins(node::cmd, p.address, false, FundingCoins.SAFE_COINS, p.coinidM, p.coinidT, new NodeApi.Cb() {
+            @Override public void onResult(JSONObject j) {
+                boolean found = fillReserves(p, j) && p.funded();
+                if (found) OwnPoolStore.rememberReserves(node.context(), p);
+                cb.done(found);
+            }
+            @Override public void onError(String m) { fillReserves(p, null); cb.done(false); }
         });
     }
 

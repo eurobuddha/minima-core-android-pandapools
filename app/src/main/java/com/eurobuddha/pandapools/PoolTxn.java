@@ -177,7 +177,9 @@ public class PoolTxn {
     private interface FundCb { void onFunds(List<Coin> funds, BigDecimal sum); void onFailure(String message); }
 
     private void findFunding(String tokenid, BigDecimal need, Set<String> excludeAddrsLower, FundCb cb) {
-        FundingCoins.select(node::cmd, tokenid, need, excludeAddrsLower, new FundingCoins.Done() {
+        Set<String> excluded = new java.util.HashSet<>(OwnPoolStore.ownerAddresses(node.context()));
+        if (excludeAddrsLower != null) excluded.addAll(excludeAddrsLower);
+        FundingCoins.select(node::cmd, tokenid, need, excluded, new FundingCoins.Done() {
             @Override public void ok(List<Coin> coins, BigDecimal sum) { cb.onFunds(coins, sum); }
             @Override public void fail(String message) { cb.onFailure(message); }
         });

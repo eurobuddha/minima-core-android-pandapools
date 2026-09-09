@@ -85,6 +85,17 @@ public final class TxPost {
     }
 
     public static void checkThenPost(NodeApi node, String txid, List<String> cmdsThroughBasics, Done done) {
+        checkThenPost(node, txid, cmdsThroughBasics, java.util.Collections.emptyList(), done);
+    }
+
+    static void checkThenPost(NodeApi node, String txid, List<String> cmdsThroughBasics, List<String> ownerKeys, Done done) {
+        List<String> guardedKeys = new ArrayList<>(ownerKeys);
+        for (String command : cmdsThroughBasics) if (command.startsWith("txnsign ")) {
+            for (String part : command.split("\\s+")) if (part.startsWith("publickey:")) {
+                String key = part.substring(10);
+                if (!"auto".equals(key) && !guardedKeys.contains(key)) guardedKeys.add(key);
+            }
+        }
         List<String> inputIds = new ArrayList<>();
         for (String command : cmdsThroughBasics) if (command.startsWith("txninput ")) {
             String id = "";
@@ -106,7 +117,10 @@ public final class TxPost {
             public void ok(String id) { CoinLock.finishInputs(inputIds); done.ok(id); }
             public void fail(String message) { CoinLock.finishInputs(inputIds); done.fail(message); }
         });
-        submit(() -> runChain(node, txid, cmdsThroughBasics, gatedDone));
+        submit(() -> OwnerKeyRecovery.ensure(node.context(), node, guardedKeys, (regenerated, unavailable) -> {
+            if (!unavailable.isEmpty()) { gatedDone.fail("Owner signing is paused. Verify current wallet signing state in Pool recovery."); return; }
+            runChain(node, txid, cmdsThroughBasics, gatedDone);
+        }));
     }
 
     private static void runChain(NodeApi node, String txid, List<String> cmdsThroughBasics, Done done) {

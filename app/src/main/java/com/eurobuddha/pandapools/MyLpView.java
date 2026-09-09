@@ -136,13 +136,17 @@ public class MyLpView extends BaseView {
     private void render(List<Pool> all) {
         List<Pool> mine = new ArrayList<>();
         for (Pool p : all) if (mine(p)) {
-            mine.add(p);
+            if (ReserveRecovery.completeReserves(p)) mine.add(p);
             // backfill a recovery recipe for an owned pool the first time we see it (e.g. one created
             // before this feature). Only when missing, so the exact create/migrate script is never
             // clobbered by a reconstructed one.
             if (OwnPoolStore.script(act, p.address) == null) OwnPoolStore.record(act, p);
         }
         myPools.clear(); myPools.addAll(mine);   // for a backup's fresh coinexport (these carry live coinids)
+        List<Pool> unavailable = new ArrayList<>();
+        Set<String> visible = new HashSet<>();
+        for (Pool p : mine) if (p.address != null) visible.add(p.address.toLowerCase());
+        for (Pool p : OwnPoolStore.all(act)) if (!visible.contains(p.address.toLowerCase())) unavailable.add(p);
         maybeReannounce(all);                     // Layer 5 gossip: refresh faded beacons for ALL funded pools (once/session)
         maybeRefresh(mine);                       // keep-fresh: recreate MY aging reserves before they leave the cascade
 
@@ -178,12 +182,26 @@ public class MyLpView extends BaseView {
 
         // A create still confirming → a persistent amber card at the top (never "No pools yet" while pending).
         if (pendingCreate != null) list.addView(confirmingCard());
+        for (Pool p : unavailable) list.addView(recoveryCard(p));
+        Set<String> heldKeys = new HashSet<>();
+        for (Pool p : OwnPoolStore.all(act)) if ((p.signingStateUnverified || OwnPoolStore.confirmationFailed(p.opk)) && heldKeys.add(p.opk)) {
+            LinearLayout card = dialogBox(); Ui.card(card);
+            card.addView(text("Owner signing paused", Design.amber(), 16, true));
+            TextView detail = new TextView(act);
+            detail.setText(p.opk + "\nReserve recovery does not restore wallet signing state. Confirm the latest wallet state before owner actions or automatic refresh.");
+            detail.setTextIsSelectable(true); card.addView(detail);
+            Button confirm = new Button(act); confirm.setText("Confirm wallet signing state");
+            confirm.setOnClickListener(v -> confirmSigningState()); card.addView(confirm); list.addView(card);
+        }
 
         if (mine.isEmpty()) {
             if (pendingCreate != null) {
                 value.setText("Confirming…");
                 sub.setText("Your new pool is being written on-chain.");
                 // keep the "Submitted ✓ … confirming" status — do NOT wipe it
+            } else if (!unavailable.isEmpty()) {
+                value.setText("Reserves unavailable");
+                sub.setText(unavailable.size() + " saved pool(s) need a live reserve check.");
             } else {
                 value.setText("No pools yet");
                 sub.setText(myKeys.isEmpty() ? "Pair the node to see your liquidity."
@@ -192,14 +210,34 @@ public class MyLpView extends BaseView {
             }
             return;
         }
-        // portfolio value ≈ 2 × MINIMA-side depth (both legs are equal value at the pool price)
         BigDecimal totalMinima = BigDecimal.ZERO;
         for (Pool p : mine) totalMinima = totalMinima.add(p.reserveM);
-        BigDecimal portfolio = totalMinima.multiply(TWO);
-        value.setText(trim(portfolio) + " MINIMA");
-        sub.setText(mine.size() + (mine.size() == 1 ? " pool" : " pools") + "  ·  ≈ value of both legs");
+        value.setText(trim(totalMinima) + " MINIMA reserves");
+        sub.setText(mine.size() + " visible pool(s) · token reserves shown below"
+                + (unavailable.isEmpty() ? "" : " · " + unavailable.size() + " unavailable"));
         if (pendingCreate == null && !pendingLive) status("");
         for (Pool p : mine) list.addView(lpCard(p));
+    }
+
+    private View recoveryCard(Pool p) {
+        LinearLayout card = dialogBox();
+        Ui.card(card);
+        TextView address = new TextView(act);
+        address.setText(p.address); address.setTextIsSelectable(true); card.addView(address);
+        TextView note = new TextView(act);
+        note.setText("Saved pool · reserves unavailable\nThis node has not verified both reserve coins. The pool may be closed or may need fresh archive proofs. "
+                + (mine(p) ? "Owner key present; current signing state is still required." : "Owner key missing or not yet checked. Restore the matching MinimaCore wallet backup."));
+        card.addView(note);
+        Button recover = new Button(act); recover.setText("Recover reserves"); card.addView(recover);
+        recover.setOnClickListener(v -> {
+            if (busy) return;
+            try {
+                JSONObject root = new JSONObject().put("pandapools_backup", 3)
+                        .put("pools", new JSONArray().put(Recovery.baseEntry(p)));
+                restoreJson(root.toString());
+            } catch (Exception e) { status("Could not read the saved pool recipe."); }
+        });
+        return card;
     }
 
     /** A persistent card for a create that's posted but not yet discovered — reassures during the ~3-block
@@ -262,6 +300,9 @@ public class MyLpView extends BaseView {
 
         card.addView(text("MINIMA / " + p.tokenLabel(), Design.heading(), 16, true));
         card.addView(kv("Your liquidity", trim(p.reserveM) + " MINIMA  +  " + trim(p.reserveT) + " " + p.tokenLabel()));
+        int oldest = p.reserveBlockM > 0 && p.reserveBlockT > 0 ? Math.min(p.reserveBlockM, p.reserveBlockT) : 0;
+        if (oldest <= 0 || act.chainBlock() - oldest > PoolRefresher.REFRESH_BLOCKS)
+            card.addView(text("Reserve proofs need attention. Older reserves may require fresh archive proofs after a node reset; keep a current wallet backup and pool recipe.", Design.amber(), 13, false));
 
         BigDecimal value = p.reserveM.multiply(TWO);
         card.addView(kv("Value now", "≈ " + trim(value) + " MINIMA"));
@@ -1068,14 +1109,51 @@ public class MyLpView extends BaseView {
     }
 
     private void showRecoveryDialog() {
-        String[] items = { "Collect withdrawn funds to my wallet", "Back up my pools to a file", "Restore pools from a file", "How recovery works" };
+        String[] items = { "Collect withdrawn funds to my wallet", "Back up my pools to a file", "Restore pools from a file", "Archive connection", "Confirm wallet signing state", "How recovery works" };
         new AlertDialog.Builder(act)
                 .setTitle("Pool recovery")
                 .setItems(items, (d, w) -> {
-                    if (w == 0) doCollect(); else if (w == 1) doBackup(); else if (w == 2) doRestore(); else showRecoveryGuide();
+                    if (w == 0) doCollect(); else if (w == 1) doBackup(); else if (w == 2) doRestore(); else if (w == 3) archiveConnection(); else if (w == 4) confirmSigningState(); else showRecoveryGuide();
                 })
                 .setNegativeButton("Close", null)
                 .show();
+    }
+
+    private void archiveConnection() {
+        EditText input = new EditText(act);
+        input.setSingleLine(true); input.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
+        input.setText(ArchiveNode.setting(act));
+        new AlertDialog.Builder(act).setTitle("Archive connection")
+                .setMessage("HTTPS URL of a public read-only Minima MegaMMR RPC service. Only the pool address and public coin IDs are queried. This is an RPC URL, not a P2P host:port. Leave blank to use this node and backup proofs only.")
+                .setView(input).setPositiveButton("Save", (d, w) -> {
+                    if (ArchiveNode.save(act, input.getText().toString())) status("Archive connection saved.");
+                    else status("Enter an HTTPS URL without credentials, query parameters or a fragment.");
+                }).setNegativeButton("Cancel", null).show();
+    }
+
+    private void confirmSigningState() {
+        if (act.node() == null) { info("Signing remains paused", "Connect the node before checking its wallet state."); return; }
+        List<String> keys = new ArrayList<>();
+        for (Pool p : OwnPoolStore.all(act)) if ((p.signingStateUnverified || OwnPoolStore.confirmationFailed(p.opk)) && !keys.contains(p.opk)) keys.add(p.opk);
+        if (keys.isEmpty()) { info("Wallet signing state", "No restored owner keys are awaiting confirmation."); return; }
+        new AlertDialog.Builder(act).setTitle("Select restored owner key")
+                .setItems(keys.toArray(new String[0]), (d, i) -> {
+                    String key = keys.get(i);
+                    new AlertDialog.Builder(act).setTitle("Confirm current wallet signing state")
+                            .setMessage(key + "\n\nOnly continue if this node holds the latest complete wallet signing state and every other copy of this wallet has stopped signing. A seed, old backup, or counter above the recipe's recorded count cannot prove this.\n\nConfirming enables owner actions and automatic pool refresh for this key.")
+                            .setNegativeButton("Keep signing paused", null)
+                            .setPositiveButton("I have verified this", (dd, w) -> {
+                                act.node().cmd("keys action:list publickey:" + key, new NodeApi.Cb() {
+                                    public void onResult(JSONObject j) {
+                                        Integer uses = KeyUses.extractUses(j, key);
+                                        if (uses != null && OwnPoolStore.acknowledgeSigningState(act, key, uses)) {
+                                            status("Signing state confirmed by you. Owner actions are enabled."); act.pools().refresh();
+                                        } else info("Signing remains paused", "The owner key is missing, exhausted, below a recorded count, or the confirmation could not be saved.");
+                                    }
+                                    public void onError(String m) { info("Signing remains paused", "Could not verify the owner key on this node."); }
+                                });
+                            }).show();
+                }).setNegativeButton("Close", null).show();
     }
 
     private void doBackup() {
@@ -1086,7 +1164,8 @@ public class MyLpView extends BaseView {
                     if (uri == null) { status("Backup cancelled."); return; }
                     if (writeUri(uri, json)) {
                         status("Backup saved ✓");
-                        info("Backup saved", "Your pool recipe file is saved. Also keep a current MinimaCore wallet backup: it preserves signing state. Keep both safe (a private drive, "
+                        info("Backup saved", (json.contains("proof_warning") ? "Some reserve proofs were unavailable or changed during backup. See proof_warning in the file; a fresh archive lookup may be needed.\n\n" : "Embedded coin proofs expire; the recipes remain useful for a fresh archive lookup.\n\n")
+                                + "Your pool recipe file is saved. Also keep a current MinimaCore wallet backup: it preserves signing state. Keep both safe (a private drive, "
                                 + "another device). To recover on a new or wiped node: open PandaPools there → My LP → "
                                 + "Back up / Restore → Restore.");
                     } else status("Could not write the backup file.");
@@ -1101,25 +1180,32 @@ public class MyLpView extends BaseView {
             if (uri == null) { status("Restore cancelled."); return; }
             String json = readUri(uri);
             if (json == null || json.isEmpty()) { status("Could not read that file."); return; }
+            restoreJson(json);
+        });
+    }
+
+    private void restoreJson(String json) {
+            if (busy) return;
+            busy = true;
             status("Restoring pools…");
             final StringBuilder log = new StringBuilder();
             recovery.restore(act, json, act.chainBlock(), new Recovery.RestoreCb() {
                 @Override public void onProgress(String line) { log.append(line).append('\n'); status("Restoring… " + line); }
                 @Override public void onDone(int restored, int total) {
+                    busy = false;
                     if (total == 0) {
                         status("That file isn't a PandaPools backup.");
                         info("Nothing restored", "That file isn't a readable PandaPools backup — pick the "
                                 + "pandapools-backup.json you saved from Back up.");
                         return;
                     }
-                    status("Recipe restore finished ·  " + restored + " of " + total + " pool(s).");
-                    info("Restore complete", restored + " of " + total + " pool recipe(s) saved and tracking registered.\n\n"
-                            + log.toString().trim() + "\n\nThey'll appear below as the node confirms their coins.");
+                    status("Reserve check finished ·  " + restored + " of " + total + " pool(s) verified.");
+                    info(restored == total ? "Reserves verified" : "Recovery needs attention", restored + " of " + total + " pool(s) have both reserves verified on this node.\n\n"
+                            + log.toString().trim() + "\n\nSaved recipes remain available below. No withdrawal was requested by Restore.");
                     loadKeys();              // ownership set may now include restored pools
                     act.pools().refresh();   // pull them into discovery
                 }
             });
-        });
     }
 
     private void showRecoveryGuide() {
@@ -1127,7 +1213,10 @@ public class MyLpView extends BaseView {
                 + "The wallet backup preserves keys and signing state; the recipe records the pool contracts.\n\n"
                 + "Restore the matching wallet in MinimaCore, then restore the recipes here. Check live reserves before spending. "
                 + "A seed or recipe alone does not establish which one-time signatures were used. PandaPools will not automatically recreate missing owner keys. "
-                + "Do not run two restored copies of the same wallet and sign from both.");
+                + "Do not run two restored copies of the same wallet and sign from both.\n\n"
+                + "Coin proofs in recipe backups expire. If live reserves are missing, Recover reserves checks the backup proofs, this node's MegaMMR, and your configured archive connection. The receiving node validates proofs before import. "
+                + "An empty local lookup does not prove the funds were spent. Recovery needs an available archive or fresh proofs; a recipe alone cannot reconstruct chain proofs.\n\n"
+                + "Restored recipes pause owner signing, including automatic refresh, until you confirm current wallet signing state. Check both reserve amounts and signing status before withdrawing.");
     }
 
     private boolean writeUri(android.net.Uri uri, String content) {
@@ -1221,7 +1310,9 @@ public class MyLpView extends BaseView {
     }
     private void toast(String s) { status(s); }
     private void info(String title, String msg) {
-        new AlertDialog.Builder(act).setTitle(title).setMessage(msg).setPositiveButton("OK", null).show();
+        AlertDialog dialog = new AlertDialog.Builder(act).setTitle(title).setMessage(msg).setPositiveButton("OK", null).show();
+        TextView message = dialog.findViewById(android.R.id.message);
+        if (message != null) message.setTextIsSelectable(true);
     }
 
     private static BigDecimal parse(String s) {

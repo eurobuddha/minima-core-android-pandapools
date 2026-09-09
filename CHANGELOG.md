@@ -13,6 +13,12 @@ mirrored across all three.
 
 ---
 
+## [0.9.47] — Durable pool recovery and verified signing state
+- Keep unresolved owned pools visible with their full covenant address and a reserve-recovery action. Validate current local reserves, receiving-node coin proofs, and fresh MegaMMR proofs; failed imports never count as recovered.
+- Preserve recipes, observed key-use floors and reserve-ID hints. Backups re-read live coins and discard proofs if reserves move during export. Proofs expire; recovery requires current complete wallet signing state and available chain proofs.
+- Quarantine restored and legacy recipes until explicit current-wallet confirmation. Never regenerate owner keys or estimate/burn historic key use during restore. Verify actual signing keys immediately before owner and automatic signatures.
+- Refresh using the oldest verified reserve leg and the covenant funding floor. Prevent tracking cleanup from undoing a concurrent restore.
+
 ## [0.9.46] — Public pool history on both phones
 - Search known pool addresses using the stock node's `txpow address:` command, reusing Block Explorer's lookup flow. All Pools can now retrieve another wallet's recent pool creation, trades and withdrawals instead of relying only on wallet-relevant history.
 - Store public transactions separately from wallet accounting; require exact input/output address membership and independent `txpow onchain` confirmation evidence. Retain transaction header times across devices and show lookup failures explicitly.

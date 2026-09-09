@@ -68,11 +68,13 @@ public class Recovery {
             out.put(e);
             final Pool f = funded.get(r.address == null ? "" : r.address.toLowerCase());
             final Runnable afterUses = () -> {
-                if (f != null && notEmpty(f.coinidM) && notEmpty(f.coinidT)) {
-                    exportPair(f, e, () -> { if (pending.decrementAndGet() == 0) finishBackup(out, cb); });
-                } else {
-                    if (pending.decrementAndGet() == 0) finishBackup(out, cb);
-                }
+                PoolRefresher.readLiveReserves(node, r, ok -> {
+                    if (ok) exportPair(r, e, () -> { if (pending.decrementAndGet() == 0) finishBackup(out, cb); });
+                    else {
+                        backupWarning(e, "Reserve proofs unavailable on this node. Recipe saved; archived reserves need a fresh MegaMMR lookup.");
+                        if (pending.decrementAndGet() == 0) finishBackup(out, cb);
+                    }
+                });
             };
             recordUses(ctx, r, e, chainBlock, afterUses);
         }
@@ -91,7 +93,12 @@ public class Recovery {
             @Override public void onResult(JSONObject j) {
                 try {
                     Integer uses = KeyUses.extractUses(j, r.opk);
-                    if (uses != null) { e.put("opkuses", uses); if (chainBlock > 0) e.put("atblock", chainBlock); }
+                    if (uses != null) {
+                        e.put("opkuses", Math.max(uses, r.minimumOwnerUses));
+                        if (chainBlock > 0) e.put("atblock", chainBlock);
+                        if (uses < r.minimumOwnerUses) backupWarning(e, "Owner-key counter is below a previously recorded count. Restore current wallet signing state before spending.");
+                        r.minimumOwnerUses = Math.max(uses, r.minimumOwnerUses);
+                    }
                     // the same row carries the key's derivation index — the node's answer beats the recipe's
                     int kidx = HuntBudget.modifierOf(j, r.opk);
                     if (kidx >= 0) {
@@ -99,8 +106,9 @@ public class Recovery {
                         // Backfill the local recipe too: a pre-v3 pool only reveals its index while the
                         // node still HOLDS the key — this backup is exactly that moment. With it stored,
                         // backup retains the node's derivation metadata.
-                        if (r.kidx != kidx) { r.kidx = kidx; OwnPoolStore.record(ctx, r); }
+                        r.kidx = kidx;
                     }
+                    if (!OwnPoolStore.recordDurably(ctx, r)) backupWarning(e, "Could not save the observed owner-key count on this device.");
                 } catch (Exception ignore) {}
                 done.run();
             }
@@ -109,24 +117,47 @@ public class Recovery {
     }
 
     private void exportPair(final Pool f, final JSONObject e, final Runnable done) {
+        final String expectedM = f.coinidM, expectedT = f.coinidT;
+        final Runnable finish = () -> PoolRefresher.readLiveReserves(node, f, ok -> {
+            if (!ok || !expectedM.equals(f.coinidM) || !expectedT.equals(f.coinidT)) {
+                e.remove("cm"); e.remove("ct");
+                backupWarning(e, "The pool moved during backup. Recipe saved; reserve proofs omitted. Back up again for current proofs.");
+            } else if (!e.has("cm") || !e.has("ct")) {
+                backupWarning(e, "One or both reserve exports failed. Recipe saved; recovery may require a MegaMMR archive.");
+            }
+            done.run();
+        });
         node.cmd("coinexport coinid:" + f.coinidM, new NodeApi.Cb() {
             @Override public void onResult(JSONObject j) {
-                putData(e, "cm", j);
-                node.cmd("coinexport coinid:" + f.coinidT, new NodeApi.Cb() {
-                    @Override public void onResult(JSONObject j2) { putData(e, "ct", j2); done.run(); }
-                    @Override public void onError(String m) { done.run(); }   // best-effort; recipe still backs up
+                putData(e, "cm", expectedM, "0x00", j);
+                node.cmd("coinexport coinid:" + expectedT, new NodeApi.Cb() {
+                    @Override public void onResult(JSONObject j2) { putData(e, "ct", expectedT, f.tok, j2); finish.run(); }
+                    @Override public void onError(String m) { finish.run(); }
                 });
             }
-            @Override public void onError(String m) { done.run(); }
+            @Override public void onError(String m) { finish.run(); }
         });
     }
 
-    private static void putData(JSONObject e, String key, JSONObject exportResp) {
+    static void putData(JSONObject e, String key, String coinid, String token, JSONObject exportResp) {
         try {
+            if (!TxPost.truthy(exportResp, "status")) return;
             JSONObject r = exportResp.optJSONObject("response");
             String data = r != null ? r.optString("data", "") : "";
-            if (!data.isEmpty()) e.put(key, data);
+            JSONObject cp = r == null ? null : r.optJSONObject("coinproof");
+            JSONObject coin = cp == null ? null : cp.optJSONObject("coin");
+            if (!ReserveRecovery.validProofData(data) || !PoolRefresher.reserveCoin(poolFrom(e), coin)
+                    || !coinid.equalsIgnoreCase(coin.optString("coinid"))
+                    || !token.equalsIgnoreCase(coin.optString("tokenid"))) return;
+            e.put(key, data);
+            e.put(key + "_created", coin.optInt("created", 0));
+            JSONObject proof = cp.optJSONObject("proof");
+            if (proof != null) e.put(key + "_proofblock", proof.optInt("blocktime", 0));
         } catch (Exception ignore) {}
+    }
+
+    private static void backupWarning(JSONObject e, String warning) {
+        try { e.put("proof_warning", warning); } catch (Exception ignore) { }
     }
 
     private void finishBackup(JSONArray pools, BackupCb cb) {
@@ -134,11 +165,12 @@ public class Recovery {
             JSONObject root = new JSONObject();
             root.put("pandapools_backup", BACKUP_VERSION);
             root.put("pools", pools);
+            root.put("recovery_notice", "Recipes are durable; embedded coin proofs expire. Restore looks up live coins and can fetch fresh proofs from a configured MegaMMR archive. Keep the matching current MinimaCore wallet backup for keys and signing state.");
             cb.onBackup(root.toString(2));
         } catch (Exception e) { cb.onError("Could not assemble the backup."); }
     }
 
-    private static JSONObject baseEntry(Pool r) {
+    static JSONObject baseEntry(Pool r) {
         JSONObject e = new JSONObject();
         try {
             e.put("addr", nz(r.address));
@@ -150,6 +182,7 @@ public class Recovery {
             e.put("kmin", nz(r.kmin));
             e.put("script", nz(r.covenantScript));
             if (r.kidx >= 0) e.put("kidx", r.kidx);   // recipe's copy; recordUses overwrites with the node's
+            if (r.minimumOwnerUses >= 0) e.put("opkuses", r.minimumOwnerUses);
         } catch (Exception ignore) {}
         return e;
     }
@@ -207,8 +240,8 @@ public class Recovery {
                     }
                     OwnerKeyRecovery.ensure(ctx, node, opks, kidx, (regenerated, unreachable) -> {
                         if (!unreachable.isEmpty()) cb.onProgress("! " + unreachable.size()
-                                + " owner key(s) are missing or could not be verified. Restore the matching MinimaCore wallet backup "
-                                + "before spending. Pool recipes do not restore signing state.");
+                                + " owner key(s) need signing-state verification. Restore the latest matching MinimaCore wallet backup "
+                                + "and stop other nodes using that wallet, then confirm its signing state in Recovery. Pool recipes do not restore signing state.");
                         cb.onDone(okCount.get(), total);
                     });
                 }
@@ -221,7 +254,7 @@ public class Recovery {
         if (e == null) { done.run(); return; }
         final String script = e.optString("script", "");
         final String addr = e.optString("addr", "");
-        final String label = addr.isEmpty() ? "pool" : Util.shorten(addr);
+        final String label = addr.isEmpty() ? "pool" : addr;
         if (script.isEmpty()) { cb.onProgress("Skipped " + label + " (no covenant in backup)."); done.run(); return; }
 
         if (!validRecipe(e)) { cb.onProgress("Skipped " + label + " (invalid recipe fields)."); done.run(); return; }
@@ -241,10 +274,16 @@ public class Recovery {
     }
 
     private void registerRecipe(Context ctx, JSONObject e, RestoreCb cb, Runnable onOk, Runnable done) {
-        String label = Util.shorten(e.optString("addr", "pool"));
+        String label = e.optString("addr", "pool");
         String script = e.optString("script", "");
-        if (!OwnPoolStore.recordDurably(ctx, poolFrom(e))) {
+        Pool restored = poolFrom(e);
+        restored.signingStateUnverified = true;
+        if (!OwnPoolStore.recordDurably(ctx, restored)) {
             cb.onProgress("Could not save " + label + ". Nothing imported."); done.run(); return;
+        }
+        for (Pool saved : OwnPoolStore.all(ctx)) if (restored.address.equalsIgnoreCase(saved.address)) {
+            restored.coinidM = saved.coinidM; restored.coinidT = saved.coinidT;
+            restored.minimumOwnerUses = saved.minimumOwnerUses; break;
         }
         node.cmd("newscript trackall:true script:" + Util.scriptArg(script), new NodeApi.Cb() {
             @Override public void onResult(JSONObject j) {
@@ -253,11 +292,12 @@ public class Recovery {
             }
             @Override public void onError(String m) { cb.onProgress("! Could not track " + label + "; recipe saved."); done.run(); }   // recipe kept; discovery/archive can still find it
             private void importCoins() {
-                importCoin(e.optString("cm", ""), () ->
-                    importCoin(e.optString("ct", ""), () -> {
-                        cb.onProgress("Recipe saved and tracking registered for " + label + ". Coin imports are best-effort; verify live reserves.");
-                        onOk.run(); done.run();
-                    }));
+                new ReserveRecovery(node::cmd, ArchiveNode.configured(ctx), restored, e, (verified, detail) -> {
+                    cb.onProgress(detail);
+                    if (verified && OwnPoolStore.recordDurably(ctx, restored)) onOk.run();
+                    else if (verified) cb.onProgress("Could not save the verified reserve IDs. Recovery needs attention.");
+                    done.run();
+                }).start();
             }
         });
     }
@@ -266,23 +306,19 @@ public class Recovery {
         if (e == null) return false;
         for (String field : new String[]{"addr", "opk", "oadr", "tok"})
             if (!FundingCoins.hex(e.optString(field, ""))) return false;
-        for (String field : new String[]{"cm", "ct"}) {
-            String data = e.optString(field, "");
-            if (!data.isEmpty() && !FundingCoins.hex(data)) return false;
-        }
+        // Optional snapshot proofs may be stale or corrupt. Validate them at coincheck time; a
+        // broken snapshot must not prevent recovery by the verified covenant address.
         int dec;
         try { dec = new BigDecimal(e.get("dec").toString()).intValueExact(); }
         catch (Exception invalid) { return false; }
+        if (e.has("opkuses")) {
+            try {
+                int uses = new BigDecimal(e.get("opkuses").toString()).intValueExact();
+                if (uses < 0 || uses > 262144) return false;
+            } catch (Exception invalid) { return false; }
+        }
         return dec >= 0 && dec <= 44 && PoolCovenant.matches(e.optString("script", ""),
                 e.optString("opk", ""), e.optString("oadr", ""), e.optString("tok", ""), e.optString("kmin", ""));
-    }
-
-    private void importCoin(String data, final Runnable next) {
-        if (data == null || data.isEmpty() || !FundingCoins.hex(data)) { next.run(); return; }
-        node.cmd("coinimport track:true data:" + data, new NodeApi.Cb() {
-            @Override public void onResult(JSONObject j) { next.run(); }
-            @Override public void onError(String m) { next.run(); }   // best-effort (proof may be stale / coin spent)
-        });
     }
 
     // ---- rebuild a Pool (recipe) from a backup entry ----
@@ -297,6 +333,7 @@ public class Recovery {
         p.kmin = e.optString("kmin", "");
         p.covenantScript = e.optString("script", "");
         p.kidx = e.optInt("kidx", -1);
+        p.minimumOwnerUses = e.optInt("opkuses", -1);
         return p;
     }
 

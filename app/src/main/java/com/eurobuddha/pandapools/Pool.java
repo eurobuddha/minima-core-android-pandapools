@@ -23,6 +23,11 @@ public class Pool {
      *  captured from {@code newaddress}'s reply at create, or from the node's key row at backup time.
      *  Lets {@link OwnerKeyRecovery} hunt to the exact index, and PROVE a foreign seed with zero mints. */
     public int kidx = -1;
+    /** Lower bound from a previously observed key count. Never a claim about later signatures. */
+    public int minimumOwnerUses = -1;
+    /** Imported recipes cannot establish current wallet signing state. Cleared only by the owner. */
+    public boolean signingStateUnverified = false;
+    boolean newlyCreatedWithCurrentOwnerState = false;
 
     /** Short, human display symbol for the token side (its name, or a truncated tokenid). */
     public String tokenLabel() {
@@ -40,6 +45,7 @@ public class Pool {
      *  are usually equal; take the max so age reflects the most recent recreate). Set when reserves are scanned;
      *  0 = unknown. Used by the keep-fresh refresher to detect reserves aging toward the cascade edge. */
     public int reserveBlock = 0;
+    public int reserveBlockM = 0, reserveBlockT = 0;
 
     public boolean funded() { return reserveM != null && reserveT != null
             && reserveM.signum() > 0 && reserveT.signum() > 0; }

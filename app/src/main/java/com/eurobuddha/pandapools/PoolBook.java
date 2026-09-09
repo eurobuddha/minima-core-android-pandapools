@@ -152,47 +152,8 @@ public class PoolBook {
         if (pools.isEmpty()) { cb.onPools(pools); return; }
         AtomicInteger pending = new AtomicInteger(pools.size());
         for (Pool pool : pools) {
-            node.cmd("coins address:" + pool.address, new NodeApi.Cb() {
-                @Override public void onResult(JSONObject j) {
-                    Object resp = j.opt("response");
-                    JSONArray cs = resp instanceof JSONArray ? (JSONArray) resp : new JSONArray();
-                    final int[] mBlk = {0}, tBlk = {0};   // created block of the kept coin per leg (for reserve age)
-                    for (int i = 0; i < cs.length(); i++) {
-                        JSONObject c = cs.optJSONObject(i);
-                        if (c == null || c.optBoolean("spent", false)) continue;
-                        Coin validCoin;
-                        try { validCoin = FundingCoins.fundingCoin(c); }
-                        catch (RuntimeException invalid) { continue; }
-                        Object state = c.opt("state");
-                        if (!FundingCoins.hex(validCoin.coinid) || !pool.address.equalsIgnoreCase(validCoin.address)
-                                || (state instanceof JSONArray && ((JSONArray) state).length() > 0)
-                                || (state instanceof JSONObject && ((JSONObject) state).length() > 0)) continue;
-                        // keep the LARGEST coin per leg — the real reserve. If the pool address is polluted
-                        // with a dust coin (the forged-dust attack the KMIN floor defends against), the dust
-                        // must never be mistaken for the reserve, so the quote is built on the true amounts.
-                        String tid = c.optString("tokenid", "");
-                        if ("0x00".equals(tid)) {
-                            BigDecimal amt = new BigDecimal(c.optString("amount", "0"));
-                            if (pool.reserveM == null || amt.compareTo(pool.reserveM) > 0) {
-                                pool.reserveM = amt;
-                                pool.coinidM = c.optString("coinid", "");
-                                mBlk[0] = c.optInt("created", 0);
-                            }
-                        } else if (pool.tok.equalsIgnoreCase(tid)) {
-                            BigDecimal amt = new BigDecimal(validCoin.amount);
-                            if (pool.reserveT == null || amt.compareTo(pool.reserveT) > 0) {
-                                pool.reserveT = amt;
-                                pool.coinidT = c.optString("coinid", "");
-                                pool.tokName = Util.tokenName(c.opt("token"), tid);
-                                pool.tokDecimals = Util.tokenDecimals(c.opt("token"));
-                                tBlk[0] = c.optInt("created", 0);
-                            }
-                        }
-                    }
-                    pool.reserveBlock = Math.max(mBlk[0], tBlk[0]);   // most-recent recreate = the pool's reserve age anchor
-                    if (pending.decrementAndGet() == 0) done(pools, cb);
-                }
-                @Override public void onError(String m) { if (pending.decrementAndGet() == 0) done(pools, cb); }
+            PoolRefresher.readLiveReserves(node, pool, found -> {
+                if (pending.decrementAndGet() == 0) done(pools, cb);
             });
         }
     }
