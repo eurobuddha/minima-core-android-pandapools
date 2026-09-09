@@ -43,6 +43,7 @@ public class ActivityView extends BaseView {
     private final LinearLayout container;
     private final TextView personalTab, globalTab, refreshTv, statusTv;
     private final HistorySync sync;
+    private final PoolHistorySync publicSync;
     private boolean showGlobal = false;
     private boolean polling = false;
 
@@ -58,6 +59,10 @@ public class ActivityView extends BaseView {
         @Override public void onPools(List<Pool> pools) {
             boolean added = addrBook.addAll(pools);
             if (added) addrBook.persist();
+            if (publicSync != null) {
+                publicSync.livePools(pools);
+                if (visible() && showGlobal) publicSync.start(false);
+            }
             // Discovery updates known addresses only. Reserve snapshots are not transaction evidence.
             // repaint ALL POOLS for the new feed rows, or MY ACTIVITY if a newly-known address may now match
             if (visible() && (showGlobal || added)) scheduleRender();
@@ -76,12 +81,13 @@ public class ActivityView extends BaseView {
         a.pools().subscribe(poolListener);
         sync = new HistorySync(a, a.history(), syncListener);
         addrBook.seed();
+        publicSync = new PoolHistorySync(a, addrBook, this::scheduleRender);
 
         refreshTv.setTextColor(Design.accent());
         statusTv.setTextColor(Design.dim());
         personalTab.setOnClickListener(v -> setScope(false));
         globalTab.setOnClickListener(v -> setScope(true));
-        refreshTv.setOnClickListener(v -> { syncPersonal(); scanGlobal(); });
+        refreshTv.setOnClickListener(v -> { syncPersonal(); scanGlobal(); if (showGlobal) publicSync.start(true); });
         styleTabs();
         render();
     }
@@ -89,7 +95,7 @@ public class ActivityView extends BaseView {
     private void setScope(boolean global) {
         if (showGlobal == global) return;
         showGlobal = global; shown = SHOW_STEP; styleTabs(); render();
-        syncPersonal(); if (global) scanGlobal();
+        syncPersonal(); if (global) { scanGlobal(); publicSync.start(true); }
     }
 
     private void styleTabs() {
@@ -98,10 +104,10 @@ public class ActivityView extends BaseView {
     }
 
     @Override public void refresh() { render(); }
-    @Override public void onShown() { addrBook.seed(); syncPersonal(); scanGlobal(); render(); startPoll(); }
+    @Override public void onShown() { addrBook.seed(); syncPersonal(); scanGlobal(); if (showGlobal) publicSync.start(false); render(); startPoll(); }
     @Override public void onNewBlock() { syncPersonal(); if (visible()) scheduleRender(); }   // shared per-block scan (MainActivity) feeds the global feed
     @Override public void onStop() { stopPoll(); }
-    @Override public void onDestroy() { stopPoll(); act.pools().unsubscribe(poolListener); }
+    @Override public void onDestroy() { stopPoll(); publicSync.close(); act.pools().unsubscribe(poolListener); }
 
     private boolean visible() { return act.currentTab() == MainActivity.TAB_ACTIVITY; }
     /** Coalesce bursty re-renders (per history page, per block) into one, and only while visible. */
@@ -130,6 +136,7 @@ public class ActivityView extends BaseView {
         @Override public void onProgress(int totalNew) { act.runOnUiThread(() -> { if (visible()) scheduleRender(); }); }
         @Override public void onDone(int totalNew, boolean ok) { act.runOnUiThread(() -> { if (visible()) scheduleRender();
             ActivityLog.verify(act, act.node(), act::confirmationsChanged);
+            if (showGlobal) publicSync.start(false);
         }); }
     };
 
@@ -151,6 +158,7 @@ public class ActivityView extends BaseView {
             polling = false;
             if (!visible()) return;   // left the tab / backgrounded → stop (onShown restarts it)
             ActivityLog.verify(act, act.node(), act::confirmationsChanged);
+            if (showGlobal) publicSync.start(false);
             render();
             startPoll();
         }
@@ -162,6 +170,8 @@ public class ActivityView extends BaseView {
         root.setBackgroundColor(Design.bg());
         container.setBackgroundColor(Design.bg());
         String state = ActivityLog.checkStatus();
+        String publicState = publicSync.status();
+        if (!publicState.isEmpty()) state = publicState + (state.isEmpty() ? "" : " · " + state);
         if (sync.isRunning()) state = "Syncing node history…" + (state.isEmpty() ? "" : " · " + state);
         statusTv.setText(state); statusTv.setVisibility(state.isEmpty() ? View.GONE : View.VISIBLE);
         container.removeAllViews();
@@ -194,7 +204,10 @@ public class ActivityView extends BaseView {
 
     private void renderGlobal() {
         List<PoolActivity.Event> events = new ArrayList<>();
-        for (HistoryEntry tx : storedHistory()) events.addAll(PoolActivity.from(tx, addrBook));
+        java.util.Map<String, HistoryEntry> all = new java.util.LinkedHashMap<>();
+        for (HistoryEntry tx : act.history().publicList(-1, 0)) all.put(tx.txpowid.toLowerCase(Locale.ROOT), tx);
+        for (HistoryEntry tx : storedHistory()) all.put(tx.txpowid.toLowerCase(Locale.ROOT), tx);
+        for (HistoryEntry tx : all.values()) events.addAll(PoolActivity.from(tx, addrBook));
         events.sort((a, b) -> Long.compare(b.transaction.timemilli, a.transaction.timemilli));
         container.addView(header("POOL TRANSACTIONS · NEWEST FIRST"));
         if (events.isEmpty()) container.addView(line(sync.isRunning()

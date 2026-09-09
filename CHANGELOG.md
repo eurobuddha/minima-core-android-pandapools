@@ -13,6 +13,12 @@ mirrored across all three.
 
 ---
 
+## [0.9.46] — Public pool history on both phones
+- Search known pool addresses using the stock node's `txpow address:` command, reusing Block Explorer's lookup flow. All Pools can now retrieve another wallet's recent pool creation, trades and withdrawals instead of relying only on wallet-relevant history.
+- Store public transactions separately from wallet accounting; require exact input/output address membership and independent `txpow onchain` confirmation evidence. Retain transaction header times across devices and show lookup failures explicitly.
+- Poll public address lookups and rotate confirmation checks across their whole store. No receipt or observation is deleted.
+- 183 tests pass in each build variant; release lint passes. See [review](REVIEW-0.9.46.md).
+
 ## [0.9.45] — Activity chronology and transaction-backed pool events
 - Merge local receipts and node history by exact mined ID in one newest-first timeline. Confirmed records no longer sit below every unresolved receipt; failures remain visible. Add Show more for stored records beyond the former 150-row display window.
 - Verify across the entire history store, with extra checks for displayed transactions. Show node-check errors and stop a failed verification batch instead of waiting through one timeout per row.

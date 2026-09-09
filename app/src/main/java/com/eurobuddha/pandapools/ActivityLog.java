@@ -218,7 +218,7 @@ public final class ActivityLog {
     }
 
     private static boolean checking;
-    private static int cursor, historyCursor;
+    private static int cursor, historyCursor, publicCursor;
     private static int visibleCursor;
     private static List<String> visibleIds = new ArrayList<>();
     private static long lastCheck;
@@ -261,6 +261,12 @@ public final class ActivityLog {
         List<HistoryEntry> history = db.list(8, historyCursor, null);
         for (HistoryEntry row : history) batch.add(row.txpowid);
         historyCursor = count == 0 ? 0 : (historyCursor + history.size()) % count;
+        int publicCount = db.publicCount();
+        if (publicCursor >= publicCount) publicCursor = 0;
+        for (HistoryEntry row : db.publicList(3, 0)) batch.add(row.txpowid);
+        List<HistoryEntry> publicRows = db.publicList(8, publicCursor);
+        for (HistoryEntry row : publicRows) batch.add(row.txpowid);
+        publicCursor = publicCount == 0 ? 0 : (publicCursor + publicRows.size()) % publicCount;
         batch.removeIf(id -> !FundingCoins.hex(id));
         if (batch.isEmpty()) { db.close(); done.run(); return; }
         checking = true; checkError = ""; lastCheck = now;

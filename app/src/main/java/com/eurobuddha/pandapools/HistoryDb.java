@@ -20,8 +20,9 @@ public class HistoryDb extends SQLiteOpenHelper {
     /** v2: rows stored before this held the wrong token amount in inputs/outputs (see
      *  {@link HistoryEntry} — `amount` was read where `tokenamount` was meant). The table is never
      *  dropped; instead {@link #onUpgrade} arms a one-time re-sync that rewrites the rows in place. */
-    private static final int VERSION = 4;
+    private static final int VERSION = 5;
     private static final String TX = "tx";
+    private static final String PUBLIC = "public_pool_tx";
     private static final String META = "meta";
     /** Meta flag driving the v2 token-amount repair: "pending" until a full re-sync has rewritten rows. */
     public static final String META_REPAIR_V2 = "repair_v2";
@@ -30,17 +31,22 @@ public class HistoryDb extends SQLiteOpenHelper {
 
     @Override
     public void onCreate(SQLiteDatabase db) {
-        db.execSQL("CREATE TABLE IF NOT EXISTS " + TX + " (" +
+        createTransactions(db, TX);
+        createTransactions(db, PUBLIC);
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_block ON " + TX + "(block)");
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_dir ON " + TX + "(direction)");
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_tok ON " + TX + "(tokenid)");
+        db.execSQL("CREATE TABLE IF NOT EXISTS " + META + " (k TEXT PRIMARY KEY, v TEXT)");
+    }
+
+    private static void createTransactions(SQLiteDatabase db, String table) {
+        db.execSQL("CREATE TABLE IF NOT EXISTS " + table + " (" +
                 "txpowid TEXT PRIMARY KEY," +
                 "block INTEGER, timemilli INTEGER," +
                 "direction TEXT, incoming INTEGER," +
                 "tokenid TEXT, tokenname TEXT, amount TEXT," +
                 "deltas TEXT, counterparty TEXT, inputs TEXT, outputs TEXT," +
                 "synced_at INTEGER, transactionid TEXT DEFAULT '', verified_depth INTEGER DEFAULT -1, verified_at INTEGER DEFAULT 0)");
-        db.execSQL("CREATE INDEX IF NOT EXISTS idx_block ON " + TX + "(block)");
-        db.execSQL("CREATE INDEX IF NOT EXISTS idx_dir ON " + TX + "(direction)");
-        db.execSQL("CREATE INDEX IF NOT EXISTS idx_tok ON " + TX + "(tokenid)");
-        db.execSQL("CREATE TABLE IF NOT EXISTS " + META + " (k TEXT PRIMARY KEY, v TEXT)");
     }
 
     // Never drop the table (permanence). Future versions add columns via ALTER here.
@@ -193,6 +199,26 @@ public class HistoryDb extends SQLiteOpenHelper {
     public void setConfirmation(String id, int depth, long at) {
         ContentValues v = new ContentValues(); v.put("verified_depth", depth); v.put("verified_at", at);
         getWritableDatabase().update(TX, v, "txpowid=?", new String[]{id});
+        getWritableDatabase().update(PUBLIC, v, "txpowid=?", new String[]{id});
+    }
+
+    /** Public address-search results are deliberately separate from the wallet accounting table. */
+    public void upsertPublic(HistoryEntry entry) {
+        ContentValues v = values(entry); v.remove("verified_depth"); v.remove("verified_at");
+        if (getWritableDatabase().update(PUBLIC, v, "txpowid=?", new String[]{entry.txpowid}) == 0)
+            getWritableDatabase().insertWithOnConflict(PUBLIC, null, values(entry), SQLiteDatabase.CONFLICT_IGNORE);
+    }
+
+    public List<HistoryEntry> publicList(int limit, int offset) {
+        List<HistoryEntry> out = new ArrayList<>();
+        Cursor c = getReadableDatabase().rawQuery("SELECT txpowid,block,timemilli,direction,incoming,tokenid,tokenname,amount,deltas,counterparty,inputs,outputs,synced_at,transactionid,verified_depth,verified_at FROM "
+                + PUBLIC + " ORDER BY block DESC, timemilli DESC LIMIT " + limit + " OFFSET " + offset, null);
+        try { while (c.moveToNext()) out.add(read(c)); } finally { c.close(); }
+        return out;
+    }
+    public int publicCount() {
+        Cursor c = getReadableDatabase().rawQuery("SELECT COUNT(*) FROM " + PUBLIC, null);
+        try { return c.moveToFirst() ? c.getInt(0) : 0; } finally { c.close(); }
     }
 
     public void setMeta(String k, String v) {
