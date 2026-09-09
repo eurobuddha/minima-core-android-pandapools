@@ -26,3 +26,19 @@ Signer SHA-256: `eca1383c9d27683a281fbe6355356267877dc2dd14d963d7cc289ca0700e517
 ### Remaining device gate / verdict
 
 Approve for native device validation, not a claim that all historical receipts are recovered. The S23 is reconnected and still running 0.9.43 before this checkpoint is committed. Confirm 0.9.44 process survival, full-history behaviour and real receipt counts after installation. A private process contains UI exposure; stock Android may still reject a large broadcast in that process. Headers absent from retained node history cannot be reconstructed from amount/time. Broad fund-safety review and MDS/desktop parity remain unfinished.
+
+## S23 verification — 9 September 2026
+
+Installed 0.9.44 / code 944 at 23:52:52 on 8 September, only after source commit b86e009f7adc2465434c0069fa71c54a084fe808 was pushed and GitHub's branch hash verified. At 08:10 the next morning, the main PID 28791 and nodeipc PID 28989 were unchanged; Android exit-info contained no new exits after the package update. This is overnight survival evidence, not proof against every possible Binder payload. The original large-page event is outside the remaining log buffer.
+
+The actual Swap screen displayed the following at tip 2305201, agreeing with independent stock-node `txpow onchain` replies in PandaPoolsChain:
+
+| Receipt | Inclusion block | Confirmations |
+|---|---:|---:|
+| Pool creation (615364.265194 MINIMA + 2784.5233 USDT) | 2304560 | 641 |
+| Combine 3 MINIMA coins | 2304536 | 665 |
+| Combine 4 MINIMA coins | 2304515 | 686 |
+
+The four-coin receipt `0x1C638510D8FECD6C029CC4C49FA6ED0BEFA1737A2D8709C5646AC50745F276F6` was independently reproduced from mined header `0x0000B6485591947448106FAD4FA9239E9AABD7135EF80B8BEBB7FBA0706FF685`, in addition to the three-coin fixture.
+
+Read-only terminal queries then returned `history action:size relevant:true` → 268 and `history action:customsize where:timemilli<1785000000000` → 0. Thus the 600-request scan cap is not the obstacle on this device: July headers are absent from its TxPoW database. July receipts remain visible and unresolved; recovery needs archived headers. No transaction was submitted by the agent during validation. The stock MinimaCore app was not upgraded or reconfigured.
