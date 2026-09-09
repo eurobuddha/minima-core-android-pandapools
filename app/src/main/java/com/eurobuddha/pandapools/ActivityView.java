@@ -22,10 +22,8 @@ import java.math.RoundingMode;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Date;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
-import java.util.Set;
 
 /**
  * The Activity tab — two scopes (borrowed from MinimaSwap's my-swaps / market toggle):
@@ -39,8 +37,8 @@ import java.util.Set;
  */
 public class ActivityView extends BaseView {
 
-    private static final int CAP = 150;            // confirmed rows rendered (whole history stays in HistoryDb)
-    private static final long FAIL_SHOW_MS = 6 * 3600_000L;   // keep a failed action visible this long
+    private static final int SHOW_STEP = 60;
+    private int shown = SHOW_STEP;
 
     private final LinearLayout container;
     private final TextView personalTab, globalTab, refreshTv, statusTv;
@@ -60,7 +58,7 @@ public class ActivityView extends BaseView {
         @Override public void onPools(List<Pool> pools) {
             boolean added = addrBook.addAll(pools);
             if (added) addrBook.persist();
-            GlobalFeed.ingest(act, pools);
+            // Discovery updates known addresses only. Reserve snapshots are not transaction evidence.
             // repaint ALL POOLS for the new feed rows, or MY ACTIVITY if a newly-known address may now match
             if (visible() && (showGlobal || added)) scheduleRender();
         }
@@ -90,8 +88,8 @@ public class ActivityView extends BaseView {
 
     private void setScope(boolean global) {
         if (showGlobal == global) return;
-        showGlobal = global; styleTabs(); render();
-        if (global) scanGlobal(); else syncPersonal();
+        showGlobal = global; shown = SHOW_STEP; styleTabs(); render();
+        syncPersonal(); if (global) scanGlobal();
     }
 
     private void styleTabs() {
@@ -129,8 +127,8 @@ public class ActivityView extends BaseView {
     }
 
     private final HistorySync.Listener syncListener = new HistorySync.Listener() {
-        @Override public void onProgress(int totalNew) { act.runOnUiThread(() -> { if (!showGlobal && visible()) scheduleRender(); }); }
-        @Override public void onDone(int totalNew, boolean ok) { act.runOnUiThread(() -> { if (!showGlobal && visible()) scheduleRender();
+        @Override public void onProgress(int totalNew) { act.runOnUiThread(() -> { if (visible()) scheduleRender(); }); }
+        @Override public void onDone(int totalNew, boolean ok) { act.runOnUiThread(() -> { if (visible()) scheduleRender();
             ActivityLog.verify(act, act.node(), act::confirmationsChanged);
         }); }
     };
@@ -144,6 +142,7 @@ public class ActivityView extends BaseView {
     }
     private void stopPoll() {
         polling = false;
+        ActivityLog.visibleTransactions(java.util.Collections.emptyList());
         act.ui().removeCallbacks(pollTask);
         container.removeCallbacks(renderTask);
     }
@@ -162,79 +161,99 @@ public class ActivityView extends BaseView {
     private void render() {
         root.setBackgroundColor(Design.bg());
         container.setBackgroundColor(Design.bg());
+        String state = ActivityLog.checkStatus();
+        if (sync.isRunning()) state = "Syncing node history…" + (state.isEmpty() ? "" : " · " + state);
+        statusTv.setText(state); statusTv.setVisibility(state.isEmpty() ? View.GONE : View.VISIBLE);
         container.removeAllViews();
         if (showGlobal) renderGlobal(); else renderPersonal();
     }
 
-    private void renderPersonal() {
-        int cb = act.chainBlock();
-        long now = System.currentTimeMillis();
-        List<ActivityLog.Entry> log = ActivityLog.list(act);
-        // MY ACTIVITY = my PandaPools actions only. The node's history is the whole relevant wallet (plain
-        // sends, other dapps, and strangers' swaps on pools I track), so keep only rows that touch a known
-        // pool address and actually moved my wallet.
-        List<HistoryEntry> hist = new ArrayList<>();
-        for (HistoryEntry n : act.history().list(CAP, 0, null)) if (isPersonalPanda(n)) hist.add(n);
-
-        // Split the local ActivityLog: still in-flight (or recent failure) vs. safely confirmed. Confirmed
-        // entries KEEP their card (with both amounts) instead of vanishing the instant they confirm.
-        List<ActivityLog.Entry> inflight = new ArrayList<>();
-        List<ActivityLog.Entry> confirmed = new ArrayList<>();
-        Set<String> shownTx = new HashSet<>();
-        for (ActivityLog.Entry e : log) {
-            if (showInFlight(e, cb, now)) inflight.add(e);
-            else if (!e.failed && e.confirmed(cb)) confirmed.add(e);
-        }
-
-        if (inflight.isEmpty() && confirmed.isEmpty() && hist.isEmpty()) {
-            empty(sync.isRunning() ? "Loading your history…"
-                    : "No activity yet.\nYour swaps, pool creates and withdrawals will appear here.");
-            return;
-        }
-        if (!inflight.isEmpty()) {
-            container.addView(header("RECENT TRANSACTIONS"));
-            for (ActivityLog.Entry e : inflight) {
-                container.addView(pendingCard(e, cb));
-                if (e.verifiedDepth >= 0 && e.txpowid != null && !e.txpowid.isEmpty()) shownTx.add(e.txpowid.toLowerCase());
-            }
-        }
-        if (!confirmed.isEmpty()) {
-            container.addView(header("CONFIRMED"));
-            for (ActivityLog.Entry e : confirmed) {
-                container.addView(pendingCard(e, cb));
-                if (e.verifiedDepth >= 0 && e.txpowid != null && !e.txpowid.isEmpty()) shownTx.add(e.txpowid.toLowerCase());
-            }
-        }
-        if (!hist.isEmpty()) {
-            boolean headerShown = false;
-            for (HistoryEntry n : hist) {
-                // dedupe: skip an on-chain row already shown above as a local ActivityLog entry
-                if (n.txpowid != null && shownTx.contains(n.txpowid.toLowerCase())) continue;
-                if (!headerShown) { container.addView(header("NODE HISTORY")); headerShown = true; }
-                container.addView(historyRow(n));
-            }
-        }
+    private List<HistoryEntry> storedHistory() {
+        List<HistoryEntry> rows = act.history().listChronological(0, Long.MAX_VALUE);
+        java.util.Collections.reverse(rows);
+        return rows;
     }
 
-    private boolean showInFlight(ActivityLog.Entry e, int cb, long now) {
-        if (e.failed) return now - e.ts < FAIL_SHOW_MS;   // keep a failure visible a while
-        return !e.confirmed(cb);                          // in-flight until safely confirmed
+    private void renderPersonal() {
+        List<ActivityTimeline.Row> rows = ActivityTimeline.merge(ActivityLog.list(act), storedHistory(), this::isPersonalPanda);
+        if (rows.isEmpty()) {
+            empty(sync.isRunning() ? "Loading your history…" : "No transactions recorded yet.");
+            return;
+        }
+        container.addView(header("TRANSACTIONS · NEWEST FIRST"));
+        List<String> ids = new ArrayList<>();
+        for (int i = 0; i < Math.min(shown, rows.size()); i++) {
+            ActivityTimeline.Row row = rows.get(i);
+            ids.add(row.receipt != null ? row.receipt.txpowid : row.history.txpowid);
+            container.addView(row.receipt != null
+                    ? pendingCard(row.receipt, act.chainBlock(), row.history, row.time) : historyRow(row.history));
+        }
+        if (visible()) ActivityLog.visibleTransactions(ids);
+        showMore(rows.size());
     }
 
     private void renderGlobal() {
-        List<GlobalFeed.Event> events = GlobalFeed.list(act);
-        if (events.isEmpty()) {
-            empty("No pool activity seen yet.\nPool creations, swaps and withdrawals across all pools — including other people's — appear here as they happen.");
-            return;
+        List<PoolActivity.Event> events = new ArrayList<>();
+        for (HistoryEntry tx : storedHistory()) events.addAll(PoolActivity.from(tx, addrBook));
+        events.sort((a, b) -> Long.compare(b.transaction.timemilli, a.transaction.timemilli));
+        container.addView(header("POOL TRANSACTIONS · NEWEST FIRST"));
+        if (events.isEmpty()) container.addView(line(sync.isRunning()
+                ? "Loading transactions from the node…" : "No pool transactions found in this node's stored history.",
+                Design.dim(), 12f, false));
+        List<String> ids = new ArrayList<>();
+        for (int i = 0; i < Math.min(shown, events.size()); i++) {
+            container.addView(poolTransactionRow(events.get(i)));
+            ids.add(events.get(i).transaction.txpowid);
         }
-        container.addView(header("LIVE POOL ACTIVITY"));
-        for (GlobalFeed.Event ev : events) container.addView(globalRow(ev));
+        if (visible()) ActivityLog.visibleTransactions(ids);
+        showMore(events.size());
+        // Preserve the old observations, but never present their device-local time as a transaction time.
+        List<GlobalFeed.Event> observations = GlobalFeed.list(act);
+        if (!observations.isEmpty()) {
+            container.addView(header("PREVIOUS LOCAL OBSERVATIONS"));
+            container.addView(line("These were inferred from pool scans. They are not verified transaction records.",
+                    Design.dim(), 12f, false));
+            for (GlobalFeed.Event observation : observations) container.addView(globalRow(observation));
+        }
+    }
+
+    private void showMore(int total) {
+        if (total <= shown) return;
+        TextView more = line("Show more (" + (total - shown) + " remaining) ▾", Design.accent(), 13f, true);
+        more.setGravity(Gravity.CENTER); more.setPadding(0, dp(12), 0, dp(12));
+        more.setOnClickListener(v -> { shown += SHOW_STEP; render(); });
+        container.addView(more);
+    }
+
+    private View poolTransactionRow(PoolActivity.Event event) {
+        HistoryEntry tx = event.transaction;
+        String tokenName = Util.tokenNameCached(event.tokenid);
+        if (tokenName == null || tokenName.isEmpty()) tokenName = event.tokenid.equals(tx.tokenid)
+                ? tx.tokenName : Util.shorten(event.tokenid);
+        String action;
+        switch (event.kind) {
+            case GlobalFeed.CREATE: action = "Pool creation"; break;
+            case GlobalFeed.ADD: action = "Liquidity addition"; break;
+            case GlobalFeed.WITHDRAW: action = "Liquidity withdrawal"; break;
+            case GlobalFeed.SWAP: action = event.minimaIn ? "MINIMA sale" : "MINIMA purchase"; break;
+            default: action = "Pool reserves changed";
+        }
+        LinearLayout row = new LinearLayout(act); row.setOrientation(LinearLayout.VERTICAL);
+        row.setPadding(dp(8), dp(12), dp(8), dp(12));
+        row.addView(line(action + " · " + trim(event.minima) + " MINIMA / " + trim(event.token) + " " + tokenName,
+                Design.text(), 14f, true));
+        row.addView(line(Util.shorten(event.pool) + " · Transaction " + absolute(tx.timemilli), Design.dim(), 12f, false));
+        row.addView(line(tx.verifiedAt == 0 ? "Waiting for node check" : ActivityLog.confirmationText(tx.verifiedDepth),
+                tx.verifiedDepth >= ActivityLog.CONFIRM_BLOCKS ? Design.success() : Design.amber(), 11f, false));
+        if (tx.verifiedAt > 0) row.addView(line("Checked " + relative(tx.verifiedAt), Design.dim(), 11f, false));
+        row.setOnClickListener(v -> showDetail(tx));
+        return row;
     }
 
     // ---- rows ----
 
     /** An in-flight / just-posted action (from the local ActivityLog). */
-    private View pendingCard(ActivityLog.Entry e, int cb) {
+    private View pendingCard(ActivityLog.Entry e, int cb, HistoryEntry history, long eventTime) {
         LinearLayout card = new LinearLayout(act);
         card.setOrientation(LinearLayout.VERTICAL);
         Ui.card(card);
@@ -253,8 +272,8 @@ public class ActivityView extends BaseView {
         card.addView(top);
 
         card.addView(line(e.summary, Design.text(), 13f, false));
-        String meta = relative(e.ts);
-        if (e.failed && e.failMsg != null && !e.failMsg.isEmpty()) meta = e.failMsg;
+        String meta = (history != null && history.timemilli > 0 ? "Transaction " : "Submitted ") + absolute(eventTime);
+        if (e.failed && e.failMsg != null && !e.failMsg.isEmpty()) meta += " · " + e.failMsg;
         else if (e.txpowid != null && !e.txpowid.isEmpty()) meta = Util.shorten(e.txpowid) + "  ·  " + meta;
         TextView sub = line(meta, Design.dim(), 12f, false);
         sub.setPadding(0, dp(3), 0, 0);
@@ -265,6 +284,7 @@ public class ActivityView extends BaseView {
                 .setMessage("TxPoW: " + (e.txpowid == null ? "Unavailable" : e.txpowid)
                         + (e.originalTxpowid != null && !e.originalTxpowid.equalsIgnoreCase(e.txpowid)
                         ? "\n\nOriginal submission ID: " + e.originalTxpowid : "")
+                        + "\n\n" + (history != null ? "Transaction time: " : "Submitted: ") + absolute(eventTime)
                         + "\n\nTransaction: " + (e.transactionId.isEmpty() ? "Not saved by the older build" : e.transactionId)
                         + (e.verifiedAt > 0 ? "\n\nLast node check: " + new java.util.Date(e.verifiedAt) : "")
                         + (e.transactionId.isEmpty() && e.verifiedDepth < 0
@@ -302,10 +322,10 @@ public class ActivityView extends BaseView {
         line1.setTextColor(color); line1.setTextSize(15f); line1.setTypeface(Design.typefaceBold());
         TextView line2 = new TextView(act);
         String cp = (n.counterparty == null || n.counterparty.isEmpty()) ? "" : Util.shorten(n.counterparty) + "  ·  ";
-        line2.setText((reshuffle ? n.reshuffleLabel() + "  ·  " : cp) + relative(n.timemilli));
+        line2.setText((reshuffle ? n.reshuffleLabel() + "  ·  " : cp) + absolute(n.timemilli));
         line2.setTextColor(Design.dim()); line2.setTextSize(12f);
         mid.addView(line1); mid.addView(line2);
-        mid.addView(line(n.verifiedAt == 0 ? "Checking on-chain…" : ActivityLog.confirmationText(n.verifiedDepth),
+        mid.addView(line(n.verifiedAt == 0 ? "Waiting for node check" : ActivityLog.confirmationText(n.verifiedDepth),
                 n.verifiedDepth >= ActivityLog.CONFIRM_BLOCKS ? Design.success() : Design.amber(), 11f, false));
         if (n.verifiedAt > 0) mid.addView(line("Checked " + relative(n.verifiedAt), Design.dim(), 10f, false));
         row.addView(mid);
@@ -329,27 +349,28 @@ public class ActivityView extends BaseView {
         String m = trim(ev.minimaAmt), t = trim8(ev.tokenAmt), tl = ev.tokenLabel;
         String glyphStr, desc, line2Str;
         int glyphColor;
-        String poolTime = Util.shorten(ev.pool) + "  ·  " + relative(ev.ts);
+        String poolTime = Util.shorten(ev.pool) + "  ·  Observed on this phone " + absolute(ev.ts)
+                + " · Transaction time unknown";
         switch (ev.kind) {
             case GlobalFeed.CREATE:
                 glyphStr = "✦"; glyphColor = Design.success();
-                desc = "New pool  ·  " + m + " MINIMA / " + t + " " + tl;
+                desc = "Pool first seen (unverified) · " + m + " MINIMA / " + t + " " + tl;
                 line2Str = poolTime;
                 break;
             case GlobalFeed.ADD:
                 glyphStr = "+"; glyphColor = Design.success();
-                desc = "Liquidity added  ·  +" + m + " MINIMA / +" + t + " " + tl;
+                desc = "Reserve increase observed (unverified) · +" + m + " MINIMA / +" + t + " " + tl;
                 line2Str = poolTime;
                 break;
             case GlobalFeed.WITHDRAW:
                 glyphStr = "−"; glyphColor = Design.red();
-                desc = "Withdrawn  ·  " + m + " MINIMA / " + t + " " + tl;
+                desc = "Reserve decrease or disappearance observed (unverified) · " + m + " MINIMA / " + t + " " + tl;
                 line2Str = poolTime;
                 break;
             default:   // SWAP
                 glyphStr = "⇄"; glyphColor = Design.accent();
-                desc = ev.minimaIn ? ("Sold " + m + " MINIMA  →  " + t + " " + tl)
-                                   : ("Bought " + m + " MINIMA  ←  " + t + " " + tl);
+                desc = ev.minimaIn ? ("Reserve change observed (unverified): sold " + m + " MINIMA  →  " + t + " " + tl)
+                                   : ("Reserve change observed (unverified): bought " + m + " MINIMA  ←  " + t + " " + tl);
                 line2Str = trim8(ev.price) + " " + tl + "/MINIMA  ·  " + poolTime;
         }
 
@@ -471,6 +492,10 @@ public class ActivityView extends BaseView {
             case ActivityLog.CLOSE:   return "Withdraw / close";
             default:                  return type;
         }
+    }
+
+    private static String absolute(long ms) {
+        return ms <= 0 ? "Unknown" : new SimpleDateFormat("dd MMM yyyy HH:mm:ss z", Locale.ENGLISH).format(new Date(ms));
     }
 
     private static String relative(long ms) {

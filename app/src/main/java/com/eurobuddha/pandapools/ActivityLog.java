@@ -49,7 +49,8 @@ public final class ActivityLog {
             if (failed) return "Failed";
             if (verifiedDepth >= 0) return confirmationText(verifiedDepth);
             if (NodeApi.ERR_WRITE_UNCERTAIN.equals(failMsg)) return "Outcome unknown · check node history";
-            if (verifiedAt > 0) return transactionId.isEmpty() ? "Receipt needs matching" : "Awaiting on-chain inclusion";
+            if (!FundingCoins.hex(txpowid)) return "No transaction ID saved";
+            if (verifiedAt > 0) return transactionId.isEmpty() ? "Not found on this node" : "Awaiting on-chain inclusion";
             return "Checking on-chain…";
         }
     }
@@ -218,7 +219,23 @@ public final class ActivityLog {
 
     private static boolean checking;
     private static int cursor, historyCursor;
+    private static int visibleCursor;
+    private static List<String> visibleIds = new ArrayList<>();
     private static long lastCheck;
+    private static String checkError = "";
+
+    static String checkStatus() {
+        if (!checkError.isEmpty()) return "Node check failed: " + checkError;
+        return checking ? "Checking confirmations with the node…" : "";
+    }
+
+    /** The active Activity view supplies its displayed rows so these receive prompt proof checks. */
+    static void visibleTransactions(List<String> ids) {
+        java.util.LinkedHashSet<String> unique = new java.util.LinkedHashSet<>();
+        for (String id : ids) if (FundingCoins.hex(id)) unique.add(id);
+        visibleIds = new ArrayList<>(unique);
+        if (visibleCursor >= visibleIds.size()) visibleCursor = 0;
+    }
 
     /** Small, serial node lookups for receipts AND cached history. Never estimate depth from time. */
     static void verify(Context ctx, NodeApi node, Runnable done) {
@@ -230,18 +247,23 @@ public final class ActivityLog {
         List<String> localIds = new ArrayList<>();
         for (Entry e : list(app)) if (!e.failed && FundingCoins.hex(e.txpowid)) localIds.add(e.txpowid);
         java.util.LinkedHashSet<String> batch = new java.util.LinkedHashSet<>();
+        for (int i = 0; i < Math.min(8, visibleIds.size()); i++)
+            batch.add(visibleIds.get((visibleCursor + i) % visibleIds.size()));
+        if (!visibleIds.isEmpty()) visibleCursor = (visibleCursor + Math.min(8, visibleIds.size())) % visibleIds.size();
         for (int i = 0; i < Math.min(8, localIds.size()); i++)
             batch.add(localIds.get((cursor + i) % localIds.size()));
         if (!localIds.isEmpty()) cursor = (cursor + Math.min(8, localIds.size())) % localIds.size();
-        List<HistoryEntry> history = db.list(150, 0, null);
-        // Check the newest rows on every pass; rotate through the rest so old records also get proof.
-        for (int i = 0; i < Math.min(3, history.size()); i++) batch.add(history.get(i).txpowid);
-        for (int i = 0; i < Math.min(8, history.size()); i++)
-            batch.add(history.get((historyCursor + i) % history.size()).txpowid);
-        if (!history.isEmpty()) historyCursor = (historyCursor + Math.min(8, history.size())) % history.size();
+        // Rotate across the entire store, not only its first 150 rows. Otherwise older visible
+        // transactions can say "checking" forever without ever entering a verification batch.
+        int count = db.count();
+        if (historyCursor >= count) historyCursor = 0;
+        for (HistoryEntry row : db.list(3, 0, null)) batch.add(row.txpowid);
+        List<HistoryEntry> history = db.list(8, historyCursor, null);
+        for (HistoryEntry row : history) batch.add(row.txpowid);
+        historyCursor = count == 0 ? 0 : (historyCursor + history.size()) % count;
         batch.removeIf(id -> !FundingCoins.hex(id));
         if (batch.isEmpty()) { db.close(); done.run(); return; }
-        checking = true; lastCheck = now;
+        checking = true; checkError = ""; lastCheck = now;
         verifyNext(app, node, db, new ArrayList<>(batch), 0, () -> {
             db.close(); checking = false; done.run();
         });
@@ -258,10 +280,14 @@ public final class ActivityLog {
                     android.util.Log.d("PandaPoolsChain", "txpow=" + id + " found=" + r.opt("found")
                             + " confirmations=" + r.opt("confirmations") + " block=" + r.opt("block")
                             + " tip=" + r.opt("tip"));
-                }
+                } else checkError = "No confirmation evidence returned.";
                 verifyNext(ctx, node, db, batch, i + 1, done);
             }
-            public void onError(String message) { verifyNext(ctx, node, db, batch, i + 1, done); }
+            public void onError(String message) {
+                checkError = message == null ? "Node unavailable." : message;
+                // Avoid a timeout for every remaining row when the transport/node is unavailable.
+                done.run();
+            }
         });
     }
     static int confirmationDepth(JSONObject reply) {

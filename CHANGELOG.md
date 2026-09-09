@@ -13,6 +13,13 @@ mirrored across all three.
 
 ---
 
+## [0.9.45] — Activity chronology and transaction-backed pool events
+- Merge local receipts and node history by exact mined ID in one newest-first timeline. Confirmed records no longer sit below every unresolved receipt; failures remain visible. Add Show more for stored records beyond the former 150-row display window.
+- Verify across the entire history store, with extra checks for displayed transactions. Show node-check errors and stop a failed verification batch instead of waiting through one timeout per row.
+- Build All Pools movements from individual transactions using the existing accounting reserve-delta code, with the transaction header timestamp and separately verified confirmation count. Stop generating new withdrawal/trade claims from snapshot changes.
+- Retain previous local observations with explicit unverified provenance and observation time; their device-local time is no longer presented as a transaction time.
+- 180 tests pass in each build variant; release lint passes. See [review](REVIEW-0.9.45.md).
+
 ## [0.9.44] — legacy receipt recovery and separate node reply process
 - Recover pre-mining submission IDs cryptographically from retained mined headers. First reproduce the mined TxPoW hash, then reconstruct the original header hash; never match by amount/time. Preserve original IDs in receipt details and obtain confirmations independently from the stock node.
 - Reuse Maxima's exact header/number/data codecs and PocketWeb's Samsung-compatible SHA3 digest. Replay retained history for old receipts; incomplete history passes keep the repair pending.
