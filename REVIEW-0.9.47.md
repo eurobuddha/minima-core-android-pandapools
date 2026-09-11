@@ -14,4 +14,13 @@ Validation completed on 2026-09-09:
 
 Limits: public pool recipes contain no private keys or current signing state. Recovery requires the matching complete wallet state and available chain proofs. No default public archive is assumed. The optional MDS HTTPS archive must allow browser CORS requests; its streaming reader is capped and cancellable. Native/Desktop use their bounded HTTP clients. The app cannot keep pools fresh while both it and the node are offline.
 
-Visual QA is unverified: browser security policy rejected the local-file preview. Source-level UI checks passed. No new build was installed on a live wallet during validation. These artifacts have not been published to stores.
+Visual QA is unverified: browser security policy rejected the local-file preview. Source-level UI checks passed. No new build was installed on a live wallet during validation.
+
+Publication verified on 2026-09-11:
+
+- Android [0.9.47](https://github.com/eurobuddha/minima-core-android-pandapools/releases/tag/v0.9.47), source commit `d2e9a062d1ccea92c2c5506878e3bfe329674eb9`, is pushed and live in PandaApps. The downloaded APK matches the catalog and release SHA-256 `ea748704194fa789ad41c5dab3c52279edda10c7f2a163b9039b99e943a1587e`.
+- MiniDapp [0.6.23](https://github.com/eurobuddha/pandapools-mds/releases/tag/v0.6.23) is live in both the primary and mirror PandaDapps catalogs. The downloaded ZIP matches their SHA-256 `97630a77e184546d925b0a7026c0d2a967cd5789ec9047d0844bb1c192e79d86`.
+- Both PandaPools versions and hashes are present in IPFS snapshot `bafybeifi2b3garek2q2st6okzb4uigvwdlvbdqk3gpp3uwdnbeclcpxtre`.
+- Desktop recovery shipped in [0.16.54](https://github.com/eurobuddha/minimacore-desktop/releases/tag/v0.16.54). The current 0.16.79 tag descends from that release commit; its Mac, Windows and Linux update-feed entries match the current PandaApps catalog URLs and hashes. No older desktop version was republished over the current release.
+
+This publication check does not change the validation limits above.
