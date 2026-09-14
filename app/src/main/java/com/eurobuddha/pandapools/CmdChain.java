@@ -35,7 +35,7 @@ public final class CmdChain {
                 fail(node, cleanup, done, "Malformed transaction command. Nothing signed.");
                 return;
             }
-            OwnerKeyRecovery.checkSignature(node::cmd, () -> OwnPoolStore.all(node.context()), ids, signer, error -> {
+            OwnerKeyRecovery.checkSignature(node::cmd, () -> OwnPoolStore.all(node.context()), cmds, ids, signer, error -> {
                 if (error != null) fail(node, cleanup, done, error);
                 else execute(node, cmds, i, cleanup, done);
             });

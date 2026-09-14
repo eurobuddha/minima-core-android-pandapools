@@ -184,6 +184,7 @@ public class MyLpView extends BaseView {
 
         // A create still confirming → a persistent amber card at the top (never "No pools yet" while pending).
         if (pendingCreate != null) list.addView(confirmingCard());
+        for (ExitStore.Record r : ExitStore.interrupted(act)) list.addView(interruptedExitCard(r));
         if (!BackupState.upToDate(act)) list.addView(backupCard());
         else { View proofs = prooflessCard(mine); if (proofs != null) list.addView(proofs); }
         for (Pool p : unavailable) list.addView(recoveryCard(p));
@@ -483,6 +484,37 @@ public class MyLpView extends BaseView {
         android.content.SharedPreferences sp = act.getSharedPreferences("pandapools_recovery", android.content.Context.MODE_PRIVATE);
         java.util.Set<String> set = new java.util.HashSet<>(sp.getStringSet("backup_proofless", new java.util.HashSet<>()));
         if (set.remove(address.toLowerCase())) sp.edit().putStringSet("backup_proofless", set).commit();
+    }
+
+    /**
+     * A withdrawal that was in flight when PandaPools stopped.
+     *
+     * Deliberately NOT retried automatically. The one thing worse than a stranded pool is two closes against the
+     * same coins, both signing, each burning an owner leaf — and from here the app genuinely cannot tell whether
+     * the first one landed. So it states what it knows and leaves the decision to a person, with the full
+     * identifiers they need to check the chain themselves.
+     */
+    private View interruptedExitCard(ExitStore.Record r) {
+        LinearLayout card = dialogBox(); Ui.card(card);
+        card.addView(text("A withdrawal was interrupted", Design.amber(), 16, true));
+        TextView detail = new TextView(act);
+        boolean unknown = r.stateOf() == ExitStore.State.UNCERTAIN;
+        detail.setText((unknown
+                ? "PandaPools sent a withdrawal for this pool but never got confirmation of the outcome, so it "
+                        + "does not know whether it posted."
+                : "PandaPools was withdrawing this pool when it stopped, so it does not know whether the "
+                        + "withdrawal posted.")
+                + " It will NOT retry on its own: if the first one did land, a second would spend the same coins "
+                + "again and use another of the owner key's one-time signatures.\n\n"
+                + "Check Activity, or look this pool up on a block explorer. If the reserves are gone, the "
+                + "withdrawal worked and \"Collect withdrawn funds to my wallet\" finishes the job. If they are "
+                + "still there, use Withdraw on this pool's card.\n\n"
+                + "Pool: " + r.address
+                + (r.closeTxpowid == null || r.closeTxpowid.isEmpty() ? "" : "\nTransaction: " + r.closeTxpowid)
+                + (r.reason == null || r.reason.isEmpty() ? "" : "\n\n" + r.reason));
+        detail.setTextIsSelectable(true); card.addView(detail);
+        Ui.copyable(detail, "pool address", r.address);
+        return card;
     }
 
     /** Best-effort discoverability hint + manual Re-publish. Other nodes find a pool only while a fresh registry
@@ -1495,36 +1527,110 @@ public class MyLpView extends BaseView {
     }
 
     private void doRestore() {
+        // The one place a user can still back out, so it carries the whole warning. Restore no longer only
+        // inspects: it withdraws. "Check a backup file" is the look-only path and is named in the message.
+        new AlertDialog.Builder(act)
+                .setTitle("Restore and withdraw")
+                .setMessage("Restoring will rebuild your pools' contracts on this node and then WITHDRAW every "
+                        + "pool whose reserves it can verify, straight away, without asking again.\n\n"
+                        + "That is deliberate. A restored pool cannot refresh itself — PandaPools will not sign "
+                        + "automatically for a recipe whose signing history it cannot verify — so leaving it live "
+                        + "means it ages out of the chain's recent window and becomes unrecoverable. Withdrawing "
+                        + "uses two of the owner key's one-time signatures and ends the risk.\n\n"
+                        + "Pools are NOT withdrawn if anything looks wrong: a signature counter below what the "
+                        + "backup recorded, no recorded counter at all, or reserves young enough that another "
+                        + "device is still running this wallet.\n\n"
+                        + "Only want to look at the file? Use \"Check a backup file\" instead — it changes nothing.\n\n"
+                        + "To keep a restored pool running instead, cancel, restore the matching MinimaCore wallet "
+                        + "backup, and confirm its signing state.")
+                .setPositiveButton("Restore and withdraw", (d, w) -> pickRestoreFile())
+                .setNegativeButton("Cancel", null)
+                .show();
+    }
+
+    private void pickRestoreFile() {
         act.pickOpenFile(uri -> {
             if (uri == null) { status("Restore cancelled."); return; }
             String json = readUri(uri);
             if (json == null || json.isEmpty()) { status("Could not read that file."); return; }
-            restoreJson(json);
+            restoreJson(json, true);
         });
     }
 
-    private void restoreJson(String json) {
+    /** {@code withdraw} true only for a restore from a FILE. The per-pool "Recover reserves" card feeds the same
+     *  method with a one-pool synthetic backup, and must stay a read-only reserve check — it would otherwise
+     *  silently become a Withdraw button. */
+    private void restoreJson(String json) { restoreJson(json, false); }
+
+    private void restoreJson(String json, boolean withdraw) {
             if (busy) return;
             busy = true;
             status("Restoring pools…");
             final StringBuilder log = new StringBuilder();
+            final List<Pool> verified = new ArrayList<>();
             recovery.restore(act, json, act.chainBlock(), new Recovery.RestoreCb() {
                 @Override public void onProgress(String line) { log.append(line).append('\n'); status("Restoring… " + line); }
+                @Override public void onVerified(Pool p) { verified.add(p); }
                 @Override public void onDone(int restored, int total) {
-                    busy = false;
                     if (total == 0) {
+                        busy = false;
                         status("That file isn't a PandaPools backup.");
                         info("Nothing restored", "That file isn't a readable PandaPools backup — pick the "
                                 + "pandapools-backup.json you saved from Back up.");
                         return;
                     }
-                    status("Reserve check finished ·  " + restored + " of " + total + " pool(s) verified.");
-                    info(restored == total ? "Reserves verified" : "Recovery needs attention", restored + " of " + total + " pool(s) have both reserves verified on this node.\n\n"
-                            + log.toString().trim() + "\n\nSaved recipes remain available below. No withdrawal was requested by Restore.");
-                    loadKeys();              // ownership set may now include restored pools
-                    act.pools().refresh();   // pull them into discovery
+                    if (!withdraw || verified.isEmpty()) {
+                        busy = false;
+                        status("Reserve check finished ·  " + restored + " of " + total + " pool(s) verified.");
+                        info(restored == total ? "Reserves verified" : "Recovery needs attention", restored + " of " + total + " pool(s) have both reserves verified on this node.\n\n"
+                                + log.toString().trim() + (withdraw
+                                    ? "\n\nNothing was withdrawn, because no pool's reserves could be verified. Saved recipes remain available below."
+                                    : "\n\nSaved recipes remain available below. This was a reserve check only; nothing was withdrawn."));
+                        loadKeys();
+                        act.pools().refresh();
+                        return;
+                    }
+                    autoWithdraw(verified, log, restored, total);
                 }
             });
+    }
+
+    /**
+     * Withdraw the pools a file restore just verified.
+     *
+     * A restored recipe is signing-quarantined, and keep-fresh skips quarantined pools — so a restored pool
+     * cannot refresh, ages past the cascade and strands. Leaving it live is not the safe option; it is the slow
+     * one. So Restore finishes the job, and the alternative (confirming the wallet's signing state to keep the
+     * pool alive) stays available as the deliberate expert path.
+     */
+    private void autoWithdraw(List<Pool> verified, StringBuilder log, int restored, int total) {
+        status("Withdrawing restored pools…");
+        NodeApi n = act.node();
+        if (n == null) { busy = false; status("Connect the node to withdraw the restored pools."); return; }
+        new RestoreExit(act, n).run(verified, act.chainBlock(), new RestoreExit.Cb() {
+            @Override public void onProgress(String line) {
+                log.append(line).append('\n');
+                act.runOnUiThread(() -> status(line));
+            }
+            @Override public void onDone(int withdrawn, int skipped) {
+                act.runOnUiThread(() -> {
+                    busy = false;
+                    status(withdrawn + " pool(s) withdrawn, " + skipped + " not withdrawn.");
+                    info(skipped == 0 ? "Restored and withdrawn" : "Restored — some pools need you",
+                            restored + " of " + total + " pool(s) had verified reserves.\n\n"
+                            + withdrawn + " withdrawn to your wallet. " + skipped + " not withdrawn.\n\n"
+                            + log.toString().trim()
+                            + "\n\nA restored pool cannot refresh itself, so it would have aged out of the chain's "
+                            + "recent window and become unrecoverable. Withdrawing ends that. Each withdrawal used "
+                            + "two of the owner key's one-time signatures and nothing else.\n\n"
+                            + "No signing-state problem was detected for the pools withdrawn. That is not proof "
+                            + "their keys were unused: a signature the original device made that never reached the "
+                            + "chain cannot be detected by anything.");
+                    loadKeys();
+                    act.pools().refresh();
+                });
+            }
+        });
     }
 
     private void showRecoveryGuide() {

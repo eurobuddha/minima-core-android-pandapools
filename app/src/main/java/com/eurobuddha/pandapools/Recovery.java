@@ -36,7 +36,16 @@ public class Recovery {
     static final int BACKUP_VERSION = 3;
 
     public interface BackupCb { void onBackup(String json); void onError(String msg); }
-    public interface RestoreCb { void onProgress(String line); void onDone(int restored, int total); }
+    public interface RestoreCb {
+        void onProgress(String line);
+        void onDone(int restored, int total);
+        /**
+         * One pool whose reserves were verified and whose recipe was saved. The caller decides what happens
+         * next — this class never spends (see the class comment), so the auto-withdrawal is driven from outside
+         * and only ever sees pools that actually reached this point.
+         */
+        default void onVerified(Pool p) {}
+    }
 
     private final NodeApi node;
 
@@ -296,7 +305,7 @@ public class Recovery {
             private void importCoins() {
                 new ReserveRecovery(node::cmd, ArchiveNode.configured(ctx), restored, e, (verified, detail) -> {
                     cb.onProgress(detail);
-                    if (verified && OwnPoolStore.recordDurably(ctx, restored)) onOk.run();
+                    if (verified && OwnPoolStore.recordDurably(ctx, restored)) { cb.onVerified(restored); onOk.run(); }
                     else if (verified) cb.onProgress("Could not save the verified reserve IDs. Recovery needs attention.");
                     done.run();
                 }).start();

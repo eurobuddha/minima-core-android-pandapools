@@ -518,17 +518,20 @@ public class PoolManager {
     // ===================================================================== helpers
 
     private void ownerSignPost(String txid, String opk, List<String> cmds, Result cb) {
-        OwnerKeyRecovery.ensure(node.context(), node, java.util.Collections.singletonList(opk), blocked -> {
-        if (!blocked.isEmpty()) {
-            cb.onFailed("Nothing was posted.\n\n" + OwnerKeyRecovery.worst(blocked).message()); return;
-        }
+        // Append the signing lines BEFORE the pre-flight, so the pre-flight judges the transaction that will
+        // actually run. A check against a half-built list cannot evaluate an exit exemption — whose whole
+        // premise is verifying the real command list — and would refuse a permitted close.
         cmds.add("txnsign id:" + txid + " publickey:auto");        // any wallet funding coins
         cmds.add("txnsign id:" + txid + " publickey:" + opk);      // the owner signature the covenant requires
         cmds.add("txnbasics id:" + txid);
-        TxPost.checkThenPost(node, txid, cmds, new TxPost.Done() {
-            @Override public void ok(String txpowid) { cb.onPosted(txpowid); }
-            @Override public void fail(String message) { cb.onFailed(message); }
-        });
+        OwnerKeyRecovery.ensure(node.context(), node, java.util.Collections.singletonList(opk), cmds, blocked -> {
+            if (!blocked.isEmpty()) {
+                cb.onFailed("Nothing was posted.\n\n" + OwnerKeyRecovery.worst(blocked).message()); return;
+            }
+            TxPost.checkThenPost(node, txid, cmds, new TxPost.Done() {
+                @Override public void ok(String txpowid) { cb.onPosted(txpowid); }
+                @Override public void fail(String message) { cb.onFailed(message); }
+            });
         });
     }
 
@@ -607,7 +610,9 @@ public class PoolManager {
         });
     }
 
-    private static String amt(BigDecimal b) { return b.stripTrailingZeros().toPlainString(); }
+    /** Package-visible: RestoreExit builds an exit ticket carrying the EXACT amount strings the close will
+     *  emit, and a ticket whose amounts were formatted differently would refuse its own transaction. */
+    static String amt(BigDecimal b) { return b.stripTrailingZeros().toPlainString(); }
 
     private static String tag() {
         return System.currentTimeMillis() + "_" + Integer.toHexString((int) (System.nanoTime() & 0xffffff));

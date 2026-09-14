@@ -127,6 +127,12 @@ public final class OwnerKeyRecovery {
         return Reason.SIGNING_QUARANTINED;
     }
 
+    /** Peek at the outstanding exit exemption without consuming it. */
+    private static boolean exitPermits(List<String> cmds, Pool p) {
+        ExitTicket t = ExitAuthority.current();
+        return t != null && t.permits(cmds, p);
+    }
+
     /** The single most important reason in a set, for one summary line. */
     public static Blocked worst(Map<String, Blocked> blocked) {
         Blocked out = null;
@@ -135,10 +141,20 @@ public final class OwnerKeyRecovery {
         return out;
     }
     public static void ensure(Context ctx, NodeApi node, List<String> wantedOpks, Cb cb) {
-        ensure(ctx, node, wantedOpks, kidxFromStore(ctx), cb);
+        ensure(ctx, node, wantedOpks, kidxFromStore(ctx), null, cb);
+    }
+
+    /** Pre-flight that can also honour an exit exemption, by verifying it against {@code cmds}. */
+    public static void ensure(Context ctx, NodeApi node, List<String> wantedOpks, List<String> cmds, Cb cb) {
+        ensure(ctx, node, wantedOpks, kidxFromStore(ctx), cmds, cb);
     }
     public static void ensure(Context ctx, NodeApi node, List<String> wantedOpks,
                               Map<String, Integer> kidxByOpk, Cb cb) {
+        ensure(ctx, node, wantedOpks, kidxByOpk, null, cb);
+    }
+
+    public static void ensure(Context ctx, NodeApi node, List<String> wantedOpks,
+                              Map<String, Integer> kidxByOpk, List<String> cmds, Cb cb) {
         Set<String> wanted = new LinkedHashSet<>();
         if (wantedOpks != null) for (String key : wantedOpks)
             if (key != null && !key.isEmpty()) wanted.add(key.toLowerCase(Locale.ROOT));
@@ -146,7 +162,7 @@ public final class OwnerKeyRecovery {
         if (node == null) { cb.done(allUnreadable(wanted)); return; }
         node.cmd("keys", new NodeApi.Cb() {
             public void onResult(JSONObject reply) {
-                cb.done(classifyAll(ctx, reply, wanted));
+                cb.done(classifyAll(ctx, reply, wanted, cmds));
             }
             public void onError(String message) { cb.done(allUnreadable(wanted)); }
         });
@@ -169,6 +185,10 @@ public final class OwnerKeyRecovery {
 
     /** Classify every wanted key against one `keys` reply plus the stored recipes. */
     static Map<String, Blocked> classifyAll(Context ctx, JSONObject reply, Set<String> wanted) {
+        return classifyAll(ctx, reply, wanted, null);
+    }
+
+    static Map<String, Blocked> classifyAll(Context ctx, JSONObject reply, Set<String> wanted, List<String> cmds) {
         boolean readable = TxPost.truthy(reply, "status") && KeyUses.rows(reply) != null;
         Set<String> held = readable ? pubkeys(reply) : Collections.emptySet();
 
@@ -181,6 +201,9 @@ public final class OwnerKeyRecovery {
             if (!wanted.contains(key)) continue;
             Integer uses = readable ? KeyUses.extractUses(reply, p.opk) : null;
             if (signingAllowed(p, uses)) continue;
+            // A pre-flight must not CONSUME the single-use grant — that belongs to the signature boundary — so it
+            // only peeks at the shape. baseSigningAllowed still has to hold in full.
+            if (baseSigningAllowed(p, uses) && cmds != null && exitPermits(cmds, p)) continue;
             Blocked b = new Blocked(key, classify(readable, held.contains(key), uses, p,
                     OwnPoolStore.confirmationFailed(p.opk)), uses, p.minimumOwnerUses, p.address);
             Blocked prev = out.get(key);
@@ -254,18 +277,29 @@ public final class OwnerKeyRecovery {
      * Recipes are supplied lazily so a restore during transaction construction cannot evade this check. */
     static void checkSignature(FundingCoins.Command node, java.util.function.Supplier<List<Pool>> recipes,
                                List<String> ids, String signer, java.util.function.Consumer<String> cb) {
+        checkSignature(node, recipes, null, ids, signer, cb);
+    }
+
+    /**
+     * @param cmds the transaction being built, used ONLY to verify an exit exemption's shape against the real
+     *             command list. Null means no exemption can apply, which is the correct default: a caller that
+     *             does not supply what it is about to run cannot be granted a waiver on trust.
+     */
+    static void checkSignature(FundingCoins.Command node, java.util.function.Supplier<List<Pool>> recipes,
+                               List<String> cmds, List<String> ids, String signer,
+                               java.util.function.Consumer<String> cb) {
         if ((!"auto".equals(signer) && !FundingCoins.hex(signer)) || ids.isEmpty()
                 || ids.size() > FundingCoins.MAX_INPUTS) { cb.accept("Invalid signing inputs."); return; }
-        readSigningInputs(node, recipes, ids, signer, 0, new HashSet<>(), cb);
+        readSigningInputs(node, recipes, cmds, ids, signer, 0, new HashSet<>(), cb);
     }
 
     private static void readSigningInputs(FundingCoins.Command node, java.util.function.Supplier<List<Pool>> recipes,
-                                         List<String> ids, String signer, int i, Set<String> addresses,
+                                         List<String> cmds, List<String> ids, String signer, int i, Set<String> addresses,
                                          java.util.function.Consumer<String> cb) {
         if (i == ids.size()) {
             Set<String> signers = new HashSet<>();
             if (!"auto".equals(signer)) signers.add(signer.toLowerCase(Locale.ROOT));
-            readScriptKeys(node, recipes, "auto".equals(signer) ? new ArrayList<>(addresses) : Collections.emptyList(), 0, signers, cb);
+            readScriptKeys(node, recipes, cmds, "auto".equals(signer) ? new ArrayList<>(addresses) : Collections.emptyList(), 0, signers, cb);
             return;
         }
         String id = ids.get(i);
@@ -277,13 +311,14 @@ public final class OwnerKeyRecovery {
                 if (c == null || !id.equalsIgnoreCase(c.optString("coinid")) || !Boolean.FALSE.equals(c.opt("spent"))
                         || !FundingCoins.hex(c.optString("address"))) { cb.accept("Could not verify a current signing input. Nothing signed."); return; }
                 addresses.add(c.optString("address").toLowerCase(Locale.ROOT));
-                readSigningInputs(node, recipes, ids, signer, i + 1, addresses, cb);
+                readSigningInputs(node, recipes, cmds, ids, signer, i + 1, addresses, cb);
             }
             public void onError(String m) { cb.accept("Could not verify a current signing input. Nothing signed."); }
         });
     }
     private static void readScriptKeys(FundingCoins.Command node, java.util.function.Supplier<List<Pool>> recipes,
-                                       List<String> addresses, int i, Set<String> wanted, java.util.function.Consumer<String> cb) {
+                                       List<String> cmds, List<String> addresses, int i, Set<String> wanted,
+                                       java.util.function.Consumer<String> cb) {
         if (i == addresses.size()) {
             node.run("keys", new NodeApi.Cb() {
                 public void onResult(JSONObject reply) {
@@ -297,6 +332,11 @@ public final class OwnerKeyRecovery {
                         if (!wanted.contains(key)) continue;
                         Integer uses = KeyUses.extractUses(reply, p.opk);
                         if (signingAllowed(p, uses)) continue;
+                        // The ONE exception: a quarantined recipe may make the two signatures that empty its own
+                        // pool back to the owner, and nothing else. Everything in baseSigningAllowed still has to
+                        // hold, and the shape is verified against the ACTUAL command list — the exemption is
+                        // looked up here, never passed in, so no caller can assert its way past this.
+                        if (baseSigningAllowed(p, uses) && cmds != null && ExitAuthority.permits(cmds, p)) continue;
                         Reason r = classify(true, held.contains(key), uses, p, OwnPoolStore.confirmationFailed(p.opk));
                         cb.accept("Nothing signed.\n\n" + new Blocked(key, r, uses, p.minimumOwnerUses, p.address).message());
                         return;
@@ -310,7 +350,7 @@ public final class OwnerKeyRecovery {
         String address = addresses.get(i);
         node.run("scripts address:" + address, new NodeApi.Cb() {
             public void onResult(JSONObject j) {
-                if (TrackHygiene.isNotFound(j)) { readScriptKeys(node, recipes, addresses, i + 1, wanted, cb); return; }
+                if (TrackHygiene.isNotFound(j)) { readScriptKeys(node, recipes, cmds, addresses, i + 1, wanted, cb); return; }
                 JSONObject r = j == null ? null : j.optJSONObject("response");
                 if (!TxPost.truthy(j, "status") || r == null || !address.equalsIgnoreCase(r.optString("address"))
                         || !(r.opt("simple") instanceof Boolean)) { cb.accept("Could not identify the input signing key. Nothing signed."); return; }
@@ -319,7 +359,7 @@ public final class OwnerKeyRecovery {
                     if (!FundingCoins.hex(pk)) { cb.accept("Invalid input signing key. Nothing signed."); return; }
                     wanted.add(pk.toLowerCase(Locale.ROOT));
                 }
-                readScriptKeys(node, recipes, addresses, i + 1, wanted, cb);
+                readScriptKeys(node, recipes, cmds, addresses, i + 1, wanted, cb);
             }
             public void onError(String m) { cb.accept("Could not identify the input signing key. Nothing signed."); }
         });

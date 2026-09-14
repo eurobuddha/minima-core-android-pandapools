@@ -140,6 +140,31 @@ public final class OwnPoolStore {
 
     // ---- helpers ----
 
+    /**
+     * Raise the recorded use floor for every recipe sharing an owner key. RAISE ONLY, and it never touches
+     * {@code signing_unverified} — this records what we have observed, it does not confer permission.
+     *
+     * Called before an exit signature so that even a crash between signing and posting leaves the floor at or
+     * above what was spent. Erring high costs one leaf of 262,144 and blocks signing until a proper wallet
+     * restore; erring low permits a reuse. The asymmetry is entirely one way, so this only ever goes up.
+     */
+    static synchronized boolean raiseUseFloor(Context c, String opk, Integer observed) {
+        if (c == null || opk == null || observed == null || observed < 0 || observed >= 262144) return false;
+        SharedPreferences.Editor edit = prefs(c).edit();
+        boolean any = false;
+        try {
+            for (Pool p : all(c)) {
+                if (!opk.equalsIgnoreCase(p.opk)) continue;
+                if (observed <= p.minimumOwnerUses) continue;               // already at or above — nothing to do
+                JSONObject o = new JSONObject(prefs(c).getString(key(p.address), ""));
+                o.put("opkuses", observed);
+                edit.putString(key(p.address), o.toString());
+                any = true;
+            }
+            return !any || edit.commit();
+        } catch (Exception invalid) { return false; }
+    }
+
     /** User attestation only; a counter comparison by itself never clears a restored-key hold. */
     public static synchronized boolean acknowledgeSigningState(Context c, String opk, int uses) {
         if (c == null || opk == null || uses < 0 || uses >= 262144) return false;
