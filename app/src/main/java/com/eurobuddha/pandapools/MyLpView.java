@@ -45,7 +45,8 @@ public class MyLpView extends BaseView {
     private final List<Pool> myPools = new ArrayList<>();   // currently-owned funded pools (for fresh coin export)
     private boolean busy = false;
     private boolean reannounceChecked = false;              // Layer 5 faded-beacon check runs once per session
-    private boolean refreshChecked = false;                 // keep-fresh reserve check runs once per session
+    private boolean refreshChecked = false;
+    private boolean prooflessDismissed = false;             // "add coin proofs" offer dismissed for this session                 // keep-fresh reserve check runs once per session
     private BigDecimal usdtAnchor;                          // tier-2 create anchor: aggregate live USDT-pool spot (Σt/Σm), null if none
 
     // Receives the shared PoolRepository's scan result (one scan for the whole app). render() filters to the
@@ -184,6 +185,7 @@ public class MyLpView extends BaseView {
         // A create still confirming → a persistent amber card at the top (never "No pools yet" while pending).
         if (pendingCreate != null) list.addView(confirmingCard());
         if (!BackupState.upToDate(act)) list.addView(backupCard());
+        else { View proofs = prooflessCard(mine); if (proofs != null) list.addView(proofs); }
         for (Pool p : unavailable) list.addView(recoveryCard(p));
         Set<String> heldKeys = new HashSet<>();
         for (Pool p : OwnPoolStore.all(act)) if ((p.signingStateUnverified || OwnPoolStore.confirmationFailed(p.opk)) && heldKeys.add(p.opk)) {
@@ -427,6 +429,62 @@ public class MyLpView extends BaseView {
         return card;
     }
 
+    /**
+     * Offer to re-export once a pool created earlier has confirmed, so its file can carry coin proofs.
+     *
+     * Only an offer. Proofs are a shortcut that expires anyway, and recovery works from the recipe plus an
+     * archive lookup, so a file without them is already sufficient — which is exactly why this must not look
+     * like the "not backed up" warning. Suppressed entirely while that warning is showing, so the user is never
+     * asked to do two backup things at once.
+     */
+    private View prooflessCard(List<Pool> mine) {
+        android.content.SharedPreferences sp = act.getSharedPreferences("pandapools_recovery", android.content.Context.MODE_PRIVATE);
+        java.util.Set<String> pending = sp.getStringSet("backup_proofless", new java.util.HashSet<>());
+        if (pending.isEmpty() || prooflessDismissed) return null;
+        Pool ready = null;
+        for (Pool p : mine)
+            if (p.address != null && pending.contains(p.address.toLowerCase())
+                    && ReserveRecovery.completeReserves(p)) { ready = p; break; }
+        if (ready == null) return null;
+        final String addr = ready.address;
+
+        LinearLayout card = dialogBox(); Ui.card(card);
+        card.addView(text("Add coin proofs to your pool file", Design.dim(), 15, true));
+        TextView detail = new TextView(act);
+        detail.setText("Your pool has confirmed, so a fresh backup can now include its reserve coin proofs. Those "
+                + "make recovery quicker; they are not required, and your saved file already recovers this pool "
+                + "through an archive lookup. Worth doing when convenient.\n\n" + addr);
+        detail.setTextIsSelectable(true); card.addView(detail);
+        LinearLayout row = new LinearLayout(act); row.setOrientation(LinearLayout.HORIZONTAL);
+        Button again = new Button(act); again.setText("Back up again");
+        again.setOnClickListener(v -> { clearProofless(addr); doBackup(); });
+        Button later = new Button(act); later.setText("Not now");
+        later.setOnClickListener(v -> { prooflessDismissed = true; act.pools().refresh(); });
+        row.addView(again); row.addView(later); card.addView(row);
+        return card;
+    }
+
+    /** Drop the "needs coin proofs" marker for every pool whose entry in this export actually carries both. */
+    private void clearProoflessWithProofs(String json) {
+        try {
+            org.json.JSONArray pools = new JSONObject(json).optJSONArray("pools");
+            if (pools == null) return;
+            for (int i = 0; i < pools.length(); i++) {
+                JSONObject e = pools.optJSONObject(i);
+                if (e == null) continue;
+                if (!e.optString("cm", "").isEmpty() && !e.optString("ct", "").isEmpty())
+                    clearProofless(e.optString("addr", ""));
+            }
+        } catch (Exception ignore) { /* the marker is only an offer; failing to clear it is harmless */ }
+    }
+
+    private void clearProofless(String address) {
+        if (address == null || address.isEmpty()) return;
+        android.content.SharedPreferences sp = act.getSharedPreferences("pandapools_recovery", android.content.Context.MODE_PRIVATE);
+        java.util.Set<String> set = new java.util.HashSet<>(sp.getStringSet("backup_proofless", new java.util.HashSet<>()));
+        if (set.remove(address.toLowerCase())) sp.edit().putStringSet("backup_proofless", set).commit();
+    }
+
     /** Best-effort discoverability hint + manual Re-publish. Other nodes find a pool only while a fresh registry
      *  beacon + young reserves exist (both maintained by keep-fresh every ~900 blocks). We proxy that from the
      *  reserve coin's age: young ⇒ discoverable; aged ⇒ the owner's node hasn't kept it fresh, so it may have gone
@@ -540,6 +598,111 @@ public class MyLpView extends BaseView {
                     + " of ~3) — wait for it to go live before creating another.");
             return;
         }
+        // Before anything else: explain what owning a pool obliges the user to do, and get it acknowledged.
+        // Both obligations are things they cannot discover afterwards -- a pool that is not kept fresh goes dark
+        // silently, and a backup that was never taken cannot be taken retrospectively.
+        showCreateObligations(this::gatherTokensAndCreate);
+    }
+
+    /**
+     * The create gate. Two obligations, one battery check, one acknowledgement.
+     *
+     * Shown on EVERY create with the box unticked. That is deliberate: these are real funds, the pool cannot be
+     * recovered without both artefacts, and one extra tap is a small price beside a stranded pool.
+     */
+    private void showCreateObligations(Runnable proceed) {
+        LinearLayout box = dialogBox();
+
+        box.addView(text("Two things this pool will need from you", Design.heading(), 16, true));
+
+        TextView one = new TextView(act);
+        one.setText("1.  This app must run on this phone regularly.\n\n"
+                + "Your pool's reserve coins have to be recreated about every 900 blocks — roughly twice a day. "
+                + "PandaPools does that automatically while it can run. If it cannot, other wallets stop finding "
+                + "your pool, and after about 1700 blocks its coins drop out of the chain's recent window and can "
+                + "only be recovered through a MegaMMR archive.");
+        one.setPadding(0, Ui.dp(act, 10), 0, 0);
+        one.setTextColor(Design.text()); box.addView(one);
+
+        TextView two = new TextView(act);
+        two.setText("2.  You need two backups, not one.\n\n"
+                + "•  a PandaPools pool file — saved from this app; it records your pool's contract\n"
+                + "•  a current MinimaCore wallet backup — it holds the owner key AND how many of its one-time "
+                + "signatures have been used\n\n"
+                + "A seed phrase is not enough. A seed rebuilds only your 64 default keys; your pool's owner key "
+                + "is created separately, and a seed cannot tell PandaPools how many of that key's one-time "
+                + "signatures were already spent. Signing from a seed-only restore can expose the key.");
+        two.setPadding(0, Ui.dp(act, 14), 0, 0);
+        two.setTextColor(Design.text()); box.addView(two);
+
+        // Live battery-optimisation state. Doze is what actually kills keep-fresh, so this belongs here rather
+        // than in a settings screen nobody opens.
+        final TextView batt = new TextView(act);
+        batt.setPadding(0, Ui.dp(act, 14), 0, 0);
+        final Button fix = new Button(act);
+        fix.setText("Fix this");
+        final Runnable refreshBatt = () -> {
+            boolean ok = act.isBatteryExempt();
+            batt.setText(ok ? "Battery optimisation: exempt ✓  Android will let PandaPools refresh this pool "
+                            + "while the app is closed."
+                    : "⚠  Android's battery optimisation will stop PandaPools refreshing this pool while the app "
+                            + "is closed. This is the single biggest cause of a pool going dark.");
+            batt.setTextColor(ok ? Design.dim() : Design.amber());
+            fix.setVisibility(ok ? View.GONE : View.VISIBLE);
+        };
+        refreshBatt.run();
+        box.addView(batt);
+        fix.setOnClickListener(v -> { act.requestBatteryExemptionNow(); });
+        box.addView(fix);
+
+        final android.widget.CheckBox ack = new android.widget.CheckBox(act);
+        ack.setText("I understand: I must keep this app running, and I need both the pool file and a current "
+                + "wallet backup.");
+        ack.setPadding(0, Ui.dp(act, 16), 0, 0);
+        box.addView(ack);
+
+        // A second, separate acknowledgement only when Android is going to fight us. Some ROMs have no
+        // exemption screen at all, so blocking creation outright would be worse than a pool the user can still
+        // close -- but they must say out loud that they are taking the manual burden on.
+        final android.widget.CheckBox manual = new android.widget.CheckBox(act);
+        manual.setText("I understand Android may stop PandaPools refreshing this pool, and I will open the app "
+                + "at least once a day.");
+        manual.setPadding(0, Ui.dp(act, 8), 0, 0);
+        box.addView(manual);
+
+        final AlertDialog dlg = new AlertDialog.Builder(act)
+                .setTitle("Before you create a pool")
+                .setView(wrapScroll(box))
+                .setPositiveButton("Continue", null)
+                .setNegativeButton("Cancel", null)
+                .create();
+        dlg.setOnShowListener(d -> {
+            refreshBatt.run();
+            manual.setVisibility(act.isBatteryExempt() ? View.GONE : View.VISIBLE);
+            dlg.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+                refreshBatt.run();
+                boolean exempt = act.isBatteryExempt();
+                manual.setVisibility(exempt ? View.GONE : View.VISIBLE);
+                if (!ack.isChecked()) { toast("Tick the box to confirm you understand."); return; }
+                if (!exempt && !manual.isChecked()) {
+                    toast("Either fix battery optimisation, or tick the second box.");
+                    return;
+                }
+                act.ensureNotificationPermissionNow();   // so THIS pool's keep-alive notice is not suppressed
+                dlg.dismiss();
+                proceed.run();
+            });
+        });
+        dlg.show();
+    }
+
+    private View wrapScroll(View inner) {
+        android.widget.ScrollView sv = new android.widget.ScrollView(act);
+        sv.addView(inner);
+        return sv;
+    }
+
+    private void gatherTokensAndCreate() {
         // gather the wallet's tokens (name + tokenid + decimals) to pick from
         act.node().cmd("balance", new NodeApi.Cb() {
             @Override public void onResult(JSONObject j) {
@@ -753,6 +916,10 @@ public class MyLpView extends BaseView {
                             + "It will appear below automatically; no need to resubmit.");
                     startPendingPoll();
                     act.pools().refresh();
+                    // The pool now exists on chain and its recipe is on this phone only. Force the off-device
+                    // export immediately: the window where the pool is unrecoverable starts NOW, and a user who
+                    // closes the app here has a live pool with no backup and no prompt telling them so.
+                    forceBackupAfterCreate(pool);
                 });
             }
             @Override public void onFailed(String message) {
@@ -1218,6 +1385,7 @@ public class MyLpView extends BaseView {
                         return;
                     }
                     BackupState.recordVerifiedExport(act, owned);
+                    clearProoflessWithProofs(readBack);   // any pool whose entry now carries proofs is done
                     status("Backup saved and verified ✓");
                     info("Backup saved and verified",
                             "PandaPools read the file back and confirmed it can rebuild "
@@ -1237,6 +1405,48 @@ public class MyLpView extends BaseView {
             }
             @Override public void onError(String msg) { status(msg); }
         });
+    }
+
+    /**
+     * Non-dismissible prompt to save the pool file, immediately after a create is posted.
+     *
+     * "Non-dismissible" only goes so far — Back still closes a dialog — so the real enforcement is
+     * {@link BackupState}: the amber MY LP card stays until a VERIFIED export covers this pool, and it reappears
+     * on every render. This dialog is the nudge; the state is the guarantee.
+     *
+     * The pool is 1-3 blocks from confirming at this point, so Recovery cannot read its reserve coins yet and
+     * the file will carry no coin proofs. That is expected and harmless — the recipe is the durable part — so the
+     * wording says so instead of showing the generic proof warning, which would teach the user to dismiss
+     * warnings on the one screen where they must not.
+     */
+    private void forceBackupAfterCreate(Pool pool) {
+        final String addr = pool == null ? "" : pool.address;
+        markProofless(addr);
+        AlertDialog dlg = new AlertDialog.Builder(act)
+                .setTitle("Save your pool file now")
+                .setMessage("Your pool is live on chain. Its contract exists on this phone only, and PandaPools "
+                        + "never sends that copy to any cloud — so right now, if this phone is lost or wiped, "
+                        + "this pool cannot be recovered by anyone.\n\n"
+                        + "Saving takes one tap. PandaPools will read the file back and check it before calling "
+                        + "it saved.\n\n"
+                        + "Pool: " + addr)
+                .setCancelable(false)
+                .setPositiveButton("Save file…", (d, w) -> doBackup())
+                .create();
+        dlg.show();
+        TextView body = dlg.findViewById(android.R.id.message);
+        if (body != null) body.setTextIsSelectable(true);
+    }
+
+    /** Remember that this pool's exported recipe has no coin proofs yet, so we can offer a re-export once the
+     *  pool confirms and its reserves become readable. Proofs are only a shortcut, so this is an offer, never a
+     *  block — the recipe alone already recovers the pool through an archive. */
+    private void markProofless(String address) {
+        if (address == null || address.isEmpty()) return;
+        android.content.SharedPreferences sp = act.getSharedPreferences("pandapools_recovery", android.content.Context.MODE_PRIVATE);
+        java.util.Set<String> set = new java.util.HashSet<>(sp.getStringSet("backup_proofless", new java.util.HashSet<>()));
+        set.add(address.toLowerCase());
+        sp.edit().putStringSet("backup_proofless", set).commit();
     }
 
     /** Open a backup file and report on it without changing anything. */

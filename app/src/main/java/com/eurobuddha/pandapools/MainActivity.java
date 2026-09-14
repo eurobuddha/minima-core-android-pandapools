@@ -186,6 +186,35 @@ public class MainActivity extends AppCompatActivity {
 
     /** Ask to be exempt from battery optimisation so keep-alive runs while the app is closed. Re-nag at most weekly
      *  until granted (asking once and giving up is a leading cause of the overnight market disappearing). */
+    /** Whether Android will let PandaPools run its keep-fresh work while the app is closed. A pool whose
+     *  reserves are not recreated roughly twice a day ages out of the cascade and goes dark to every light
+     *  node, so this is the single biggest cause of a pool becoming unrecoverable. */
+    public boolean isBatteryExempt() {
+        try {
+            android.os.PowerManager pm = (android.os.PowerManager) getSystemService(POWER_SERVICE);
+            return pm != null && pm.isIgnoringBatteryOptimizations(getPackageName());
+        } catch (Exception unknown) { return false; }
+    }
+
+    /** Ask now, bypassing the weekly rate-limit in {@link #requestBatteryExemption}: this one is user-initiated
+     *  from the create flow, where the obligation is being explained, not a background nag. */
+    public void requestBatteryExemptionNow() {
+        try {
+            startActivity(new Intent(android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                    android.net.Uri.parse("package:" + getPackageName())));
+        } catch (Exception unavailable) {
+            android.widget.Toast.makeText(this,
+                    "This device has no battery-optimisation screen. Exclude PandaPools from battery "
+                            + "optimisation in Android Settings → Apps → PandaPools.",
+                    android.widget.Toast.LENGTH_LONG).show();
+        }
+    }
+
+    /** Public so the create flow can make sure the keep-alive notification will actually be shown for a pool
+     *  created right now — ensureKeepAlive() is a no-op until the first pool exists, so on API 33+ the very
+     *  first pool's ongoing notification could otherwise be suppressed. */
+    public void ensureNotificationPermissionNow() { ensureNotificationPermission(); }
+
     private void requestBatteryExemption() {
         try {
             android.os.PowerManager pm = (android.os.PowerManager) getSystemService(POWER_SERVICE);
