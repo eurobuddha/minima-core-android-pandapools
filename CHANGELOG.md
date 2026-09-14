@@ -13,6 +13,12 @@ mirrored across all three.
 
 ---
 
+## [0.9.48] — Delete the dead key-burning and key-minting code
+- Remove `KeyUses.advanceTo`/`burn`/`BURN_DATA`/`MAX_BURN`/`RECHECK_EVERY`/`restoreTarget` and the unused `read`/`UsesCb`/`AdvanceCb`. None had a production caller. 0.9.23 estimated where a restored owner key should resume (recorded count + elapsed blocks ÷ `REFRESH_BLOCKS` + slack) and burned leaves up to that target; 0.9.47 reversed the policy but left the machinery in the tree. It cannot be made safe: burning cannot undo a reuse that already happened, the target is a guess (a signature that never reached the chain, or one made after the last backup, is invisible to every term), and burning *is* signing — so climbing past an unknown high-water mark re-signs every leaf on the way up. The class comment now records why, so it is not reintroduced.
+- Delete `HuntLedger` and `HuntBudget`. Both described a budgeted `newaddress` hunt that re-minted a missing owner key — a subsystem `OwnerKeyRecovery` stopped using when it became read-only; its callback's `regenerated` count has been hard-zero since. Only `rows`, `modifierOf` and `parseModifier` were still called; they move to `KeyUses`, which is already the class that reads a `keys` reply. `pandapools_huntledger` is no longer written.
+- Correct three comments that had outgrown their code: `ensureOwner`'s javadoc still promised a budgeted self-healing hunt that no longer exists; `doCollect`'s claimed a foreign key does not abort the sweep while the line below it aborts, and carried an unreachable `skipped` message behind a hard-zero counter. Aborting the whole sweep is correct and is now documented as such — core's consolidation picks its own inputs, so a sweep that continued could select a coin belonging to the blocked key and sign with it.
+- No behaviour change: pure deletion plus comments. 177 tests pass in each build variant (28 fewer than 0.9.47, all of them covering the deleted arithmetic); release lint passes.
+
 ## [0.9.47] — Durable pool recovery and verified signing state
 - Keep unresolved owned pools visible with their full covenant address and a reserve-recovery action. Validate current local reserves, receiving-node coin proofs, and fresh MegaMMR proofs; failed imports never count as recovered.
 - Preserve recipes, observed key-use floors and reserve-ID hints. Backups re-read live coins and discard proofs if reserves move during export. Proofs expire; recovery requires current complete wallet signing state and available chain proofs.

@@ -4,118 +4,52 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 /**
- * Reads and advances a key's one-time-signature use counter.
+ * Reads a key's one-time-signature use counter out of a {@code keys action:list} reply. Read-only.
  *
- * WHY THIS EXISTS. Minima signatures are stateful: each key is a 64-ary, 3-level Winternitz tree and
- * every signature must consume the NEXT leaf. Signing one leaf twice, over two different messages, leaks
- * that leaf's private key.
+ * WHY THE COUNTER MATTERS. Minima signatures are stateful: each key is a 64-ary, 3-level Winternitz tree and
+ * every signature must consume the NEXT leaf. Signing one leaf twice, over two different messages, leaks that
+ * leaf's private key. Observed in the wild — see the 0.9.22 entry in CHANGELOG.md, where 7 of 64 default keys on
+ * a live node were flagged {@code RE-USED x2}.
  *
- * A pool's owner key ($OPK) is minted with {@code newaddress}, so a seed-only re-sync does not bring it
- * back — {@code initDefaultKeys} rebuilds only the 64 default keys. {@link OwnerKeyRecovery} re-mints it
- * by re-issuing {@code newaddress} (keys derive as {@code hash(seed, index)}, so the same seed reproduces
- * the same keys in order) — but the node inserts EVERY new key at {@code uses = 0}:
+ * A pool's owner key ($OPK) is minted with {@code newaddress}, so a seed-only re-sync does not bring it back:
+ * {@code initDefaultKeys} rebuilds only the 64 default keys. Worse, a node inserts every new key at
+ * {@code uses = 0}:
  *
- * <pre>Wallet.createNewKey:  SQL_CREATE_PUBLIC_KEY.setInt(3, treekey.getUses());   // a fresh TreeKey → 0</pre>
+ * <pre>Wallet.createNewKey:  SQL_CREATE_PUBLIC_KEY.setInt(3, treekey.getUses());   // a fresh TreeKey -> 0</pre>
  *
- * The regenerated key is byte-identical to the one that already signed, so without this class the next
- * owner action would sign a leaf that was already spent on a different transaction. The node's own
- * restore margins don't help: {@code restore.java} (+256) and {@code vault.java} (=100) both run BEFORE
- * the owner key is re-minted, and only touch keys that exist at that moment.
+ * A key re-minted that way is byte-identical to the one that already signed, but its counter has forgotten
+ * everything — so the next owner action would sign a leaf that was already spent on a different transaction.
+ * The node's own restore margins do not help: {@code restore.java} (+256) and {@code vault.java} (=100) both
+ * run BEFORE an owner key is re-minted, and only touch keys that exist at that moment.
  *
- * HOW IT ADVANCES. There is no command to set a key's counter — {@code keys} offers only
- * {@code list / genkey / checkkeys / new / createallkeys}, and {@code updateAllKeyUses} rewrites all 64
- * default keys at once. And the private key can't be fetched to sign locally: {@code KeyRow.toJSON()}
- * has {@code privatekey} commented out.
+ * WHAT THIS CLASS DELIBERATELY DOES NOT DO. It does not advance a counter, and nothing in this app does.
  *
- * So we advance the counter the only way the node exposes — by actually spending leaves. Each
- * {@code sign} call runs {@code Wallet.signData}, which increments and persists {@code uses} by one. The
- * leaves burned here are precisely the ones we are skipping over, so nothing of value is lost.
+ * There is no command to set one — {@code keys} offers only {@code list / genkey / checkkeys / new /
+ * createallkeys}, {@code updateAllKeyUses} rewrites all 64 defaults at once, and the private key cannot be
+ * fetched to sign locally ({@code KeyRow.toJSON()} has {@code privatekey} commented out). The only way a node
+ * exposes to move a counter is to actually spend the leaves, by repeatedly calling {@code sign}.
  *
- * This works on ANY node. It needs no forked build and no new command.
+ * 0.9.23 did exactly that: it estimated where a restored key should resume (recorded count + elapsed blocks /
+ * REFRESH_BLOCKS + slack) and burned leaves up to that target. 0.9.47 reversed it, and the burn code is deleted
+ * as of 0.9.48, because the approach cannot work:
+ *
+ *   - burning cannot undo a reuse that already happened;
+ *   - the target is a guess — a signature the original node made that never reached the chain, or one made
+ *     after the last backup, is invisible to every term in that sum;
+ *   - and burning IS signing, so climbing past an unknown high-water mark re-signs every leaf on the way up.
+ *
+ * So signing state is never reconstructed or estimated. It is either present, as the matching current
+ * MinimaCore wallet backup, or the recipe stays signing-quarantined. {@link OwnerKeyRecovery} reads counters
+ * through {@link #extractUses} and fails closed; a counter below a recipe's recorded floor blocks signing
+ * outright. Do not reintroduce a burn path.
  */
 public final class KeyUses {
 
-    /** Data signed while burning a leaf. Constant and meaningless — the signature is discarded; only the
-     *  counter increment matters. Deliberately NOT a transaction id, so it can never be a valid spend. */
-    private static final String BURN_DATA = "0x00";
-
-    /** Re-read the node's real counter every this many burns instead of trusting our own arithmetic. A
-     *  concurrent signature from elsewhere would otherwise make us overshoot or undershoot silently. */
-    private static final int RECHECK_EVERY = 25;
-
-    /** Stop rather than spin: a target this far above the current count means something is wrong with the
-     *  backup, not with the key. Well beyond any real pool's lifetime usage (~2/day of keep-fresh). */
-    private static final int MAX_BURN = 20_000;
-
-    public interface UsesCb { void onUses(int uses); void onError(String message); }
-    public interface AdvanceCb { void onProgress(int done, int target); void onDone(int finalUses); void onError(String message); }
-
     private KeyUses() {}
 
-    /** Current use count for one public key, straight from the node. */
-    public static void read(NodeApi node, final String publickey, final UsesCb cb) {
-        if (publickey == null || publickey.isEmpty()) { cb.onError("no public key"); return; }
-        node.cmd("keys action:list publickey:" + publickey, new NodeApi.Cb() {
-            @Override public void onResult(JSONObject j) {
-                Integer u = extractUses(j, publickey);
-                if (u == null) cb.onError("the node doesn't hold that key");
-                else cb.onUses(u);
-            }
-            @Override public void onError(String m) { cb.onError(m); }
-        });
-    }
-
-    /**
-     * Advance {@code publickey} until its counter is at least {@code target}, by burning leaves.
-     *
-     * NEVER LOWERS — a key already at or above target is left untouched and reports success. That
-     * invariant is the whole point: a counter that can go backwards is a key-leak primitive.
-     *
-     * Fails loudly rather than silently falling short. A caller must treat {@code onError} as "do not
-     * sign with this key", because signing below target is exactly the bug being fixed.
-     */
-    public static void advanceTo(final NodeApi node, final String publickey, final int target, final AdvanceCb cb) {
-        if (publickey == null || publickey.isEmpty()) { cb.onError("no public key"); return; }
-        if (target <= 0) { cb.onDone(0); return; }
-        read(node, publickey, new UsesCb() {
-            @Override public void onUses(int uses) {
-                if (uses >= target) { cb.onDone(uses); return; }        // already past it — nothing to do
-                if (target - uses > MAX_BURN) {
-                    cb.onError("that backup asks for " + (target - uses) + " more key uses, which looks wrong — "
-                            + "not touching the key");
-                    return;
-                }
-                burn(node, publickey, target, uses, cb);
-            }
-            @Override public void onError(String m) { cb.onError(m); }
-        });
-    }
-
-    private static void burn(final NodeApi node, final String publickey, final int target,
-                             final int uses, final AdvanceCb cb) {
-        if (uses >= target) { cb.onDone(uses); return; }
-        cb.onProgress(uses, target);
-        node.cmd("sign publickey:" + publickey + " data:" + BURN_DATA, new NodeApi.Cb() {
-            @Override public void onResult(JSONObject j) {
-                if (!j.optBoolean("status", false)) { cb.onError("the node refused to sign — key not advanced"); return; }
-                int next = uses + 1;
-                // Trust the node over our own count periodically: another app on this node may also be
-                // signing, and the counter is shared.
-                if (next % RECHECK_EVERY == 0) {
-                    read(node, publickey, new UsesCb() {
-                        @Override public void onUses(int real) { burn(node, publickey, target, Math.max(real, next), cb); }
-                        @Override public void onError(String m) { burn(node, publickey, target, next, cb); }
-                    });
-                } else {
-                    burn(node, publickey, target, next, cb);
-                }
-            }
-            @Override public void onError(String m) { cb.onError(m); }
-        });
-    }
-
     /** Pull one key's `uses` out of a `keys action:list` reply. The response nests the rows under
-     *  `response.keys`; a publickey-filtered call returns just the one. */
+     *  `response.keys`; a publickey-filtered call returns just the one. Null means UNKNOWN — never 0, because
+     *  treating an absent key as "zero uses" would resume at the first leaf, which is the leak. */
     static Integer extractUses(JSONObject j, String publickey) {
         if (!TxPost.truthy(j, "status") || publickey == null) return null;
         Object resp = j.opt("response");
@@ -137,27 +71,38 @@ public final class KeyUses {
         return null;
     }
 
-    /**
-     * The count an owner key should be restored to.
-     *
-     * <pre>
-     *   target = usesAtBackup + refreshes since the backup + slack
-     * </pre>
-     *
-     * Every term is measured or derived, none invented. The gap term is the keep-fresh cadence: the
-     * owner key signs once per pool refresh, and refreshes happen when reserves age past
-     * {@link PoolRefresher#REFRESH_BLOCKS}, so elapsed blocks ÷ that is how many could have occurred.
-     *
-     * {@code slack} covers the non-refresh owner actions (deposits, migrates, collects) that could also
-     * have signed since the backup. Erring high costs a leaf out of 262,144; erring low leaks the key, so
-     * the asymmetry is entirely one way.
-     */
-    public static int restoreTarget(int usesAtBackup, int blockAtBackup, int currentBlock, int slack) {
-        int gap = 0;
-        if (currentBlock > blockAtBackup && blockAtBackup > 0) {
-            int blocks = currentBlock - blockAtBackup;
-            gap = (blocks + PoolRefresher.REFRESH_BLOCKS - 1) / PoolRefresher.REFRESH_BLOCKS;   // round up
+    /** The key rows of a {@code keys} reply — the response is either the array itself or nests it under
+     *  {@code keys} (both shapes exist in the wild). Null means the reply was unreadable, which every caller
+     *  must treat as "we do not know what this wallet holds", never as "it holds nothing". */
+    static JSONArray rows(JSONObject reply) {
+        Object resp = reply == null ? null : reply.opt("response");
+        if (resp instanceof JSONArray) return (JSONArray) resp;
+        if (resp instanceof JSONObject) return ((JSONObject) resp).optJSONArray("keys");
+        return null;
+    }
+
+    /** The derivation index ({@code modifier}) of one held key in a {@code keys} reply, or -1 if the reply is
+     *  unreadable, the key is absent, or the modifier will not parse. Recorded into a recipe as {@code kidx} so
+     *  {@link OwnerKeyRecovery} can tell a key this wallet simply has not reached from one it can never derive. */
+    static int modifierOf(JSONObject keysReply, String publickey) {
+        JSONArray arr = rows(keysReply);
+        if (arr == null || publickey == null || publickey.isEmpty()) return -1;
+        String want = publickey.toLowerCase();
+        for (int i = 0; i < arr.length(); i++) {
+            JSONObject k = arr.optJSONObject(i);
+            if (k == null || !want.equals(k.optString("publickey", "").toLowerCase())) continue;
+            java.math.BigInteger m = parseModifier(k.optString("modifier", ""));
+            return (m != null && m.signum() >= 0 && m.bitLength() < 31) ? m.intValue() : -1;
         }
-        return Math.max(0, usesAtBackup) + gap + Math.max(0, slack);
+        return -1;
+    }
+
+    /** A MiniData modifier ("0x00", "0x41", …) as a number, or null if unparsable. */
+    private static java.math.BigInteger parseModifier(String s) {
+        if (s == null) return null;
+        String h = s.trim();
+        if (h.startsWith("0x") || h.startsWith("0X")) h = h.substring(2);
+        if (h.isEmpty()) return null;
+        try { return new java.math.BigInteger(h, 16); } catch (NumberFormatException e) { return null; }
     }
 }

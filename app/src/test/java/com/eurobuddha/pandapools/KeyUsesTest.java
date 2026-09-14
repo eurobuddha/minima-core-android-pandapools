@@ -6,66 +6,18 @@ import org.junit.Test;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNull;
-import static org.junit.Assert.assertTrue;
 
 /**
- * The arithmetic that decides where a restored owner key resumes signing.
+ * Reading an owner key's one-time-signature counter out of a node reply.
  *
- * Getting this wrong in one direction wastes a leaf out of 262,144. Getting it wrong in the other
- * re-signs a leaf the pre-restore node already spent, which leaks that leaf's private key. So every
- * term here errs high on purpose.
+ * The only thing that matters here is that an UNKNOWN count never reads as zero. A key the node does not
+ * hold, or a reply we cannot parse, must come back null: treating it as "0 uses" would resume signing at
+ * the first leaf, re-signing leaves the pre-restore node already spent and leaking their private keys.
+ *
+ * The restoreTarget arithmetic these tests used to cover was deleted in 0.9.48 along with the burn path it
+ * fed. Estimating where a restored key should resume cannot be made safe -- see the KeyUses class comment.
  */
 public class KeyUsesTest {
-
-    private static final int REFRESH = PoolRefresher.REFRESH_BLOCKS;   // 900
-
-    // ---- restoreTarget ----
-
-    @Test public void targetCarriesTheCountRecordedAtBackup() {
-        // no time passed, no slack → resume exactly where the key left off
-        assertEquals(347, KeyUses.restoreTarget(347, 412_006, 412_006, 0));
-    }
-
-    @Test public void elapsedBlocksBecomeKeepFreshSignatures() {
-        // the owner key signs once per pool refresh, and a refresh happens every REFRESH_BLOCKS
-        int backupBlock = 412_006;
-        int now = backupBlock + (96 * REFRESH);
-        assertEquals(347 + 96, KeyUses.restoreTarget(347, backupBlock, now, 0));
-    }
-
-    @Test public void aPartialRefreshIntervalStillCountsAsOne() {
-        // rounding DOWN here would leave the key one leaf short — the exact failure being prevented
-        assertEquals(10 + 1, KeyUses.restoreTarget(10, 1000, 1000 + 1, 0));
-        assertEquals(10 + 1, KeyUses.restoreTarget(10, 1000, 1000 + REFRESH, 0));
-        assertEquals(10 + 2, KeyUses.restoreTarget(10, 1000, 1000 + REFRESH + 1, 0));
-    }
-
-    @Test public void slackIsAddedOnTop() {
-        assertEquals(347 + 50, KeyUses.restoreTarget(347, 412_006, 412_006, 50));
-    }
-
-    @Test public void aMissingOrStaleBlockStampNeverSubtracts() {
-        // an unstamped backup (atblock 0) contributes no gap rather than a negative one
-        assertEquals(347, KeyUses.restoreTarget(347, 0, 500_000, 0));
-        // a node that has somehow gone backwards must not reduce the target either
-        assertEquals(347, KeyUses.restoreTarget(347, 500_000, 400_000, 0));
-    }
-
-    @Test public void negativeInputsAreClamped() {
-        assertEquals(0, KeyUses.restoreTarget(-5, 0, 0, 0));
-        assertEquals(7, KeyUses.restoreTarget(0, 0, 0, 7));
-    }
-
-    @Test public void theTargetIsNeverBelowWhatWasRecorded() {
-        // the load-bearing invariant, across a spread of inputs
-        int[] uses = {0, 1, 58, 347, 5000};
-        int[] backupBlocks = {0, 1, 412_006};
-        int[] nows = {0, 1, 412_006, 998_110};
-        for (int u : uses) for (int b : backupBlocks) for (int n : nows) {
-            assertTrue("target must never fall below the recorded count",
-                    KeyUses.restoreTarget(u, b, n, 0) >= u);
-        }
-    }
 
     // ---- reading a key's count out of the node's reply ----
 

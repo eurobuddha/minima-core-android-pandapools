@@ -824,19 +824,19 @@ public class MyLpView extends BaseView {
                 .show();
     }
 
-    /** Self-heal the owner key ($OPK) before an owner-signed action. $OPK is a newaddress key (index >= 64) a
-     *  seed-only restore regenerates ASYNCHRONOUSLY, so acting too soon after a restore fails with "Public Key
-     *  not found". OwnerKeyRecovery.ensure is a no-op when the node already holds the key (one extra keys check);
-     *  a not-yet-ready node just proceeds (the action itself surfaces any real error). The hunt is budgeted
-     *  (see HuntBudget): an $OPK from a DIFFERENT seed comes back in {@code unreachable} instead of burning
-     *  256 fresh wallet keys per attempt, forever. */
+    /** READ-ONLY owner-key and signing-state pre-flight before an owner-signed action. Never creates a key and
+     *  never advances a counter: re-minting an owner key would insert it at {@code uses = 0}, and signing from
+     *  there re-signs leaves the original node already spent. Every blocked case arrives in {@code unreachable} —
+     *  key absent (a different seed), the node's key list unreadable, the key exhausted, the recipe
+     *  signing-quarantined, or the node's counter below the recipe's recorded floor — and all of them mean
+     *  "do not sign". The second callback argument is always 0; nothing is regenerated. */
     private void ensureOwner(List<String> opks, OwnerKeyRecovery.Cb cb) {
         NodeApi n = act.node();
         if (n == null) { cb.done(0, new ArrayList<>(opks)); return; }
         OwnerKeyRecovery.ensure(act, n, opks, cb);
     }
 
-    /** True when the hunt reported this pool's owner key as another seed's — signing is impossible here. */
+    /** True when the pre-flight reported this pool's owner key as unusable here — signing is impossible. */
     private static boolean foreignKey(String opk, List<String> unreachable) {
         return opk != null && unreachable != null && unreachable.contains(opk.toLowerCase());
     }
@@ -983,14 +983,13 @@ public class MyLpView extends BaseView {
         }
         if (oadrs.isEmpty()) { status("No pools on record to collect from."); return; }
         status("Collecting withdrawn funds to your wallet…");
-        // $OADR is RETURN SIGNEDBY($OPK) → the auto sweep still needs the owner key. Regenerate any missing ones
-        // first (no-op when already held) so an explicit Collect self-heals after a seed restore. A foreign-seed
-        // key doesn't abort the sweep — the OTHER pools' funds still move — it's just reported.
+        // $OADR is RETURN SIGNEDBY($OPK), so the auto sweep needs every owner key. The pre-flight is read-only.
+        // ONE unusable key aborts the WHOLE sweep: core's consolidation picks its own inputs, so a sweep that
+        // proceeded could select a coin belonging to the blocked key and sign with it. Aborting is therefore the
+        // correct behaviour, not a limitation — a per-pool sweep would be a separate change.
         ensureOwner(opks, (regenerated, unreachable) -> {
             if (unreachable != null && !unreachable.isEmpty()) { status(FOREIGN_KEY_MSG); return; }
-            final int foreign = 0;
-            final String skipped = foreign == 0 ? "" : "  (" + foreign + " owner key" + (foreign == 1 ? "" : "s")
-                    + " belong" + (foreign == 1 ? "s" : "") + " to a different seed — those pools can't sign here)";
+            final String skipped = "";
             mgr.sweepOwnerFunds(oadrs, (addressesForwarded, coins, error) -> act.runOnUiThread(() -> {
                 if (addressesForwarded > 0) {
                     status("Submitted collection from " + addressesForwarded + " pool"

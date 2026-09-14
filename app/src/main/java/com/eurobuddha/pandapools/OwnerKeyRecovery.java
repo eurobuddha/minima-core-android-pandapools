@@ -42,7 +42,7 @@ public final class OwnerKeyRecovery {
                                    java.util.function.Consumer<String> cb) {
         node.run("keys", new NodeApi.Cb() {
             public void onResult(JSONObject reply) {
-                if (!TxPost.truthy(reply, "status") || HuntBudget.rows(reply) == null) { cb.accept("Could not verify current wallet keys. Nothing consolidated."); return; }
+                if (!TxPost.truthy(reply, "status") || KeyUses.rows(reply) == null) { cb.accept("Could not verify current wallet keys. Nothing consolidated."); return; }
                 for (Pool p : recipes.get()) if (!signingAllowed(p, KeyUses.extractUses(reply, p.opk))) {
                     cb.accept("Consolidation is paused until all saved pool owner keys have verified current signing state. Use Pool recovery."); return;
                 }
@@ -54,7 +54,7 @@ public final class OwnerKeyRecovery {
 
     static List<String> unavailableKeys(JSONObject reply, Set<String> wanted) {
         Set<String> missing = new LinkedHashSet<>(wanted);
-        if (TxPost.truthy(reply, "status") && HuntBudget.rows(reply) != null) for (String key : pubkeys(reply)) {
+        if (TxPost.truthy(reply, "status") && KeyUses.rows(reply) != null) for (String key : pubkeys(reply)) {
             Integer uses = KeyUses.extractUses(reply, key);
             if (uses != null && uses >= 0 && uses < 262144) missing.remove(key);
         }
@@ -104,7 +104,7 @@ public final class OwnerKeyRecovery {
             node.run("keys", new NodeApi.Cb() {
                 public void onResult(JSONObject reply) {
                     List<Pool> current = recipes.get();
-                    if (!TxPost.truthy(reply, "status") || HuntBudget.rows(reply) == null
+                    if (!TxPost.truthy(reply, "status") || KeyUses.rows(reply) == null
                             || !unavailableKeys(reply, wanted).isEmpty()) { cb.accept("Could not verify signing keys. Nothing signed."); return; }
                     for (Pool p : current) if (wanted.contains(p.opk.toLowerCase(Locale.ROOT))
                             && !signingAllowed(p, KeyUses.extractUses(reply, p.opk))) {
@@ -150,7 +150,7 @@ public final class OwnerKeyRecovery {
 
     private static Set<String> pubkeys(JSONObject j) {
         Set<String> set = new HashSet<>();
-        JSONArray arr = HuntBudget.rows(j);
+        JSONArray arr = KeyUses.rows(j);
         if (arr != null) for (int i = 0; i < arr.length(); i++) {
             JSONObject k = arr.optJSONObject(i);
             if (k != null) { String pk = k.optString("publickey", ""); if (!pk.isEmpty()) set.add(pk.toLowerCase()); }

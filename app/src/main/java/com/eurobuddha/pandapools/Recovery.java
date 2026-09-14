@@ -100,7 +100,7 @@ public class Recovery {
                         r.minimumOwnerUses = Math.max(uses, r.minimumOwnerUses);
                     }
                     // the same row carries the key's derivation index — the node's answer beats the recipe's
-                    int kidx = HuntBudget.modifierOf(j, r.opk);
+                    int kidx = KeyUses.modifierOf(j, r.opk);
                     if (kidx >= 0) {
                         e.put("kidx", kidx);
                         // Backfill the local recipe too: a pre-v3 pool only reveals its index while the
