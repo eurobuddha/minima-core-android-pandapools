@@ -242,7 +242,7 @@ public class ActivityView extends BaseView {
         HistoryEntry tx = event.transaction;
         String tokenName = Util.tokenNameCached(event.tokenid);
         if (tokenName == null || tokenName.isEmpty()) tokenName = event.tokenid.equals(tx.tokenid)
-                ? tx.tokenName : Util.shorten(event.tokenid);
+                ? tx.tokenName : event.tokenid;
         String action;
         switch (event.kind) {
             case GlobalFeed.CREATE: action = "Pool creation"; break;
@@ -255,7 +255,7 @@ public class ActivityView extends BaseView {
         row.setPadding(dp(8), dp(12), dp(8), dp(12));
         row.addView(line(action + " · " + trim(event.minima) + " MINIMA / " + trim(event.token) + " " + tokenName,
                 Design.text(), 14f, true));
-        row.addView(line(Util.shorten(event.pool) + " · Transaction " + absolute(tx.timemilli), Design.dim(), 12f, false));
+        row.addView(line(event.pool + " · Transaction " + absolute(tx.timemilli), Design.dim(), 12f, false));
         row.addView(line(tx.verifiedAt == 0 ? "Waiting for node check" : ActivityLog.confirmationText(tx.verifiedDepth),
                 tx.verifiedDepth >= ActivityLog.CONFIRM_BLOCKS ? Design.success() : Design.amber(), 11f, false));
         if (tx.verifiedAt > 0) row.addView(line("Checked " + relative(tx.verifiedAt), Design.dim(), 11f, false));
@@ -287,7 +287,7 @@ public class ActivityView extends BaseView {
         card.addView(line(e.summary, Design.text(), 13f, false));
         String meta = (history != null && history.timemilli > 0 ? "Transaction " : "Submitted ") + absolute(eventTime);
         if (e.failed && e.failMsg != null && !e.failMsg.isEmpty()) meta += " · " + e.failMsg;
-        else if (e.txpowid != null && !e.txpowid.isEmpty()) meta = Util.shorten(e.txpowid) + "  ·  " + meta;
+        else if (e.txpowid != null && !e.txpowid.isEmpty()) meta = e.txpowid + "  ·  " + meta;
         TextView sub = line(meta, Design.dim(), 12f, false);
         sub.setPadding(0, dp(3), 0, 0);
         card.addView(sub);
@@ -334,7 +334,7 @@ public class ActivityView extends BaseView {
                 : (sign + Util.tidyAmount(n.amount) + "  " + n.tokenName));
         line1.setTextColor(color); line1.setTextSize(15f); line1.setTypeface(Design.typefaceBold());
         TextView line2 = new TextView(act);
-        String cp = (n.counterparty == null || n.counterparty.isEmpty()) ? "" : Util.shorten(n.counterparty) + "  ·  ";
+        String cp = (n.counterparty == null || n.counterparty.isEmpty()) ? "" : n.counterparty + "  ·  ";
         line2.setText((reshuffle ? n.reshuffleLabel() + "  ·  " : cp) + absolute(n.timemilli));
         line2.setTextColor(Design.dim()); line2.setTextSize(12f);
         mid.addView(line1); mid.addView(line2);
@@ -362,7 +362,7 @@ public class ActivityView extends BaseView {
         String m = trim(ev.minimaAmt), t = trim8(ev.tokenAmt), tl = ev.tokenLabel;
         String glyphStr, desc, line2Str;
         int glyphColor;
-        String poolTime = Util.shorten(ev.pool) + "  ·  Observed on this phone " + absolute(ev.ts)
+        String poolTime = ev.pool + "  ·  Observed on this phone " + absolute(ev.ts)
                 + " · Transaction time unknown";
         switch (ev.kind) {
             case GlobalFeed.CREATE:
@@ -432,14 +432,7 @@ public class ActivityView extends BaseView {
     }
 
     private void copyRow(LinearLayout p, String k, final String v) {
-        TextView t = new TextView(act);
-        t.setText(k + ":  " + v + "   (tap to copy)");
-        t.setTextColor(Design.dim()); t.setTextSize(12f); t.setTypeface(Typeface.MONOSPACE); t.setPadding(0, dp(4), 0, dp(4));
-        t.setOnClickListener(view -> {
-            ((ClipboardManager) act.getSystemService(Context.CLIPBOARD_SERVICE)).setPrimaryClip(ClipData.newPlainText(k, v));
-            Toast.makeText(act, "Copied", Toast.LENGTH_SHORT).show();
-        });
-        p.addView(t);
+        p.addView(Ui.identifierRow(act, k, v));
     }
 
     private void addBreakdown(LinearLayout p, String title, String json) {
@@ -454,9 +447,9 @@ public class ActivityView extends BaseView {
                 JSONObject c = a.optJSONObject(i);
                 if (c == null) continue;
                 String tid = c.optString("tokenid", "0x00");
-                String tok = Util.isMinima(tid) ? "Minima" : Util.shorten(tid);
+                String tok = Util.isMinima(tid) ? "Minima" : tid;
                 TextView t = new TextView(act);
-                t.setText("• " + Util.tidyAmount(c.optString("amount", "")) + " " + tok + "  →  " + Util.shorten(c.optString("addr", "")));
+                t.setText("• " + Util.tidyAmount(c.optString("amount", "")) + " " + tok + "  →  " + c.optString("addr", ""));
                 t.setTextColor(Design.dim()); t.setTextSize(12f); t.setPadding(dp(6), dp(1), 0, dp(1));
                 p.addView(t);
             }

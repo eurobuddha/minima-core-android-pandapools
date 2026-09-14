@@ -437,8 +437,8 @@ public class MyLpView extends BaseView {
             }
             withFreshCoins(p, () -> mgr.refresh(p, new PoolManager.Result() {
                 @Override public void onPosted(String txpowid) {
-                    act.runOnUiThread(() -> { busy = false; status("Pool re-published ✓ " + Util.shorten(txpowid)
-                            + " — fresh reserves + registry beacon; other nodes will rediscover it shortly."); act.pools().refresh(); });
+                    act.runOnUiThread(() -> { busy = false; status("Pool re-published ✓ " + txpowid
+                            + " — fresh reserves + registry beacon; other nodes will rediscover it shortly.", txpowid); act.pools().refresh(); });
                 }
                 @Override public void onFailed(String message) {
                     act.runOnUiThread(() -> { busy = false; status("Re-publish: " + message); });
@@ -721,7 +721,7 @@ public class MyLpView extends BaseView {
                 act.runOnUiThread(() -> {
                     busy = false;
                     pendingCreate = pool; pendingBlock = act.chainBlock(); pendingLabel = tokenName;
-                    status("Submitted ✓ " + Util.shorten(txpowid) + " — your pool is confirming on-chain (usually 1–3 blocks). "
+                    status("Submitted ✓ " + txpowid + " — your pool is confirming on-chain (usually 1–3 blocks). "
                             + "It will appear below automatically; no need to resubmit.");
                     startPendingPoll();
                     act.pools().refresh();
@@ -789,7 +789,7 @@ public class MyLpView extends BaseView {
                     LpStore.updateFeeBase(act, p.address, p.reserveM.add(fm), p.reserveT.add(ft));
                     ActivityLog.record(act, ActivityLog.DEPOSIT, "Add to MINIMA / " + p.tokenLabel() + "  ·  "
                             + trim(fm) + " MINIMA + " + trim(ft) + " " + p.tokenLabel(), txpowid, act.chainBlock());
-                    act.runOnUiThread(() -> { busy = false; status("Liquidity added ✓ " + Util.shorten(txpowid) + " — confirming on-chain."); act.pools().refresh(); });
+                    act.runOnUiThread(() -> { busy = false; status("Liquidity added ✓ " + txpowid + " — confirming on-chain.", txpowid); act.pools().refresh(); });
                 }
                 @Override public void onFailed(String message) {
                     ActivityLog.recordFailed(act, ActivityLog.DEPOSIT, "Add to MINIMA / " + p.tokenLabel(), message);
@@ -883,7 +883,7 @@ public class MyLpView extends BaseView {
                     // old pool is still live and must stay recoverable. Harmless once it does (emptied covenant).
                     ActivityLog.record(act, ActivityLog.MIGRATE, "Migrate MINIMA / " + p.tokenLabel() + " pool  ·  new size "
                             + trim(pool.reserveM) + " MINIMA + " + trim(pool.reserveT) + " " + p.tokenLabel(), txpowid, act.chainBlock());
-                    act.runOnUiThread(() -> { busy = false; status("Migrated ✓ " + Util.shorten(txpowid) + " — confirming on-chain."); act.pools().refresh(); });
+                    act.runOnUiThread(() -> { busy = false; status("Migrated ✓ " + txpowid + " — confirming on-chain.", txpowid); act.pools().refresh(); });
                 }
                 @Override public void onFailed(String message) {
                     ActivityLog.recordFailed(act, ActivityLog.MIGRATE, "Migrate MINIMA / " + p.tokenLabel() + " pool", message);
@@ -930,7 +930,7 @@ public class MyLpView extends BaseView {
                                 ActivityLog.record(act, ActivityLog.CLOSE, closeSummary, txpowid, act.chainBlock());
                                 act.runOnUiThread(() -> {
                                     busy = false;
-                                    status("Pool closed ✓ " + Util.shorten(txpowid) + " — moving funds to a wallet address (confirming on-chain)…");
+                                    status("Pool closed ✓ " + txpowid + " — moving funds to a wallet address (confirming on-chain)…", txpowid);
                                     act.pools().refresh();
                                     // Second hop: once the covenant→$OADR sweep confirms, forward it to a default-64
                                     // wallet address so the withdrawn funds survive a seed-only restore.
@@ -964,7 +964,7 @@ public class MyLpView extends BaseView {
             if (act.node() == null) return;
             mgr.forwardOwnerFunds(oadr, new PoolManager.ForwardResult() {
                 @Override public void onForwarded(String txpowid, int coins) {
-                    act.runOnUiThread(() -> { status("Withdrawn funds moved to your wallet ✓ " + Util.shorten(txpowid)); act.pools().refresh(); });
+                    act.runOnUiThread(() -> { status("Withdrawn funds moved to your wallet ✓ " + txpowid, txpowid); act.pools().refresh(); });
                 }
                 @Override public void onNothing() { collectAfterClose(oadr, triesLeft - 1); }   // close not confirmed yet — retry
                 @Override public void onFailed(String message) { collectAfterClose(oadr, triesLeft - 1); }
@@ -1304,10 +1304,17 @@ public class MyLpView extends BaseView {
         return BigDecimal.valueOf(d).setScale(4, RoundingMode.DOWN).stripTrailingZeros().toPlainString();
     }
 
-    private void status(String s) {
+    private void status(String s) { status(s, null); }
+
+    /** Status line, optionally tap-to-copy. `copyValue` is the FULL identifier the message mentions — a
+     *  TxPoW id in a confirmation is the one thing a user needs to paste into an explorer, so it is printed
+     *  whole (the row wraps) and one tap puts the complete value on the clipboard. */
+    private void status(String s, String copyValue) {
         TextView st = find(R.id.lpStatus);
         st.setVisibility(s.isEmpty() ? View.GONE : View.VISIBLE);
         st.setText(s);
+        if (copyValue == null || copyValue.isEmpty()) { st.setOnClickListener(null); st.setClickable(false); }
+        else Ui.copyable(st, "transaction id", copyValue);
     }
     private void toast(String s) { status(s); }
     private void info(String title, String msg) {

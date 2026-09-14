@@ -75,11 +75,19 @@ public class UtilTest {
         assertEquals(0, Util.tokenDecimals(new JSONObject().put("decimals", -5)));
     }
 
-    @Test public void shorten() {
-        assertEquals("", Util.shorten(null));
-        assertEquals("short", Util.shorten("short"));                 // <= 16 chars: unchanged
-        String s = "0x1234567890ABCDEF1234";                          // 22 chars
-        assertEquals("0x123456…EF1234", Util.shorten(s));             // first 8 + … + last 6
+    @Test public void aTokenLabelNeverTruncatesAnIdentifier() {
+        // A label reaches transaction confirmations and the CSV statement. When no name has been resolved it
+        // must fall back to the WHOLE tokenid: an abbreviated one cannot be pasted into an explorer or a
+        // support request, which is the only thing an identifier is for.
+        Pool p = new Pool();
+        p.tok = "0x7D39745FBD29049BE29850B55A18BF550E4D442F930F86266E34193D89042A90";
+        assertEquals(p.tok, p.tokenLabel());
+
+        p.tokName = "MxUSD";                                          // a resolved name is preferred
+        assertEquals("MxUSD", p.tokenLabel());
+
+        p.tokName = p.tok;                                            // a "name" that is just the id is no name
+        assertEquals(p.tok, p.tokenLabel());
     }
 
     @Test public void tokenDecimalsFromMetadata() throws JSONException {

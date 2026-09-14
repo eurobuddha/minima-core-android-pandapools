@@ -92,6 +92,37 @@ public final class Ui {
         v.setBackground(g);
     }
 
+    /**
+     * Make a view copy an identifier to the clipboard when tapped, and say so.
+     *
+     * An address, TxPoW id or token id exists to be pasted — into a block explorer, a support request, another
+     * wallet. A shortened one is not information: it cannot be pasted anywhere and cannot be searched for. So
+     * nothing in this app abbreviates one; where a value is too long to sit comfortably on a line, it wraps, and
+     * what lands on the clipboard is always the COMPLETE string, never what happens to be on screen.
+     */
+    public static void copyable(final View v, final String label, final String fullValue) {
+        if (v == null || fullValue == null || fullValue.isEmpty()) return;
+        v.setOnClickListener(view -> {
+            Context c = view.getContext();
+            android.content.ClipboardManager cm =
+                    (android.content.ClipboardManager) c.getSystemService(Context.CLIPBOARD_SERVICE);
+            if (cm != null) cm.setPrimaryClip(android.content.ClipData.newPlainText(label, fullValue));
+            android.widget.Toast.makeText(c, "Copied " + label, android.widget.Toast.LENGTH_SHORT).show();
+        });
+    }
+
+    /** A monospaced, wrapping, tap-to-copy row for one full identifier. */
+    public static TextView identifierRow(Context c, String label, String fullValue) {
+        TextView t = new TextView(c);
+        t.setText(label + ":  " + fullValue + "   (tap to copy)");
+        t.setTextColor(Design.dim());
+        t.setTextSize(12f);
+        t.setTypeface(android.graphics.Typeface.MONOSPACE);
+        t.setPadding(0, dp(c, 4), 0, dp(c, 4));
+        copyable(t, label, fullValue);
+        return t;
+    }
+
     private static RippleDrawable ripple(Context c, GradientDrawable content, int rippleColor) {
         return new RippleDrawable(ColorStateList.valueOf(withAlpha(rippleColor, 60)), content, null);
     }

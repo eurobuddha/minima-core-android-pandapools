@@ -29,11 +29,15 @@ public class Pool {
     public boolean signingStateUnverified = false;
     boolean newlyCreatedWithCurrentOwnerState = false;
 
-    /** Short, human display symbol for the token side (its name, or a truncated tokenid). */
+    /** Display symbol for the token side: its resolved name where we have one, otherwise the FULL tokenid.
+     *  Never abbreviated — a shortened tokenid cannot be pasted into an explorer or a support request, and this
+     *  label reaches transaction confirmations and the CSV statement. Checking the shared name cache first means
+     *  the fallback is rare in practice. */
     public String tokenLabel() {
         if (tokName != null && !tokName.isEmpty() && !tokName.equalsIgnoreCase(tok)) return tokName;
-        String h = tok != null && tok.startsWith("0x") ? tok.substring(2) : (tok == null ? "" : tok);
-        return h.length() > 8 ? h.substring(0, 8) + "…" : h;
+        String cached = Util.tokenNameCached(tok);
+        if (cached != null && !cached.isEmpty() && !cached.equalsIgnoreCase(tok)) return cached;
+        return tok == null ? "" : tok;
     }
 
     // live reserves (null until scanned)

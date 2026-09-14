@@ -320,7 +320,7 @@ public class SwapView extends BaseView {
                 act.runOnUiThread(() -> {
                     posting = false;
                     amount.setText("");
-                    setStatus("Swap submitted. Check Activity for confirmation. " + Util.shorten(txpowid), Design.amber());
+                    setStatus("Swap submitted. Check Activity for confirmation. " + txpowid, Design.amber());
                     swapBtn.setEnabled(true); swapBtn.setText("SWAP"); Ui.primaryButton(swapBtn);
                     act.pools().refresh();
                 });
@@ -393,7 +393,9 @@ public class SwapView extends BaseView {
 
         TextView desc = new TextView(act);
         desc.setText(e.summary); desc.setTextColor(Design.text()); desc.setTextSize(13);
-        desc.setMaxLines(1); desc.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        // Wraps instead of clipping at one line: a summary can carry a full tokenid when a token name has
+        // not resolved, and this row has no tap-to-copy of its own to recover a clipped one from.
+        desc.setMaxLines(3);
         desc.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
         row.addView(desc);
 

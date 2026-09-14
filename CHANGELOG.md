@@ -13,6 +13,14 @@ mirrored across all three.
 
 ---
 
+## [0.9.50] — Print identifiers in full, with one tap to copy
+- Delete `Util.shorten` and its 18 call sites. An address, TxPoW id or token id exists to be pasted — into a block explorer, a support request, another wallet — and `0x123456…EF1234` cannot be pasted anywhere or searched for. This mattered most exactly where it was worst: every pool recovery and withdrawal confirmation printed a shortened TxPoW id, so a user who needed help could not supply the one value that identifies their transaction.
+- `Pool.tokenLabel()` no longer returns a truncated tokenid when a token name has not resolved. It now consults the shared name cache first (so the fallback is rare) and otherwise returns the whole id. The covenant address in the pool card is printed in full too.
+- Transaction confirmations print the complete TxPoW id and the status line itself is tap-to-copy; what reaches the clipboard is always the full value, never what happens to be on screen.
+- One clipboard helper (`Ui.copyable` / `Ui.identifierRow`) replaces four separate implementations. The receive address now wraps instead of being middle-ellipsised, and an activity summary wraps rather than clipping at one line, because it can carry a full tokenid and had no way to recover a clipped one.
+- Token names and tickers are still ellipsised where space demands it: they are display strings, not identifiers.
+- 194 tests pass in each build variant; release lint passes. The `shorten` unit test is replaced by one asserting a token label never truncates an identifier.
+
 ## [0.9.49] — Say which signing problem actually happened
 - Split the one owner-key failure message into six. `FOREIGN_KEY_MSG` was shown for **five different situations** — key absent, node unreadable, key exhausted, recipe signing-quarantined, and counter below the recipe's recorded floor — and named only the first, so it told a user whose recipe was merely imported to "restore the matching MinimaCore wallet backup". That is the seed-only restore that *causes* key reuse: a seed rebuilds the owner key with its counter reset to zero. The new `OwnerKeyRecovery.Reason` gives each case its own wording, and `classify(...)` is a pure function so every branch is pinned by a test.
 - The unreadable-node message no longer mentions restoring anything, and says outright that it implies nothing about the key — asserted by a test, because this was the case most likely to send someone to their seed phrase.

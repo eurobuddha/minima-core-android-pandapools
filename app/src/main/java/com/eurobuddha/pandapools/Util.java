@@ -34,13 +34,6 @@ public final class Util {
         return Math.max(0, bd.stripTrailingZeros().scale());
     }
 
-    /** Shorten a long hex id/address for display: 0x1234…ABCD */
-    public static String shorten(String s) {
-        if (s == null) return "";
-        if (s.length() <= 16) return s;
-        return s.substring(0, 8) + "…" + s.substring(s.length() - 6);
-    }
-
     public static boolean isMinima(String tokenid) {
         return tokenid == null || MINIMA_TOKENID.equals(tokenid);
     }

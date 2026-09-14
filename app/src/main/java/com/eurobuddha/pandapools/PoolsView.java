@@ -142,12 +142,8 @@ public class PoolsView extends BaseView {
         // Address is shown truncated but the FULL value is one tap away (copied verbatim to the clipboard) —
         // never leave an identifier with no way to recover it in full.
         final String fullAddr = p.address;
-        View poolRow = kv("pool", p.address.substring(0, 14) + "…  (tap to copy)");
-        poolRow.setOnClickListener(view -> {
-            ((ClipboardManager) act.getSystemService(Context.CLIPBOARD_SERVICE))
-                    .setPrimaryClip(ClipData.newPlainText("pool address", fullAddr));
-            Toast.makeText(act, "Pool address copied", Toast.LENGTH_SHORT).show();
-        });
+        View poolRow = kv("pool", p.address + "  (tap to copy)");   // full covenant address: it is what an explorer needs
+        Ui.copyable(poolRow, "pool address", fullAddr);
         card.addView(poolRow);
         return card;
     }

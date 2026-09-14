@@ -83,7 +83,7 @@ public class HistoryEntry {
                 if (n != null && !n.isEmpty()) return n;
             }
         }
-        return Util.shorten(tid);
+        return tid;
     }
 
     private static String coins(JSONArray arr) {
@@ -230,7 +230,7 @@ public class HistoryEntry {
         // secondary leg (e.g. USDT on a MINIMA→USDT swap): use the name learned from coin/pool scans
         String cached = Util.tokenNameCached(tid);
         if (cached != null && !cached.isEmpty()) return cached;
-        return Util.shorten(tid);
+        return tid;
     }
 
     /** For a reshuffle, the GROSS amount + token of the dominant output token (e.g. "500000  Minima") —
@@ -247,7 +247,7 @@ public class HistoryEntry {
             String domTid = "0x00"; BigDecimal domSum = BigDecimal.ZERO;
             for (java.util.Map.Entry<String, BigDecimal> en : sums.entrySet())
                 if (en.getValue().compareTo(domSum) > 0) { domSum = en.getValue(); domTid = en.getKey(); }
-            String name = Util.isMinima(domTid) ? "Minima" : domTid.equals(tokenid) ? tokenName : Util.shorten(domTid);
+            String name = Util.isMinima(domTid) ? "Minima" : domTid.equals(tokenid) ? tokenName : domTid;
             return Util.tidyAmount(domSum.stripTrailingZeros().toPlainString()) + "  " + name;
         } catch (Exception e) { return Util.tidyAmount(amount) + "  " + tokenName; }
     }

@@ -155,12 +155,10 @@ public class WalletView extends BaseView {
         box.addView(note);
 
         TextView addr = mono(receiveAddr.isEmpty() ? "…" : "Receive:  " + receiveAddr, 12f, Design.accent(), false);
-        addr.setMaxLines(2); addr.setEllipsize(TextUtils.TruncateAt.MIDDLE);
-        addr.setOnClickListener(v -> {
-            if (receiveAddr.isEmpty()) return;
-            ((ClipboardManager) act.getSystemService(Context.CLIPBOARD_SERVICE)).setPrimaryClip(ClipData.newPlainText("address", receiveAddr));
-            Toast.makeText(act, "Address copied", Toast.LENGTH_SHORT).show();
-        });
+        // Wraps rather than ellipsising: a middle-truncated address is unusable, and this is the value a
+        // sender has to reproduce exactly.
+        addr.setSingleLine(false);
+        Ui.copyable(addr, "address", receiveAddr);
         box.addView(addr);
         TextView hint = mono("tap to copy your receive address", 10f, Design.dim(), false);
         hint.setPadding(0, dp(3), 0, 0);
@@ -340,9 +338,8 @@ public class WalletView extends BaseView {
         copyAll.setOnClickListener(v -> {
             CharSequence all = coinsView.getText();
             if (all == null || all.length() == 0) return;
-            ((ClipboardManager) act.getSystemService(Context.CLIPBOARD_SERVICE))
-                    .setPrimaryClip(ClipData.newPlainText("coins", all));
-            Toast.makeText(act, "Coins copied", Toast.LENGTH_SHORT).show();
+            Ui.copyable(copyAll, "coins", all.toString());
+            copyAll.performClick();
         });
         box.addView(copyAll);
         box.addView(coinsView);

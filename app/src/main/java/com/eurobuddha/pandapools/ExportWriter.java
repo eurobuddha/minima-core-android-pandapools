@@ -118,7 +118,7 @@ public final class ExportWriter {
     private static String label(Pool recipe) {
         String cached = Util.tokenNameCached(recipe.tok);
         if (cached != null && !cached.isEmpty()) return cached;
-        return Util.shorten(recipe.tok);        // an identifier, not a guessed name
+        return recipe.tok;        // an identifier, not a guessed name
     }
 
     static String filename(long ms) {
