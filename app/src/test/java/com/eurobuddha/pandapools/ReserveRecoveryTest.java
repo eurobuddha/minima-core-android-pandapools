@@ -136,7 +136,9 @@ public class ReserveRecoveryTest {
             assertTrue(outcomes.isEmpty());
             p.signingStateUnverified=true;if(!duringKeys)recipes.add(p);
             waiting[0].onResult(duringKeys?keyReply:coinReply);
-            assertEquals(1,outcomes.size());assertNotNull(outcomes.get(0));assertTrue(outcomes.get(0).contains("paused"));
+            assertEquals(1,outcomes.size());assertNotNull(outcomes.get(0));// the refusal must name the ACTUAL reason (imported recipe), not a generic "paused", and must warn
+            // against the seed-only restore that causes it
+            assertTrue(outcomes.get(0),outcomes.get(0).contains("imported"));assertTrue(outcomes.get(0).contains("seed phrase"));assertTrue(outcomes.get(0).contains("Nothing signed"));
         }
     }
     @Test public void archiveAllowsOnlyExactReadOnlyCoinIdLookup() {
@@ -222,7 +224,7 @@ public class ReserveRecoveryTest {
         OwnerKeyRecovery.checkConsolidation((q,cb)->waiting[0]=cb,()->recipes,result::add);
         Pool p=pool();p.opk="0x5555";p.signingStateUnverified=true;recipes.add(p);
         waiting[0].onResult(reply(new JSONArray().put(new JSONObject().put("publickey",p.opk).put("uses",846))));
-        assertEquals(1,result.size());assertTrue(result.get(0).contains("paused"));
+        assertEquals(1,result.size());assertTrue(result.get(0),result.get(0).contains("Nothing consolidated"));assertTrue(result.get(0).contains("imported"));
     }
     @Test public void interruptedWriteClearFailureKeepsLatchAndPendingReplyIsIncomplete() throws Exception {
         assertFalse(NodeApi.commitWriteAcknowledgement(()->false,()->{throw new IllegalStateException("disk");}));

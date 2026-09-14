@@ -316,8 +316,11 @@ public class PoolManager {
         if (!FundingCoins.hex(oadr)) { cb.onFailed("Invalid owner address."); return; }
         List<String> owners = new ArrayList<>();
         for (Pool p : OwnPoolStore.all(node.context())) if (oadr.equalsIgnoreCase(p.oadr)) owners.add(p.opk);
-        OwnerKeyRecovery.ensure(node.context(), node, owners, (n, unavailable) -> {
-            if (!unavailable.isEmpty()) { cb.onFailed("Owner key or current signing state unavailable. Restore the matching MinimaCore wallet backup before collecting."); return; }
+        OwnerKeyRecovery.ensure(node.context(), node, owners, blocked -> {
+            if (!blocked.isEmpty()) {
+                OwnerKeyRecovery.Blocked worst = OwnerKeyRecovery.worst(blocked);
+                cb.onFailed("Nothing collected.\n\n" + worst.message()); return;
+            }
             forwardCheckedOwnerFunds(oadr, cb);
         });
     }
@@ -515,9 +518,9 @@ public class PoolManager {
     // ===================================================================== helpers
 
     private void ownerSignPost(String txid, String opk, List<String> cmds, Result cb) {
-        OwnerKeyRecovery.ensure(node.context(), node, java.util.Collections.singletonList(opk), (n, unavailable) -> {
-        if (!unavailable.isEmpty()) {
-            cb.onFailed("Owner key or current signing state unavailable. Restore the matching MinimaCore wallet backup before spending."); return;
+        OwnerKeyRecovery.ensure(node.context(), node, java.util.Collections.singletonList(opk), blocked -> {
+        if (!blocked.isEmpty()) {
+            cb.onFailed("Nothing was posted.\n\n" + OwnerKeyRecovery.worst(blocked).message()); return;
         }
         cmds.add("txnsign id:" + txid + " publickey:auto");        // any wallet funding coins
         cmds.add("txnsign id:" + txid + " publickey:" + opk);      // the owner signature the covenant requires

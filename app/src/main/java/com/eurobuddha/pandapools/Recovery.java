@@ -238,10 +238,12 @@ public class Recovery {
                         Integer prev = kidx.get(o);
                         if (prev == null || prev < ki) kidx.put(o, ki);
                     }
-                    OwnerKeyRecovery.ensure(ctx, node, opks, kidx, (regenerated, unreachable) -> {
-                        if (!unreachable.isEmpty()) cb.onProgress("! " + unreachable.size()
-                                + " owner key(s) need signing-state verification. Restore the latest matching MinimaCore wallet backup "
-                                + "and stop other nodes using that wallet, then confirm its signing state in Recovery. Pool recipes do not restore signing state.");
+                    OwnerKeyRecovery.ensure(ctx, node, opks, kidx, blocked -> {
+                        // One line per DISTINCT reason, so a restore onto a foreign seed and a restore whose
+                        // counter went backwards no longer read as the same problem with the same wrong fix.
+                        java.util.Set<OwnerKeyRecovery.Reason> seen = new java.util.LinkedHashSet<>();
+                        for (OwnerKeyRecovery.Blocked b : blocked.values()) if (seen.add(b.reason))
+                            cb.onProgress("! " + b.message().replace("\n\n", "  ").replace("\n", "  "));
                         cb.onDone(okCount.get(), total);
                     });
                 }

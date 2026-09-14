@@ -117,8 +117,8 @@ public final class TxPost {
             public void ok(String id) { CoinLock.finishInputs(inputIds); done.ok(id); }
             public void fail(String message) { CoinLock.finishInputs(inputIds); done.fail(message); }
         });
-        submit(() -> OwnerKeyRecovery.ensure(node.context(), node, guardedKeys, (regenerated, unavailable) -> {
-            if (!unavailable.isEmpty()) { gatedDone.fail("Owner signing is paused. Verify current wallet signing state in Pool recovery."); return; }
+        submit(() -> OwnerKeyRecovery.ensure(node.context(), node, guardedKeys, blocked -> {
+            if (!blocked.isEmpty()) { gatedDone.fail("Nothing was posted.\n\n" + OwnerKeyRecovery.worst(blocked).message()); return; }
             runChain(node, txid, cmdsThroughBasics, gatedDone);
         }));
     }

@@ -21,6 +21,7 @@ import java.math.MathContext;
 import java.math.RoundingMode;
 import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.Map;
 import java.util.List;
 import java.util.Set;
 
@@ -428,9 +429,10 @@ public class MyLpView extends BaseView {
      *  spends the covenant coin, so a stale snapshot would fail with "already spent (the pool moved)". */
     private void republish(Pool p) {
         busy = true; status("Re-publishing your pool so others can find it…");
-        ensureOwner(java.util.Collections.singletonList(p.opk), (regenerated, unreachable) -> {
-            if (foreignKey(p.opk, unreachable)) {
-                act.runOnUiThread(() -> { busy = false; status(FOREIGN_KEY_MSG); });
+        ensureOwner(java.util.Collections.singletonList(p.opk), blocked -> {
+            OwnerKeyRecovery.Blocked why = blockedKey(p.opk, blocked);
+            if (why != null) {
+                act.runOnUiThread(() -> { busy = false; status(why.message()); });
                 return;
             }
             withFreshCoins(p, () -> mgr.refresh(p, new PoolManager.Result() {
@@ -832,18 +834,14 @@ public class MyLpView extends BaseView {
      *  "do not sign". The second callback argument is always 0; nothing is regenerated. */
     private void ensureOwner(List<String> opks, OwnerKeyRecovery.Cb cb) {
         NodeApi n = act.node();
-        if (n == null) { cb.done(0, new ArrayList<>(opks)); return; }
+        if (n == null) { cb.done(OwnerKeyRecovery.nodeUnavailable(opks)); return; }
         OwnerKeyRecovery.ensure(act, n, opks, cb);
     }
 
-    /** True when the pre-flight reported this pool's owner key as unusable here — signing is impossible. */
-    private static boolean foreignKey(String opk, List<String> unreachable) {
-        return opk != null && unreachable != null && unreachable.contains(opk.toLowerCase());
+    /** Why this pool's owner key cannot sign, or null when it can. */
+    private static OwnerKeyRecovery.Blocked blockedKey(String opk, Map<String, OwnerKeyRecovery.Blocked> blocked) {
+        return (opk == null || blocked == null) ? null : blocked.get(opk.toLowerCase());
     }
-
-    private static final String FOREIGN_KEY_MSG =
-            "The owner key is missing or could not be verified. "
-                    + "Restore the matching MinimaCore wallet backup before spending. A pool recipe does not restore signing state.";
 
     /** Re-read the pool's LIVE covenant coin right before an owner txn (close / add / migrate) so we
      *  spend its CURRENT coin, not a stale snapshot — a swap, or this node's own keep-fresh, may have
@@ -860,9 +858,10 @@ public class MyLpView extends BaseView {
 
     private void doMigrate(Pool p, BigDecimal x, BigDecimal y) {
         busy = true; status("Migrating your pool…");
-        ensureOwner(java.util.Collections.singletonList(p.opk), (regenerated, unreachable) -> {
-            if (foreignKey(p.opk, unreachable)) {
-                act.runOnUiThread(() -> { busy = false; status(FOREIGN_KEY_MSG); });
+        ensureOwner(java.util.Collections.singletonList(p.opk), blocked -> {
+            OwnerKeyRecovery.Blocked why = blockedKey(p.opk, blocked);
+            if (why != null) {
+                act.runOnUiThread(() -> { busy = false; status(why.message()); });
                 return;
             }
             // Scanned pools never carry kidx — the recipes do. Enrich before migrate so the NEW recipe
@@ -905,9 +904,10 @@ public class MyLpView extends BaseView {
                 .setPositiveButton("Withdraw", (d, w) -> {
                     busy = true; status("Closing pool…");
                     final String closeOadr = p.oadr;
-                    ensureOwner(java.util.Collections.singletonList(p.opk), (regenerated, unreachable) -> {
-                        if (foreignKey(p.opk, unreachable)) {
-                            act.runOnUiThread(() -> { busy = false; status(FOREIGN_KEY_MSG); });
+                    ensureOwner(java.util.Collections.singletonList(p.opk), blocked -> {
+                        OwnerKeyRecovery.Blocked why = blockedKey(p.opk, blocked);
+                        if (why != null) {
+                            act.runOnUiThread(() -> { busy = false; status(why.message()); });
                             return;
                         }
                         // The cached pool coin can be stale — a counterparty swap, or this node's own
@@ -987,8 +987,10 @@ public class MyLpView extends BaseView {
         // ONE unusable key aborts the WHOLE sweep: core's consolidation picks its own inputs, so a sweep that
         // proceeded could select a coin belonging to the blocked key and sign with it. Aborting is therefore the
         // correct behaviour, not a limitation — a per-pool sweep would be a separate change.
-        ensureOwner(opks, (regenerated, unreachable) -> {
-            if (unreachable != null && !unreachable.isEmpty()) { status(FOREIGN_KEY_MSG); return; }
+        ensureOwner(opks, blocked -> {
+            if (blocked != null && !blocked.isEmpty()) {
+                status("Nothing collected.\n\n" + OwnerKeyRecovery.worst(blocked).message()); return;
+            }
             final String skipped = "";
             mgr.sweepOwnerFunds(oadrs, (addressesForwarded, coins, error) -> act.runOnUiThread(() -> {
                 if (addressesForwarded > 0) {
