@@ -183,6 +183,7 @@ public class MyLpView extends BaseView {
 
         // A create still confirming → a persistent amber card at the top (never "No pools yet" while pending).
         if (pendingCreate != null) list.addView(confirmingCard());
+        if (!BackupState.upToDate(act)) list.addView(backupCard());
         for (Pool p : unavailable) list.addView(recoveryCard(p));
         Set<String> heldKeys = new HashSet<>();
         for (Pool p : OwnPoolStore.all(act)) if ((p.signingStateUnverified || OwnPoolStore.confirmationFailed(p.opk)) && heldKeys.add(p.opk)) {
@@ -397,6 +398,33 @@ public class MyLpView extends BaseView {
         row.addView(gap());
         row.addView(actionBtn("Close", () -> confirmClose(p), false));
         return row;
+    }
+
+    /**
+     * Persistent amber card while the exported backup does not cover every pool this node owns.
+     *
+     * Not a toast and not dismissible: the on-device recipe store is excluded from cloud backup by design, so
+     * for a pool missing from the exported file there is no recovery path at all if this phone is lost. It stays
+     * until an export is read back and verified.
+     */
+    private View backupCard() {
+        int owned = BackupState.ownedCount(act);
+        boolean never = !BackupState.everExported(act);
+        LinearLayout card = dialogBox(); Ui.card(card);
+        card.addView(text(never ? "Your pools are not backed up" : "Your backup is out of date",
+                Design.amber(), 16, true));
+        TextView detail = new TextView(act);
+        detail.setText(never
+                ? (owned == 1 ? "Your pool exists only on this phone." : "Your " + owned + " pools exist only on this phone.")
+                        + " PandaPools keeps their contracts here, but that copy is deliberately never sent to any "
+                        + "cloud — so if this phone is lost or wiped, there is nothing to recover from. Save a "
+                        + "backup file now, and keep a current MinimaCore wallet backup with it."
+                : "Your saved backup file no longer covers every pool you own, so a pool created since then "
+                        + "could not be recovered from it. Save a fresh one.");
+        detail.setTextIsSelectable(true); card.addView(detail);
+        Button back = new Button(act); back.setText("Back up now");
+        back.setOnClickListener(v -> doBackup()); card.addView(back);
+        return card;
     }
 
     /** Best-effort discoverability hint + manual Re-publish. Other nodes find a pool only while a fresh registry
@@ -1159,17 +1187,42 @@ public class MyLpView extends BaseView {
 
     private void doBackup() {
         status("Preparing backup…");
+        final java.util.List<Pool> owned = OwnPoolStore.all(act);
         recovery.backup(act, new ArrayList<>(myPools), act.chainBlock(), new Recovery.BackupCb() {
             @Override public void onBackup(String json) {
                 act.pickSaveFile("pandapools-backup.json", uri -> {
                     if (uri == null) { status("Backup cancelled."); return; }
-                    if (writeUri(uri, json)) {
-                        status("Backup saved ✓");
-                        info("Backup saved", (json.contains("proof_warning") ? "Some reserve proofs were unavailable or changed during backup. See proof_warning in the file; a fresh archive lookup may be needed.\n\n" : "Embedded coin proofs expire; the recipes remain useful for a fresh archive lookup.\n\n")
-                                + "Your pool recipe file is saved. Also keep a current MinimaCore wallet backup: it preserves signing state. Keep both safe (a private drive, "
-                                + "another device). To recover on a new or wiped node: open PandaPools there → My LP → "
-                                + "Back up / Restore → Restore.");
-                    } else status("Could not write the backup file.");
+                    if (!writeUri(uri, json)) { status("Could not write the backup file."); return; }
+                    // A write that did not throw is NOT evidence the file is usable. Read it back and prove it
+                    // can recover every pool: a truncated or partially-written backup otherwise fails for the
+                    // first time during a real recovery, which is the worst possible moment to discover it.
+                    String readBack = readUri(uri);
+                    int written = json.getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
+                    String problem = BackupState.verifyExport(readBack, owned, written);
+                    if (problem != null) {
+                        status("Backup NOT verified: " + problem);
+                        info("Backup could not be verified",
+                                "PandaPools saved the file but could not read it back intact: " + problem + ".\n\n"
+                                + "Do not rely on it. Try a different location — a local folder rather than a "
+                                + "cloud-synced one, which may not have finished writing.");
+                        return;
+                    }
+                    BackupState.recordVerifiedExport(act, owned);
+                    status("Backup saved and verified ✓");
+                    info("Backup saved and verified",
+                            "PandaPools read the file back and confirmed it can rebuild "
+                            + (owned.size() == 1 ? "your pool's contract" : "all " + owned.size() + " of your pools' contracts") + ".\n\n"
+                            + (json.contains("proof_warning")
+                                ? "Some reserve coin proofs were unavailable or changed while exporting, so they are not in the file. That is not a problem: proofs are only a shortcut, they expire anyway, and recovery works from the recipe plus an archive lookup.\n\n"
+                                : "The coin proofs inside it expire; the recipes do not, and they are what recovery actually needs.\n\n")
+                            + "YOU NEED A SECOND BACKUP. This file holds your pool contracts. It does NOT hold "
+                            + "your wallet keys or how many of their one-time signatures have been used, so it "
+                            + "cannot recover a pool on its own. Keep a current MinimaCore wallet backup "
+                            + "alongside it. A seed phrase is not a substitute: it rebuilds your owner key with "
+                            + "its signature counter reset, and signing from there can expose the key.\n\n"
+                            + "Keep both somewhere off this phone. To recover: install PandaPools on the new "
+                            + "node, restore the wallet backup first, then My LP → Back up / Restore → Restore.");
+                    act.pools().refresh();   // re-render so the "not backed up" banner clears
                 });
             }
             @Override public void onError(String msg) { status(msg); }

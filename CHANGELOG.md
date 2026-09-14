@@ -13,6 +13,13 @@ mirrored across all three.
 
 ---
 
+## [0.9.51] — Verify a backup instead of assuming it worked
+- A backup is now read back from wherever it was saved and proved usable before PandaPools calls it saved. It must parse, carry a version this app reads, and contain an entry for every owned pool whose recipe actually re-derives that covenant address — the same check `Restore` applies. Previously a write that did not throw was reported as "Backup saved ✓", so a truncated or partially-written file (a cloud-synced folder that had not finished, say) failed for the first time during a real recovery.
+- New persistent amber card in MY LP while the exported file does not cover every pool you own: "Your pools are not backed up", or "Your backup is out of date" once one exists. It is not a toast and not dismissible. The on-device recipe store is deliberately excluded from cloud backup (`data_extraction_rules.xml` allows a direct device transfer only), so for a pool missing from the exported file there is no recovery path at all if the phone is lost. A digest over the sorted set of owned covenant addresses decides this, so it cannot drift out of step; the backup wire version is folded in, so a future format change invalidates older records rather than silently accepting them.
+- The saved-backup dialog now says plainly that **you need a second backup**: this file holds pool contracts, not wallet keys or their signature counters, so it cannot recover a pool on its own — and a seed phrase is not a substitute, because it rebuilds the owner key with its counter reset.
+- Missing coin proofs at export are no longer reported as a warning. They expire anyway and recovery works from the recipe plus an archive lookup, so the wording says so rather than alarming the user about the part that does not matter.
+- 206 tests pass in each build variant (12 new); release lint passes.
+
 ## [0.9.50] — Print identifiers in full, with one tap to copy
 - Delete `Util.shorten` and its 18 call sites. An address, TxPoW id or token id exists to be pasted — into a block explorer, a support request, another wallet — and `0x123456…EF1234` cannot be pasted anywhere or searched for. This mattered most exactly where it was worst: every pool recovery and withdrawal confirmation printed a shortened TxPoW id, so a user who needed help could not supply the one value that identifies their transaction.
 - `Pool.tokenLabel()` no longer returns a truncated tokenid when a token name has not resolved. It now consults the shared name cache first (so the fallback is rare) and otherwise returns the whole id. The covenant address in the pool card is printed in full too.
