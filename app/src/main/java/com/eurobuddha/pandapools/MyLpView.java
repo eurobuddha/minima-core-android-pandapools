@@ -1138,11 +1138,21 @@ public class MyLpView extends BaseView {
     }
 
     private void showRecoveryDialog() {
-        String[] items = { "Collect withdrawn funds to my wallet", "Back up my pools to a file", "Restore pools from a file", "Archive connection", "Confirm wallet signing state", "How recovery works" };
+        // "Check a backup file" sits directly above Restore on purpose: it answers the same question without
+        // changing anything, so nobody has to commit to a restore just to find out whether their file is good.
+        String[] items = { "Collect withdrawn funds to my wallet", "Back up my pools to a file",
+                "Check a backup file (changes nothing)", "Restore pools from a file",
+                "Archive connection", "Confirm wallet signing state", "How recovery works" };
         new AlertDialog.Builder(act)
                 .setTitle("Pool recovery")
                 .setItems(items, (d, w) -> {
-                    if (w == 0) doCollect(); else if (w == 1) doBackup(); else if (w == 2) doRestore(); else if (w == 3) archiveConnection(); else if (w == 4) confirmSigningState(); else showRecoveryGuide();
+                    if (w == 0) doCollect();
+                    else if (w == 1) doBackup();
+                    else if (w == 2) doCheckBackup();
+                    else if (w == 3) doRestore();
+                    else if (w == 4) archiveConnection();
+                    else if (w == 5) confirmSigningState();
+                    else showRecoveryGuide();
                 })
                 .setNegativeButton("Close", null)
                 .show();
@@ -1227,6 +1237,51 @@ public class MyLpView extends BaseView {
             }
             @Override public void onError(String msg) { status(msg); }
         });
+    }
+
+    /** Open a backup file and report on it without changing anything. */
+    private void doCheckBackup() {
+        act.pickOpenFile(uri -> {
+            if (uri == null) { status("Check cancelled."); return; }
+            String json = readUri(uri);
+            if (json == null || json.isEmpty()) { status("Could not read that file."); return; }
+            NodeApi n = act.node();
+            if (n == null) { status("Connect the node before checking a backup file."); return; }
+            if (busy) return;
+            busy = true;
+            status("Checking that backup file…");
+            new BackupCheck(n).check(json, new BackupCheck.Cb() {
+                @Override public void onProgress(String line) { act.runOnUiThread(() -> status(line)); }
+                @Override public void onDone(String report, int usable, int total) {
+                    act.runOnUiThread(() -> {
+                        busy = false;
+                        status(total == 0 ? "That file isn't a PandaPools backup."
+                                : "Checked " + total + (total == 1 ? " pool." : " pools."));
+                        copyableReport("Backup check", report);
+                    });
+                }
+            });
+        });
+    }
+
+    /** A selectable, copyable report dialog — identifiers in these reports are the point of them. */
+    private void copyableReport(String title, String report) {
+        TextView body = new TextView(act);
+        body.setText(report);
+        body.setTextIsSelectable(true);
+        body.setTypeface(android.graphics.Typeface.MONOSPACE);
+        body.setTextSize(11f);
+        body.setTextColor(Design.text());
+        int pad = Ui.dp(act, 16);
+        body.setPadding(pad, pad, pad, pad);
+        android.widget.ScrollView scroll = new android.widget.ScrollView(act);
+        scroll.addView(body);
+        new AlertDialog.Builder(act).setTitle(title).setView(scroll)
+                .setPositiveButton("OK", null)
+                .setNeutralButton("Copy", (d, w) -> {
+                    Ui.copyable(body, "backup check", report);
+                    body.performClick();
+                }).show();
     }
 
     private void doRestore() {
