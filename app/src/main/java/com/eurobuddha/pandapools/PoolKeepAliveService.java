@@ -6,6 +6,7 @@ import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.app.Service;
+import android.content.Context;
 import android.content.Intent;
 import android.content.pm.ServiceInfo;
 import android.os.Build;
@@ -33,6 +34,9 @@ public class PoolKeepAliveService extends Service {
     private static final String CH_FG = "pp_keepalive";
     private static final int FG_ID = 7301;
     public static final String ACTION_HEARTBEAT = "com.eurobuddha.pandapools.HEARTBEAT";
+    /** Fired by a stranding notification's Re-publish action. */
+    public static final String ACTION_REPUBLISH = "com.eurobuddha.pandapools.REPUBLISH";
+    public static final String EXTRA_ADDRESS = "address";
     private static final long PASS_GAP_MS = 5 * 60_000;   // don't run the pass more than once per 5 min (guards a heartbeat/relaunch overlap; never blocks a real 15-min heartbeat)
 
     private NodeApi node;
@@ -54,8 +58,40 @@ public class PoolKeepAliveService extends Service {
 
     @Override public int onStartCommand(Intent intent, int flags, int startId) {
         if (!started || node == null) return START_STICKY;   // onCreate bailed (FGS not allowed) → no-op; relaunch retries
+        if (intent != null && ACTION_REPUBLISH.equals(intent.getAction())) {
+            republishOne(intent.getStringExtra(EXTRA_ADDRESS));
+            return START_STICKY;
+        }
         keepAlivePass();   // any start (heartbeat OR relaunch) drives a pass; throttled + LP-gated + wakelock inside
         return START_STICKY;
+    }
+
+    /**
+     * Re-publish one pool straight from its stranding notification, without opening the app.
+     *
+     * Runs through PoolManager.refresh like any other refresh, so every signing guard still applies — a
+     * quarantined pool is refused here exactly as it would be anywhere else. (Those pools are not offered this
+     * action at all; the notification offers Withdraw instead, because keep-fresh can never sign for them.)
+     */
+    private void republishOne(String address) {
+        if (address == null || address.isEmpty()) return;
+        acquireTimedWakelock();
+        final Context ctx = getApplicationContext();
+        Pool target = null;
+        for (Pool p : OwnPoolStore.all(ctx)) if (address.equalsIgnoreCase(p.address)) { target = p; break; }
+        if (target == null) return;
+        final Pool pool = target;
+        final NodeApi n = node;
+        PoolRefresher.readLiveReserves(n, pool, found -> {
+            if (!found || !ReserveRecovery.completeReserves(pool)) return;
+            new PoolManager(n).refresh(pool, new PoolManager.Result() {
+                @Override public void onPosted(String txpowid) {
+                    NotificationManager nm = getSystemService(NotificationManager.class);
+                    if (nm != null) try { nm.cancel(StrandingWatch.idFor(pool.address)); } catch (Exception ignored) {}
+                }
+                @Override public void onFailed(String message) { /* the next pass re-evaluates and re-warns */ }
+            });
+        });
     }
 
     /** One keep-alive pass: recreate MY aging reserves (before the cascade edge), then gossip faded beacons.
@@ -68,8 +104,12 @@ public class PoolKeepAliveService extends Service {
         acquireTimedWakelock();   // only now that we're actually doing work — let a Doze-woken pass finish before re-suspend
         try {
             final NodeApi n = node;
-            new PoolRefresher(n).refreshAgingFromScan(getApplicationContext(), r ->
-                    new ReAnnouncer(n).refreshFadedFromScan(p -> {}));
+            final Context ctx = getApplicationContext();
+            // The scan already knows every owned pool's live reserve age and the tip, so stranding is judged from
+            // that rather than paying for a second pass of IPC reads.
+            new PoolRefresher(n).refreshAgingFromScan(ctx,
+                    (ownFunded, allRecipes, tip) -> StrandingWatch.evaluate(ctx, ownFunded, allRecipes, tip),
+                    r -> new ReAnnouncer(n).refreshFadedFromScan(p -> {}));
         } catch (Throwable ignored) {}
     }
 
@@ -109,6 +149,7 @@ public class PoolKeepAliveService extends Service {
             NotificationManager nm = getSystemService(NotificationManager.class);
             if (nm != null) nm.createNotificationChannel(
                     new NotificationChannel(CH_FG, "Pool keep-alive", NotificationManager.IMPORTANCE_LOW));
+            StrandingWatch.createChannel(this);   // separate HIGH-importance channel; see StrandingWatch
         }
     }
 

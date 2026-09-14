@@ -55,6 +55,12 @@ public class PoolRefresher {
      * reserve age ({@code reserveBlock<=0}, e.g. a coin JSON without {@code created}) is treated as aging — better
      * to refresh than to let a pool silently fall out of the cascade.
      */
+    private void finishScan(Context ctx, ScanObserver observer, List<Pool> mine, List<Pool> recipes, int tip, Listener cb) {
+        List<Pool> funded = new ArrayList<>(mine);
+        if (observer != null) { try { observer.onScanned(funded, recipes, tip); } catch (Throwable ignored) {} }
+        refreshAging(funded, tip, cb);
+    }
+
     public void refreshAging(List<Pool> ownFunded, int chainBlock, Listener cb) {
         long now = System.currentTimeMillis();
         List<Pool> aging = new ArrayList<>();
@@ -77,7 +83,15 @@ public class PoolRefresher {
      * ever touches OUR pools (it spends covenant coins + needs $OPK), and the sentinel scan is the IPC-overflow
      * risk this release fixes. A stored recipe IS ours, so no sentinel/scripts/keys lookup is needed.
      */
+    /** Hands the live owned-pool list and the tip to {@code observer} before refreshing, so a caller can judge
+     *  stranding without paying for a second scan. The observer is called on the IPC thread; it must not block. */
+    public interface ScanObserver { void onScanned(List<Pool> ownFunded, List<Pool> allRecipes, int tip); }
+
     public void refreshAgingFromScan(final Context ctx, final Listener cb) {
+        refreshAgingFromScan(ctx, null, cb);
+    }
+
+    public void refreshAgingFromScan(final Context ctx, final ScanObserver observer, final Listener cb) {
         node.cmd("block", new NodeApi.Cb() {
             @Override public void onResult(JSONObject bj) {
                 final int tip = parseBlock(bj);
@@ -87,12 +101,12 @@ public class PoolRefresher {
                 final AtomicInteger pending = new AtomicInteger(recipes.size());
                 for (final Pool r : recipes) {
                     if (r == null || r.address == null) {
-                        if (pending.decrementAndGet() == 0) refreshAging(new ArrayList<>(mine), tip, cb);
+                        if (pending.decrementAndGet() == 0) finishScan(ctx, observer, mine, recipes, tip, cb);
                         continue;
                     }
                     readLiveReserves(node, r, found -> {
                         if (found && ReserveRecovery.completeReserves(r)) mine.add(r);
-                        if (pending.decrementAndGet() == 0) refreshAging(new ArrayList<>(mine), tip, cb);
+                        if (pending.decrementAndGet() == 0) finishScan(ctx, observer, mine, recipes, tip, cb);
                     });
                 }
             }
