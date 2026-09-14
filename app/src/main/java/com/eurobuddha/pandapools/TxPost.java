@@ -89,20 +89,19 @@ public final class TxPost {
     }
 
     static void checkThenPost(NodeApi node, String txid, List<String> cmdsThroughBasics, List<String> ownerKeys, Done done) {
+        // Both scans go through the shared Cmd parser, which refuses a duplicated parameter instead of
+        // resolving it. This layer LOCKS the coins and authorises the signature; CmdChain verifies them at the
+        // signature boundary. The two must never disagree about which coins a command spends.
         List<String> guardedKeys = new ArrayList<>(ownerKeys);
-        for (String command : cmdsThroughBasics) if (command.startsWith("txnsign ")) {
-            for (String part : command.split("\\s+")) if (part.startsWith("publickey:")) {
-                String key = part.substring(10);
-                if (!"auto".equals(key) && !guardedKeys.contains(key)) guardedKeys.add(key);
-            }
+        for (String command : cmdsThroughBasics) if (Cmd.is(command, "txnsign")) {
+            String key = Cmd.param(command, "publickey");
+            if (key == null) { done.fail("Malformed signing command. Nothing was posted."); return; }
+            if (!"auto".equals(key) && !guardedKeys.contains(key)) guardedKeys.add(key);
         }
-        List<String> inputIds = new ArrayList<>();
-        for (String command : cmdsThroughBasics) if (command.startsWith("txninput ")) {
-            String id = "";
-            for (String part : command.split("\\s+")) if (part.startsWith("coinid:")) id = part.substring(7);
+        List<String> inputIds = Cmd.inputCoinIds(cmdsThroughBasics);
+        if (inputIds == null) { done.fail("Malformed transaction input. Nothing was posted."); return; }
+        for (String id : inputIds)
             if (!FundingCoins.hex(id)) { done.fail("Invalid transaction input. Nothing was posted."); return; }
-            inputIds.add(id);
-        }
         int inputs = inputIds.size();
         if (inputs > FundingCoins.MAX_INPUTS) {
             done.fail("This transaction needs " + inputs + " inputs; the mobile limit is "

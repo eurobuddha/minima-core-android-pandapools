@@ -10,8 +10,8 @@ android {
         applicationId "com.eurobuddha.pandapools"
         minSdk 28
         targetSdk 35
-        versionCode 953
-        versionName "0.9.53"
+        versionCode 954
+        versionName "0.9.54"
 
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
     }

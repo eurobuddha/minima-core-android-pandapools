@@ -229,9 +229,24 @@ public final class OwnerKeyRecovery {
         }
         return new ArrayList<>(missing);
     }
-    static boolean signingAllowed(Pool p, Integer uses) {
-        return p != null && !p.signingStateUnverified && !OwnPoolStore.confirmationFailed(p.opk) && uses != null && uses >= 0
+    /**
+     * Everything that must hold before this key may sign, EXCEPT whether the recipe has been confirmed.
+     *
+     * Split out so a narrowly-scoped exception can waive the quarantine without waiving anything else. Each of
+     * these is load-bearing and none may ever be carved out:
+     *   - a failed confirmation commit (we could not persist a hold, so assume it stands);
+     *   - an unreadable counter (null is UNKNOWN, never zero — zero would resume at the first leaf);
+     *   - an exhausted key;
+     *   - a counter BELOW the recipe's recorded floor, which is a signature already spent elsewhere.
+     */
+    static boolean baseSigningAllowed(Pool p, Integer uses) {
+        return p != null && !OwnPoolStore.confirmationFailed(p.opk) && uses != null && uses >= 0
                 && uses < 262144 && uses >= p.minimumOwnerUses;
+    }
+
+    /** The ordinary rule: base checks, plus a recipe whose signing state the owner has confirmed. */
+    static boolean signingAllowed(Pool p, Integer uses) {
+        return baseSigningAllowed(p, uses) && !p.signingStateUnverified;
     }
 
     /** Final guard at the signature boundary, including keys selected by publickey:auto.
