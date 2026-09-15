@@ -109,7 +109,11 @@ public class PoolKeepAliveService extends Service {
             // that rather than paying for a second pass of IPC reads.
             new PoolRefresher(n).refreshAgingFromScan(ctx,
                     (ownFunded, allRecipes, tip) -> StrandingWatch.evaluate(ctx, ownFunded, allRecipes, tip),
-                    r -> new ReAnnouncer(n).refreshFadedFromScan(p -> {}));
+                    r -> new ReAnnouncer(n).refreshFadedFromScan(p ->
+                            // Finish moving any withdrawn funds off a payout address. This pass is the retry
+                            // mechanism: it survives app death and Doze, so the job cannot expire the way the
+                            // old in-Activity 8 x 20 s loop did.
+                            new CollectSweeper(ctx, n).run((cleared, pending, stranded) -> {})));
         } catch (Throwable ignored) {}
     }
 

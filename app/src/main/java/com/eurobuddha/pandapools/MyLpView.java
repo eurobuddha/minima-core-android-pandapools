@@ -184,6 +184,7 @@ public class MyLpView extends BaseView {
 
         // A create still confirming → a persistent amber card at the top (never "No pools yet" while pending).
         if (pendingCreate != null) list.addView(confirmingCard());
+        for (PendingCollect.Entry pc : PendingCollect.all(act)) list.addView(pendingCollectCard(pc));
         for (ExitStore.Record r : ExitStore.interrupted(act)) list.addView(interruptedExitCard(r));
         if (!BackupState.upToDate(act)) list.addView(backupCard());
         else { View proofs = prooflessCard(mine); if (proofs != null) list.addView(proofs); }
@@ -514,6 +515,38 @@ public class MyLpView extends BaseView {
                 + (r.reason == null || r.reason.isEmpty() ? "" : "\n\n" + r.reason));
         detail.setTextIsSelectable(true); card.addView(detail);
         Ui.copyable(detail, "pool address", r.address);
+        return card;
+    }
+
+    /**
+     * Funds still sitting at a pool's owner payout address.
+     *
+     * Visible on purpose. A close can only pay to $OADR, which is a {@code newaddress} key that a
+     * seed-only restore does NOT reproduce — so anything left there is one lost phone away from being
+     * unreachable. Previously this state was completely silent: the retry loop expired and nothing ever
+     * said the money had not arrived.
+     */
+    private View pendingCollectCard(PendingCollect.Entry e) {
+        boolean stranded = e.statusOf() == PendingCollect.Status.STRANDED;
+        LinearLayout card = dialogBox(); Ui.card(card);
+        card.addView(text(stranded ? "Withdrawn funds cannot be moved from this address"
+                                   : "Withdrawn funds still being moved to your wallet",
+                stranded ? Design.amber() : Design.dim(), 15, true));
+        TextView detail = new TextView(act);
+        detail.setText((stranded
+                ? "This is the address your pool was closed to. PandaPools cannot move the funds because "
+                        + "this wallet cannot sign for it — that address is not one of the 64 addresses a seed "
+                        + "phrase rebuilds. Restore the matching complete MinimaCore wallet backup (the one from "
+                        + "the device that owned the pool), then use Collect. A seed on its own will not do it."
+                : "Your pool's withdrawal landed at its owner payout address and PandaPools is moving it into "
+                        + "your wallet. It keeps trying in the background, including after the app is closed, "
+                        + "and stops only once the address is empty.")
+                + "\n\n" + e.oadr
+                + (e.lastError == null || e.lastError.isEmpty() ? "" : "\n\n" + e.lastError));
+        detail.setTextIsSelectable(true); card.addView(detail);
+        Ui.copyable(detail, "payout address", e.oadr);
+        Button now = new Button(act); now.setText(stranded ? "Try again" : "Collect now");
+        now.setOnClickListener(v -> doCollect()); card.addView(now);
         return card;
     }
 
@@ -1185,17 +1218,30 @@ public class MyLpView extends BaseView {
     /** After a close, the covenant→$OADR sweep is unconfirmed for ~a block; once it lands, forward those
      *  funds onward to a default-64 wallet address (so they survive a seed-only restore). Retries on the UI
      *  handler until the coins are sendable, or we run out of tries — the launch-time sweep is the backstop. */
-    private void collectAfterClose(final String oadr, final int triesLeft) {
-        if (oadr == null || oadr.isEmpty() || triesLeft <= 0 || act.node() == null) return;
+    /**
+     * Get the withdrawn funds off the payout address and into the default-64 wallet addresses a seed
+     * restore reproduces.
+     *
+     * This used to be eight tries, twenty seconds apart, only while this screen was alive — a ~160 s
+     * budget for coins that are not spendable until three blocks after the close confirms. It also
+     * treated one forward posting as completion, so a forward that moved only the MINIMA leg stopped the
+     * loop and left the token behind. That cost 2934.95626348 MxUSD on 2026-09-14.
+     *
+     * Now the address is queued durably ({@link PendingCollect}) and the job is finished by
+     * {@link CollectSweeper} from the keep-alive pass, which survives app death and Doze and only clears
+     * an entry once the address reads back EMPTY. The immediate attempt below is an optimisation, not
+     * the mechanism.
+     */
+    private void collectAfterClose(final String oadr, final int unusedTries) {
+        if (oadr == null || oadr.isEmpty()) return;
+        PendingCollect.add(act, oadr);          // durable BEFORE any attempt: a crash here must not lose the job
         act.ui().postDelayed(() -> {
-            if (act.node() == null) return;
-            mgr.forwardOwnerFunds(oadr, new PoolManager.ForwardResult() {
-                @Override public void onForwarded(String txpowid, int coins) {
-                    act.runOnUiThread(() -> { status("Withdrawn funds moved to your wallet ✓ " + txpowid, txpowid); act.pools().refresh(); });
-                }
-                @Override public void onNothing() { collectAfterClose(oadr, triesLeft - 1); }   // close not confirmed yet — retry
-                @Override public void onFailed(String message) { collectAfterClose(oadr, triesLeft - 1); }
-            });
+            NodeApi n = act.node();
+            if (n == null) return;              // the keep-alive pass will pick it up
+            new CollectSweeper(act, n).run((cleared, pending, stranded) -> act.runOnUiThread(() -> {
+                if (cleared > 0) status("Withdrawn funds moved to your wallet ✓");
+                act.pools().refresh();
+            }));
         }, 20000);
     }
 

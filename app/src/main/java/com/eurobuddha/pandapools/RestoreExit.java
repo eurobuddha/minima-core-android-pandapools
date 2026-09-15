@@ -178,19 +178,25 @@ final class RestoreExit {
      * archive can prove. Two leaves, and the user has nothing left to do.
      */
     private void forward(Pool p, Runnable next) {
+        // Durable FIRST. The hop below is one attempt; CollectSweeper owns finishing it, and only an empty
+        // read of $OADR ends the job. Without this a forward that moved part of the funds would look done.
+        PendingCollect.add(ctx, p.oadr);
         ExitAuthority.grant(new ExitTicket(p.opk, p.address, p.oadr, p.tok,
                 p.coinidM, p.coinidT, PoolManager.amt(p.reserveM), PoolManager.amt(p.reserveT),
                 ExitTicket.Stage.FORWARD));
         mgr.forwardOwnerFunds(p.oadr, new PoolManager.ForwardResult() {
             @Override public void onForwarded(String txpowid, int coins) {
                 ExitAuthority.revoke();
-                ExitStore.set(ctx, p.address, p.opk, ExitStore.State.DONE, "", "", 0);
+                // NOT DONE on the strength of a post: this forward moved the coins it could see, and any that
+                // were not yet spendable are still there. The sweeper decides, by reading the address.
+                ExitStore.set(ctx, p.address, p.opk, ExitStore.State.POSTED,
+                        "withdrawn; moving the funds into your wallet", "", 0);
                 next.run();
             }
             @Override public void onNothing() {
                 ExitAuthority.revoke();
-                // The close is still confirming, so there is nothing at $OADR yet. Leave it POSTED: the funds are
-                // out of the covenant and "Collect withdrawn funds to my wallet" finishes the job.
+                // Nothing spendable at $OADR yet (coinage:3 after the close). Queued, so the keep-alive pass
+                // finishes it without the user needing to do anything.
                 next.run();
             }
             @Override public void onFailed(String message) {
