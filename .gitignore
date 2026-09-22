@@ -19,3 +19,11 @@ releases/
 
 # Built APKs live in the minima-core-apks catalog + GitHub Releases
 *.apk
+
+# Private — NEVER published. Incident reports and recovery research: they carry wallet/pool
+# identifiers, device history and infrastructure detail. Kept on disk, ignored so no `git add -A`
+# can sweep them in. PLAN-on-chain-recovery.md was committed in eb36f32 and withdrawn in the
+# commit that added this rule; it remains readable in history.
+astra.md
+Astra2.md
+PLAN-on-chain-recovery.md
