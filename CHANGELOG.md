@@ -13,6 +13,10 @@ mirrored across all three.
 
 ---
 
+## [0.9.59] — "Loading your pools…" no longer outlives the loading
+- Caught verifying 0.9.58 on a device: when a node had saved recipes but no live pools, MY LP's summary branch never cleared the status line, so the layout's initial "Loading your pools…" stayed on screen permanently — sitting directly above cards that had finished loading and were reporting a problem. Saying "loading" after loading has finished is how a transient state gets read as a permanent fault.
+- 302 tests pass in each build variant; release lint passes.
+
 ## [0.9.58] — Stop alarming people about nothing
 - **A user with two healthy pools saw four amber cards.** Two "Saved pool · reserves unavailable" and two "Owner signing paused" — and they were the same two pools twice, because one card was keyed by covenant address and the other by owner public key, both rendered as a bare `0x…` with no label. Two identifier types that look identical is how one pool becomes two problems.
 - **Closed and migrated pools no longer haunt the list.** `OwnPoolStore.remove()` existed and had no callers, so every pool ever closed left a permanent, undismissable card. Recipes are now **retired — hidden, never deleted**: they stay in `all()`, still go into every backup, still classify their keys, and `render()` un-retires one automatically if a scan finds the pool live again. A posted close is not a landed close, and a recipe is the only thing that can reclaim a pool, so this had to be reversible. A "Show closed pools" card lists them with a Bring back action.

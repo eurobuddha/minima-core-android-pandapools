@@ -228,6 +228,11 @@ public class MyLpView extends BaseView {
             } else if (!unavailable.isEmpty()) {
                 value.setText("Reserves unavailable");
                 sub.setText(unavailable.size() + " saved pool(s) need a live reserve check.");
+                // This branch never cleared the status, so the layout's initial "Loading your pools…"
+                // stayed on screen for good — above cards that had already finished loading and were
+                // telling the user something was wrong. Saying "loading" after loading finished is how a
+                // transient state gets read as a permanent fault.
+                status("");
             } else {
                 value.setText("No pools yet");
                 sub.setText(myKeys.isEmpty() ? "Pair the node to see your liquidity."
