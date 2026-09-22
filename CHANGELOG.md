@@ -13,6 +13,13 @@ mirrored across all three.
 
 ---
 
+## [0.9.60] — Revert a signing-guard weakening that 0.9.58 introduced
+- **0.9.58 cleared the owner-key signing quarantine for any pool this node rediscovers on chain. That was wrong and this reverts it.** The reasoning was that `mine(p)` proves the pool is ours — but it proves the wallet HOLDS the key, not that this install holds the NEWEST COUNTER, and those two are indistinguishable at that point.
+- **Why it mattered.** A wallet restored from seed with `keys:<n>` and no `keyuses:` re-creates `$OPK` at `uses = 0`. `mine(p)` then goes true, the backfill cleared the hold, and a scanner-built pool carries `minimumOwnerUses = -1` so `uses >= minimumOwnerUses` is trivially true as well. `PoolRefresher` gates unattended keep-fresh on exactly that flag — so the app would have signed **on its own**, at leaves the previous device had already spent. Reusing a Winternitz leaf leaks that leaf's key. No button press required.
+- The backfill still records the recipe, which was always the valuable half. It simply no longer speaks for the counter. `newlyCreatedWithCurrentOwnerState` goes back to meaning what its name says: set by `PoolManager` at the moment this install posts the create, where provenance is actually known.
+- Erring high costs one amber card. Erring low costs the pool. The card confusion 0.9.58 set out to fix was caused by the card being unlabelled and duplicated — both fixed there and unaffected by this revert.
+- 303 tests pass in each build variant; the test that pinned the defect as intended behaviour is replaced by one pinning the safe direction. Release lint passes.
+
 ## [0.9.59] — "Loading your pools…" no longer outlives the loading
 - Caught verifying 0.9.58 on a device: when a node had saved recipes but no live pools, MY LP's summary branch never cleared the status line, so the layout's initial "Loading your pools…" stayed on screen permanently — sitting directly above cards that had finished loading and were reporting a problem. Saying "loading" after loading has finished is how a transient state gets read as a permanent fault.
 - 302 tests pass in each build variant; release lint passes.

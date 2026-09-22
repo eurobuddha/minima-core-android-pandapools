@@ -13,14 +13,14 @@ import static org.junit.Assert.assertTrue;
  * two "Saved pool · reserves unavailable" and two "Owner signing paused". Both causes live in this file's
  * subject, {@link OwnPoolStore#mergeRecord}:
  *
- *   1. {@code MyLpView} backfills a recipe for an owned pool it rediscovers on chain, passing a
- *      scanner-built Pool. With no previous record, mergeRecord's "assume imported" rule — written for
- *      recipes restored from a file — quarantined a pool the owner had created themselves, permanently.
- *   2. Close and migrate kept the old recipe forever (OwnPoolStore.remove() had no callers), so every
- *      pool ever closed left an undismissable card behind.
- *
- * The fix for (2) retires rather than deletes, because a recipe is the only thing that can reclaim a pool
- * and a posted close can still fail to land. So retirement must survive a re-record and must be reversible.
+ *   1. Close and migrate kept the old recipe forever (OwnPoolStore.remove() had no callers), so every
+ *      pool ever closed left an undismissable card behind. The fix RETIRES rather than deletes, because a
+ *      recipe is the only thing that can reclaim a pool and a posted close can still fail to land — so
+ *      retirement must survive a re-record and must be reversible.
+ *   2. The rediscovered-pool card was blamed on the signing quarantine, and 0.9.58 cleared it at the
+ *      backfill. That was WRONG and 0.9.60 reverted it: holding the key is not holding the counter, and a
+ *      cleared hold lets keep-fresh sign unattended after a seed restore. The card was confusing because it
+ *      was unlabelled and duplicated, which is fixed elsewhere; the quarantine itself was right.
  */
 public class OwnPoolRecordTest {
 
@@ -37,13 +37,23 @@ public class OwnPoolRecordTest {
 
     // ---- provenance: the quarantine must not catch your own pool ----
 
-    @Test public void rediscoveringYourOwnPoolDoesNotQuarantineIt() throws Exception {
-        // Exactly the backfill call: no previous record, but the node holds this pool's owner key and the
-        // pool is live on chain in front of us. It was never imported from anywhere.
+    @Test public void rediscoveringAnOwnedPoolStillQuarantinesIt() throws Exception {
+        // 0.9.58 got this WRONG and 0.9.60 reverted it. The backfill asserted provenance because mine(p)
+        // proves the pool is ours — but that proves the wallet HOLDS the key, not that it holds the NEWEST
+        // COUNTER. A seed restore re-creates $OPK at uses = 0, mine(p) goes true, and a cleared hold lets
+        // PoolRefresher sign UNATTENDED at a leaf the dead device already spent. Erring high costs an amber
+        // card; erring low costs the pool. Never let the backfill speak for the counter.
+        Pool p = pool();                                  // scanner-built: no provenance, floor still -1
+        assertTrue("a rediscovered pool must stay held — holding the key is not holding the counter",
+                OwnPoolStore.mergeRecord(p, "").optBoolean("signing_unverified", false));
+    }
+
+    @Test public void onlyTheCreatingInstallMayClaimCurrentOwnerState() throws Exception {
+        // The flag is legitimate in exactly one place: PoolManager, at the moment THIS install posts the
+        // create, where the counter provenance is actually known.
         Pool p = pool();
         p.newlyCreatedWithCurrentOwnerState = true;
-        assertFalse("a pool proven to be ours must not be signing-quarantined",
-                OwnPoolStore.mergeRecord(p, "").optBoolean("signing_unverified", true));
+        assertFalse(OwnPoolStore.mergeRecord(p, "").optBoolean("signing_unverified", true));
     }
 
     @Test public void anImportedRecipeIsStillQuarantined() throws Exception {

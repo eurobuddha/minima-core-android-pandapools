@@ -142,14 +142,17 @@ public class MyLpView extends BaseView {
             // backfill a recovery recipe for an owned pool the first time we see it (e.g. one created
             // before this feature). Only when missing, so the exact create/migrate script is never
             // clobbered by a reconstructed one.
-            if (OwnPoolStore.script(act, p.address) == null) {
-                // This pool is OURS — mine(p) proved the node holds its owner key — and it is on chain in
-                // front of us, so it was never imported from anyone. Say so, or mergeRecord's
-                // "no previous record ⇒ assume imported" rule (written for restored files) quarantines a
-                // pool the owner created themselves, permanently and with no way to clear it.
-                p.newlyCreatedWithCurrentOwnerState = true;
-                OwnPoolStore.record(act, p);
-            }
+            // Record the recipe — that is the valuable half — but do NOT claim provenance for it.
+            //
+            // 0.9.58 asserted newlyCreatedWithCurrentOwnerState here, reasoning that mine(p) proves the pool
+            // is ours. It proves the node's wallet HOLDS the key. It does not prove this install holds the
+            // NEWEST COUNTER, and those two are indistinguishable from here. A wallet restored from seed with
+            // `keys:<n>` and no `keyuses:` re-creates $OPK at uses = 0, mine(p) goes true, and clearing the
+            // hold let PoolRefresher's keep-fresh sign UNATTENDED at a leaf the dead device already spent —
+            // reuse, which leaks the key. A scanner-built Pool also carries minimumOwnerUses = -1, so
+            // `uses >= p.minimumOwnerUses` is trivially true and the floor catches nothing either.
+            // Erring high costs one amber card. Erring low costs the pool. Let the hold stand.
+            if (OwnPoolStore.script(act, p.address) == null) OwnPoolStore.record(act, p);
             // A pool we can see live is not closed, whatever a posted-but-unlanded close once assumed.
             if (p.address != null) OwnPoolStore.setRetired(act, p.address, false);
         }
