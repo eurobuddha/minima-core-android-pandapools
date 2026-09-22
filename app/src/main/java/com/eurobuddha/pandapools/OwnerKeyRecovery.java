@@ -95,8 +95,16 @@ public final class OwnerKeyRecovery {
                             + "signing stays paused. Free some storage and confirm it again in Pool recovery.";
                 case SIGNING_QUARANTINED:
                 default:
-                    return "This pool's recipe was imported, so PandaPools cannot tell how many of the owner key's "
-                            + "one-time signatures the original device already used. Signing the wrong one could "
+                    // Do NOT say "imported" unconditionally. This state is also reached by a recipe whose
+                    // provenance was never recorded — every pool created before 0.9.47, which had no
+                    // signing_unverified field, reads back held on upgrade. Telling that owner their own
+                    // pool "was imported" is simply false, and it sends them hunting for a backup that
+                    // never existed.
+                    // ponytail: one always-true sentence rather than a provenance flag threaded through every
+                    // Blocked construction. Add the flag only if the imported case needs its own wording.
+                    return "PandaPools has no record of how many of this owner key's one-time signatures have "
+                            + "already been used — the recipe was imported, predates that record, or was rebuilt "
+                            + "from what this node could see. Signing the wrong one could "
                             + "expose the key, so nothing was posted. Restore the matching MinimaCore wallet "
                             + "backup — the complete one, including signing state — and confirm it in Pool "
                             + "recovery. A seed phrase on its own is NOT enough: it rebuilds the key with its "

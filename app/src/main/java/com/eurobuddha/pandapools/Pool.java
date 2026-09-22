@@ -28,6 +28,10 @@ public class Pool {
     /** Imported recipes cannot establish current wallet signing state. Cleared only by the owner. */
     public boolean signingStateUnverified = false;
     boolean newlyCreatedWithCurrentOwnerState = false;
+    /** This pool was closed or migrated away, so its recipe is HIDDEN from the pool lists — never deleted.
+     *  A recipe is the only thing that can reclaim a pool, so retiring is reversible by design: if a scan
+     *  ever finds the pool live again (a close that never landed), {@link MyLpView} un-retires it. */
+    public boolean retired = false;
 
     /** Display symbol for the token side: its resolved name where we have one, otherwise the FULL tokenid.
      *  Never abbreviated — a shortened tokenid cannot be pasted into an explorer or a support request, and this

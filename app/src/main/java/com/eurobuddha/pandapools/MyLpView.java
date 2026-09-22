@@ -142,13 +142,28 @@ public class MyLpView extends BaseView {
             // backfill a recovery recipe for an owned pool the first time we see it (e.g. one created
             // before this feature). Only when missing, so the exact create/migrate script is never
             // clobbered by a reconstructed one.
-            if (OwnPoolStore.script(act, p.address) == null) OwnPoolStore.record(act, p);
+            if (OwnPoolStore.script(act, p.address) == null) {
+                // This pool is OURS — mine(p) proved the node holds its owner key — and it is on chain in
+                // front of us, so it was never imported from anyone. Say so, or mergeRecord's
+                // "no previous record ⇒ assume imported" rule (written for restored files) quarantines a
+                // pool the owner created themselves, permanently and with no way to clear it.
+                p.newlyCreatedWithCurrentOwnerState = true;
+                OwnPoolStore.record(act, p);
+            }
+            // A pool we can see live is not closed, whatever a posted-but-unlanded close once assumed.
+            if (p.address != null) OwnPoolStore.setRetired(act, p.address, false);
         }
         myPools.clear(); myPools.addAll(mine);   // for a backup's fresh coinexport (these carry live coinids)
         List<Pool> unavailable = new ArrayList<>();
         Set<String> visible = new HashSet<>();
         for (Pool p : mine) if (p.address != null) visible.add(p.address.toLowerCase());
-        for (Pool p : OwnPoolStore.all(act)) if (!visible.contains(p.address.toLowerCase())) unavailable.add(p);
+        // Only once ownership is actually known. `myKeys` loads asynchronously and `requestNow` repaints
+        // from cache first, so an early render has mine(p) false for EVERYTHING — which would put every
+        // recipe in `unavailable` and raise a screenful of alarms about perfectly healthy pools. Same
+        // fail-closed rule as TrackHygiene and MainActivity: no keys, no conclusions.
+        if (!myKeys.isEmpty()) {
+            for (Pool p : OwnPoolStore.active(act)) if (!visible.contains(p.address.toLowerCase())) unavailable.add(p);
+        }
         maybeReannounce(all);                     // Layer 5 gossip: refresh faded beacons for ALL funded pools (once/session)
         maybeRefresh(mine);                       // keep-fresh: recreate MY aging reserves before they leave the cascade
 
@@ -188,17 +203,22 @@ public class MyLpView extends BaseView {
         for (ExitStore.Record r : ExitStore.interrupted(act)) list.addView(interruptedExitCard(r));
         if (!BackupState.upToDate(act)) list.addView(backupCard());
         else { View proofs = prooflessCard(mine); if (proofs != null) list.addView(proofs); }
-        for (Pool p : unavailable) list.addView(recoveryCard(p));
-        Set<String> heldKeys = new HashSet<>();
-        for (Pool p : OwnPoolStore.all(act)) if ((p.signingStateUnverified || OwnPoolStore.confirmationFailed(p.opk)) && heldKeys.add(p.opk)) {
-            LinearLayout card = dialogBox(); Ui.card(card);
-            card.addView(text("Owner signing paused", Design.amber(), 16, true));
-            TextView detail = new TextView(act);
-            detail.setText(p.opk + "\nReserve recovery does not restore wallet signing state. Confirm the latest wallet state before owner actions or automatic refresh.");
-            detail.setTextIsSelectable(true); card.addView(detail);
-            Button confirm = new Button(act); confirm.setText("Confirm wallet signing state");
-            confirm.setOnClickListener(v -> confirmSigningState()); card.addView(confirm); list.addView(card);
+        // ONE card per pool. These used to be two separate loops — one keyed by covenant address, one by
+        // owner key — so a single pool produced two cards showing two different bare 0x… values with no
+        // label, and a user with two pools counted four problems. Both states now live on one card.
+        Set<String> carded = new HashSet<>();
+        for (Pool p : unavailable) if (p.address != null && carded.add(p.address.toLowerCase())) list.addView(recoveryCard(p));
+        if (!myKeys.isEmpty()) {
+            Set<String> heldKeys = new HashSet<>();
+            for (Pool p : OwnPoolStore.active(act)) {
+                if (p.address == null || p.opk == null) continue;
+                if (!p.signingStateUnverified && !OwnPoolStore.confirmationFailed(p.opk)) continue;
+                if (carded.contains(p.address.toLowerCase())) continue;          // already said on its recovery card
+                if (!heldKeys.add(p.opk.toLowerCase(java.util.Locale.ROOT))) continue;  // one card per key, case-insensitively
+                list.addView(signingPausedCard(p));
+            }
         }
+        if (!OwnPoolStore.retired(act).isEmpty()) list.addView(retiredCard());
 
         if (mine.isEmpty()) {
             if (pendingCreate != null) {
@@ -225,16 +245,89 @@ public class MyLpView extends BaseView {
         for (Pool p : mine) list.addView(lpCard(p));
     }
 
+    /** Both identifiers, always labelled. Two bare 0x… values on two cards is what made one pool look
+     *  like two problems — an address and an owner key are indistinguishable as raw hex. Full, selectable,
+     *  never abbreviated: a truncated identifier cannot be pasted into an explorer. */
+    private void identifiers(LinearLayout card, Pool p) {
+        TextView ids = new TextView(act);
+        ids.setText("Pool: " + p.address + (p.opk == null || p.opk.isEmpty() ? "" : "\nOwner key: " + p.opk));
+        ids.setTextColor(Design.dim());
+        ids.setTextIsSelectable(true);
+        card.addView(ids);
+    }
+
+    private View signingPausedCard(Pool p) {
+        LinearLayout card = dialogBox(); Ui.card(card);
+        card.addView(text("Owner signing paused", Design.amber(), 16, true));
+        identifiers(card, p);
+        TextView detail = new TextView(act);
+        detail.setText("PandaPools cannot tell how many of this owner key's one-time signatures have already "
+                + "been used, so it has stopped signing for this pool. Automatic refresh is paused too.");
+        card.addView(detail);
+        // Deliberately NOT styled like the read-only actions. Confirming enables unlimited owner signing
+        // for this key: if this device is not the one holding the newest counter, that is signature reuse.
+        Button confirm = new Button(act);
+        confirm.setText("Confirm wallet signing state");
+        confirm.setTextColor(Design.red());
+        confirm.setOnClickListener(v -> confirmSigningState(p.opk));
+        card.addView(confirm);
+        return card;
+    }
+
+    /** Closed and migrated-away pools are hidden, never deleted — this is how the user gets them back. */
+    private View retiredCard() {
+        LinearLayout card = dialogBox(); Ui.card(card);
+        List<Pool> gone = OwnPoolStore.retired(act);
+        card.addView(text(gone.size() + " closed pool(s) kept for recovery", Design.dim(), 14, false));
+        TextView note = new TextView(act);
+        note.setText("Their recipes are still saved and still go into your backups — they are just out of the way. "
+                + "If a close never actually landed, the pool reappears here on its own.");
+        note.setTextColor(Design.dim());
+        card.addView(note);
+        Button show = new Button(act); show.setText("Show closed pools");
+        show.setOnClickListener(v -> {
+            StringBuilder b = new StringBuilder();
+            for (Pool p : gone) b.append("Pool: ").append(p.address)
+                    .append(p.opk == null || p.opk.isEmpty() ? "" : "\nOwner key: " + p.opk).append("\n\n");
+            new AlertDialog.Builder(act).setTitle("Closed pools").setMessage(b.toString().trim())
+                    .setNeutralButton("Bring back", (d, w) -> {
+                        for (Pool p : gone) OwnPoolStore.setRetired(act, p.address, false);
+                        status("Closed pools are showing again."); act.pools().refresh();
+                    })
+                    .setPositiveButton("Close", null).show();
+        });
+        card.addView(show);
+        return card;
+    }
+
     private View recoveryCard(Pool p) {
         LinearLayout card = dialogBox();
         Ui.card(card);
-        TextView address = new TextView(act);
-        address.setText(p.address); address.setTextIsSelectable(true); card.addView(address);
+        boolean held = p.signingStateUnverified || OwnPoolStore.confirmationFailed(p.opk);
+        card.addView(text("Saved pool · reserves not found", Design.dim(), 16, true));
+        identifiers(card, p);
         TextView note = new TextView(act);
-        note.setText("Saved pool · reserves unavailable\nThis node has not verified both reserve coins. The pool may be closed or may need fresh archive proofs. "
-                + (mine(p) ? "Owner key present; current signing state is still required." : "Owner key missing or not yet checked. Restore the matching MinimaCore wallet backup."));
+        note.setText("This node cannot currently see both of this pool's reserve coins. That is what a pool that "
+                + "has been closed looks like, and also what one looks like on a node that is still catching up.\n\n"
+                + (mine(p) ? "The owner key for it is on this device."
+                           : "The owner key for it is NOT on this device. Restore the matching MinimaCore wallet backup.")
+                + (held ? " Owner signing is paused for it — see below." : ""));
         card.addView(note);
-        Button recover = new Button(act); recover.setText("Recover reserves"); card.addView(recover);
+        Button recover = new Button(act); recover.setText("Check for reserves"); card.addView(recover);
+        Button close = new Button(act); close.setText("It's closed — put it away");
+        close.setOnClickListener(v -> {
+            OwnPoolStore.setRetired(act, p.address, true);
+            status("Put away. The recipe is still saved and still goes into your backups.");
+            act.pools().refresh();
+        });
+        card.addView(close);
+        if (held) {
+            Button confirm = new Button(act);
+            confirm.setText("Confirm wallet signing state");
+            confirm.setTextColor(Design.red());
+            confirm.setOnClickListener(v -> confirmSigningState(p.opk));
+            card.addView(confirm);
+        }
         recover.setOnClickListener(v -> {
             if (busy) return;
             try {
@@ -307,7 +400,9 @@ public class MyLpView extends BaseView {
         card.addView(text("MINIMA / " + p.tokenLabel(), Design.heading(), 16, true));
         card.addView(kv("Your liquidity", trim(p.reserveM) + " MINIMA  +  " + trim(p.reserveT) + " " + p.tokenLabel()));
         int oldest = p.reserveBlockM > 0 && p.reserveBlockT > 0 ? Math.min(p.reserveBlockM, p.reserveBlockT) : 0;
-        if (oldest <= 0 || act.chainBlock() - oldest > PoolRefresher.REFRESH_BLOCKS)
+        // Unknown age (oldest == 0) is NOT stale — same rule StrandingWatch follows. Warning about a pool
+        // whose reserve blocks simply have not been read yet is how a warning gets trained out of a user.
+        if (oldest > 0 && act.chainBlock() - oldest > PoolRefresher.REFRESH_BLOCKS)
             card.addView(text("Reserve proofs need attention. Older reserves may require fresh archive proofs after a node reset; keep a current wallet backup and pool recipe.", Design.amber(), 13, false));
 
         BigDecimal value = p.reserveM.multiply(TWO);
@@ -1140,7 +1235,9 @@ public class MyLpView extends BaseView {
                     act.ensureKeepAlive();            // ensure the keep-alive is up (idempotent)
                     LpStore.remove(act, p.address);   // the old pool's display snapshot is stale — drop it
                     // KEEP the old pool's recovery recipe until the migrate CONFIRMS: if the tx never lands the
-                    // old pool is still live and must stay recoverable. Harmless once it does (emptied covenant).
+                    // old pool is still live and must stay recoverable. Retire it — hidden, never deleted, and
+                    // un-retired automatically by render() if a scan ever finds the old pool still live.
+                    OwnPoolStore.setRetired(act, p.address, true);
                     ActivityLog.record(act, ActivityLog.MIGRATE, "Migrate MINIMA / " + p.tokenLabel() + " pool  ·  new size "
                             + trim(pool.reserveM) + " MINIMA + " + trim(pool.reserveT) + " " + p.tokenLabel(), txpowid, act.chainBlock());
                     act.runOnUiThread(() -> { busy = false; status("Migrated ✓ " + txpowid + " — confirming on-chain.", txpowid); act.pools().refresh(); });
@@ -1185,8 +1282,11 @@ public class MyLpView extends BaseView {
                                 LpStore.remove(act, p.address);   // pool closed — drop its display snapshot
                                 // KEEP the OwnPoolStore recovery recipe here: a posted-but-unconfirmed close that
                                 // never lands would otherwise strip the recipe from a STILL-LIVE pool (exactly the
-                                // wiped-node case this feature backstops). A stale recipe is a harmless no-op —
-                                // re-track on an emptied covenant tracks nothing, and only funded() pools render.
+                                // wiped-node case this feature backstops). Retire it instead — hidden from the
+                                // lists, still in every backup, and un-retired by render() if the pool turns out
+                                // to still be there. The old "harmless no-op" assumption stopped being true once
+                                // unavailable recipes started rendering a card of their own.
+                                OwnPoolStore.setRetired(act, p.address, true);
                                 ActivityLog.record(act, ActivityLog.CLOSE, closeSummary, txpowid, act.chainBlock());
                                 act.runOnUiThread(() -> {
                                     busy = false;
@@ -1415,29 +1515,37 @@ public class MyLpView extends BaseView {
                 }).setNegativeButton("Cancel", null).show();
     }
 
+    /** The recovery menu's entry point: no pool in hand, so it still has to ask which key. */
     private void confirmSigningState() {
         if (act.node() == null) { info("Signing remains paused", "Connect the node before checking its wallet state."); return; }
         List<String> keys = new ArrayList<>();
         for (Pool p : OwnPoolStore.all(act)) if ((p.signingStateUnverified || OwnPoolStore.confirmationFailed(p.opk)) && !keys.contains(p.opk)) keys.add(p.opk);
         if (keys.isEmpty()) { info("Wallet signing state", "No restored owner keys are awaiting confirmation."); return; }
+        if (keys.size() == 1) { confirmSigningState(keys.get(0)); return; }
         new AlertDialog.Builder(act).setTitle("Select restored owner key")
-                .setItems(keys.toArray(new String[0]), (d, i) -> {
-                    String key = keys.get(i);
-                    new AlertDialog.Builder(act).setTitle("Confirm current wallet signing state")
-                            .setMessage(key + "\n\nOnly continue if this node holds the latest complete wallet signing state and every other copy of this wallet has stopped signing. A seed, old backup, or counter above the recipe's recorded count cannot prove this.\n\nConfirming enables owner actions and automatic pool refresh for this key.")
-                            .setNegativeButton("Keep signing paused", null)
-                            .setPositiveButton("I have verified this", (dd, w) -> {
-                                act.node().cmd("keys action:list publickey:" + key, new NodeApi.Cb() {
-                                    public void onResult(JSONObject j) {
-                                        Integer uses = KeyUses.extractUses(j, key);
-                                        if (uses != null && OwnPoolStore.acknowledgeSigningState(act, key, uses)) {
-                                            status("Signing state confirmed by you. Owner actions are enabled."); act.pools().refresh();
-                                        } else info("Signing remains paused", "The owner key is missing, exhausted, below a recorded count, or the confirmation could not be saved.");
-                                    }
-                                    public void onError(String m) { info("Signing remains paused", "Could not verify the owner key on this node."); }
-                                });
-                            }).show();
-                }).setNegativeButton("Close", null).show();
+                .setItems(keys.toArray(new String[0]), (d, i) -> confirmSigningState(keys.get(i)))
+                .setNegativeButton("Close", null).show();
+    }
+
+    /** Confirm ONE key — the one on the card the user tapped. A card that names a key must not then open a
+     *  picker listing every key: that is how someone attests to the wrong one. */
+    private void confirmSigningState(String key) {
+        if (act.node() == null) { info("Signing remains paused", "Connect the node before checking its wallet state."); return; }
+        if (key == null || key.isEmpty()) { confirmSigningState(); return; }
+        new AlertDialog.Builder(act).setTitle("Confirm current wallet signing state")
+                .setMessage(key + "\n\nOnly continue if this node holds the latest complete wallet signing state and every other copy of this wallet has stopped signing. A seed, old backup, or counter above the recipe's recorded count cannot prove this.\n\nConfirming enables owner actions and automatic pool refresh for this key.")
+                .setNegativeButton("Keep signing paused", null)
+                .setPositiveButton("I have verified this", (dd, w) -> {
+                    act.node().cmd("keys action:list publickey:" + key, new NodeApi.Cb() {
+                        public void onResult(JSONObject j) {
+                            Integer uses = KeyUses.extractUses(j, key);
+                            if (uses != null && OwnPoolStore.acknowledgeSigningState(act, key, uses)) {
+                                status("Signing state confirmed by you. Owner actions are enabled."); act.pools().refresh();
+                            } else info("Signing remains paused", "The owner key is missing, exhausted, below a recorded count, or the confirmation could not be saved.");
+                        }
+                        public void onError(String m) { info("Signing remains paused", "Could not verify the owner key on this node."); }
+                    });
+                }).show();
     }
 
     private void doBackup() {

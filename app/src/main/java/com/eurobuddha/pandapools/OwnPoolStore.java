@@ -68,6 +68,11 @@ public final class OwnPoolStore {
         }
         if (floor >= 0) o.put("opkuses", floor);
         o.put("signing_unverified", hold);
+        // Carry the retired flag across every re-record. Only setRetired changes it, so a routine refresh
+        // can neither resurrect a closed pool's card nor hide a live one.
+        boolean retired = p.retired;
+        if (!previous.isEmpty()) retired |= new JSONObject(previous).optBoolean("retired", false);
+        if (retired) o.put("retired", true);
         if (FundingCoins.hex(p.coinidM) && FundingCoins.hex(p.coinidT)) {
             o.put("last_coinid_m", p.coinidM).put("last_coinid_t", p.coinidT);
         } else if (!previous.isEmpty()) {
@@ -97,6 +102,38 @@ public final class OwnPoolStore {
         prefs(c).edit().remove(key(address)).apply();
     }
 
+    /**
+     * Hide (or un-hide) a recipe whose pool was closed or migrated away. It is NEVER deleted: a recipe is
+     * the only thing that can reclaim a pool, and a close can be posted and still not land, so this must be
+     * reversible. {@link #all} keeps returning retired recipes — backups, re-tracking and key classification
+     * all still see them; only the pool lists filter them out via {@link #active}.
+     */
+    public static synchronized boolean setRetired(Context c, String address, boolean retired) {
+        if (c == null || address == null) return false;
+        String raw = prefs(c).getString(key(address), null);
+        if (raw == null) return false;
+        try {
+            JSONObject o = new JSONObject(raw);
+            if (o.optBoolean("retired", false) == retired) return true;
+            if (retired) o.put("retired", true); else o.remove("retired");
+            return prefs(c).edit().putString(key(address), o.toString()).commit();
+        } catch (Exception invalid) { return false; }
+    }
+
+    /** The recipes the pool lists should show: everything except pools closed or migrated away. */
+    public static List<Pool> active(Context c) {
+        List<Pool> out = new ArrayList<>();
+        for (Pool p : all(c)) if (!p.retired) out.add(p);
+        return out;
+    }
+
+    /** Recipes hidden by {@link #setRetired} — kept so the user can always see and re-open them. */
+    public static List<Pool> retired(Context c) {
+        List<Pool> out = new ArrayList<>();
+        for (Pool p : all(c)) if (p.retired) out.add(p);
+        return out;
+    }
+
     /** Every owned pool as a reconstructed {@link Pool} (address + params + covenantScript set; reserves
      *  null until a scan fills them). Order is not significant. */
     public static List<Pool> all(Context c) {
@@ -119,6 +156,7 @@ public final class OwnPoolStore {
                 p.kidx = o.optInt("kidx", -1);
                 p.minimumOwnerUses = o.optInt("opkuses", -1);
                 p.signingStateUnverified = o.optBoolean("signing_unverified", true);
+                p.retired = o.optBoolean("retired", false);
                 p.coinidM = o.optString("last_coinid_m", ""); p.coinidT = o.optString("last_coinid_t", "");
                 p.covenantScript = o.optString("script", "");
                 if (!isEmpty(p.address) && !isEmpty(p.covenantScript)) out.add(p);
