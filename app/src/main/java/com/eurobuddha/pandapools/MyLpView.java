@@ -523,9 +523,10 @@ public class MyLpView extends BaseView {
         TextView detail = new TextView(act);
         detail.setText(never
                 ? (owned == 1 ? "Your pool exists only on this phone." : "Your " + owned + " pools exist only on this phone.")
-                        + " PandaPools keeps their contracts here, but that copy is deliberately never sent to any "
-                        + "cloud — so if this phone is lost or wiped, there is nothing to recover from. Save a "
-                        + "backup file now, and keep a current MinimaCore wallet backup with it."
+                        + " PandaPools keeps their contracts here, and that copy is deliberately never sent to any "
+                        + "cloud — so if this phone is lost or wiped, recovery depends on having either a "
+                        + "PandaPools pool file or a current MinimaCore wallet backup. Right now you have "
+                        + "neither. Save one."
                 : "Your saved backup file no longer covers every pool you own, so a pool created since then "
                         + "could not be recovered from it. Save a fresh one.");
         detail.setTextIsSelectable(true); card.addView(detail);
@@ -793,13 +794,16 @@ public class MyLpView extends BaseView {
         one.setTextColor(Design.text()); box.addView(one);
 
         TextView two = new TextView(act);
-        two.setText("2.  You need two backups, not one.\n\n"
-                + "•  a PandaPools pool file — saved from this app; it records your pool's contract\n"
-                + "•  a current MinimaCore wallet backup — it holds the owner key AND how many of its one-time "
-                + "signatures have been used\n\n"
-                + "A seed phrase is not enough. A seed rebuilds only your 64 default keys; your pool's owner key "
-                + "is created separately, and a seed cannot tell PandaPools how many of that key's one-time "
-                + "signatures were already spent. Signing from a seed-only restore can expose the key.");
+        two.setText("2.  A seed phrase on its own is NOT enough — but one backup is.\n\n"
+                + "Your pool's owner key is created separately from your 64 default keys, so a seed rebuilds "
+                + "everything EXCEPT that key. Either of these fills the gap:\n\n"
+                + "•  a current MinimaCore wallet backup — the easy one. It restores the owner key and how many "
+                + "of its one-time signatures have been used, so recovery just works.\n"
+                + "•  a PandaPools pool file + your seed — also works. The file records which key your pool "
+                + "uses and how many signatures it had spent; your seed rebuilds the key itself. You then run "
+                + "one node command to set the key's signature counter before it can sign.\n\n"
+                + "Keep at least one. With neither, a pool whose beacon has aged out of the last ~1700 blocks "
+                + "cannot be reached at all.");
         two.setPadding(0, Ui.dp(act, 14), 0, 0);
         two.setTextColor(Design.text()); box.addView(two);
 
@@ -1587,13 +1591,16 @@ public class MyLpView extends BaseView {
                             + (json.contains("proof_warning")
                                 ? "Some reserve coin proofs were unavailable or changed while exporting, so they are not in the file. That is not a problem: proofs are only a shortcut, they expire anyway, and recovery works from the recipe plus an archive lookup.\n\n"
                                 : "The coin proofs inside it expire; the recipes do not, and they are what recovery actually needs.\n\n")
-                            + "YOU NEED A SECOND BACKUP. This file holds your pool contracts. It does NOT hold "
-                            + "your wallet keys or how many of their one-time signatures have been used, so it "
-                            + "cannot recover a pool on its own. Keep a current MinimaCore wallet backup "
-                            + "alongside it. A seed phrase is not a substitute: it rebuilds your owner key with "
-                            + "its signature counter reset, and signing from there can expose the key.\n\n"
-                            + "Keep both somewhere off this phone. To recover: install PandaPools on the new "
-                            + "node, restore the wallet backup first, then My LP → Back up / Restore → Restore.");
+                            + "THIS FILE NEEDS YOUR SEED PHRASE WITH IT. It holds your pool contracts and which "
+                            + "key each pool uses, but not the keys themselves — your seed rebuilds those. What "
+                            + "neither carries is how many of that key's one-time signatures have been spent, so "
+                            + "recovery ends with one node command that sets the counter before the key can sign. "
+                            + "PandaPools will show you that command with the numbers filled in.\n\n"
+                            + "A current MinimaCore wallet backup is the shortcut: it restores the key AND its "
+                            + "counter, so there is no command to run. Either route works — keep at least one, "
+                            + "somewhere off this phone.\n\n"
+                            + "To recover: install PandaPools on the new node, restore the wallet backup if you "
+                            + "have one, then My LP → Back up / Restore → Restore.");
                     act.pools().refresh();   // re-render so the "not backed up" banner clears
                 });
             }
@@ -1620,7 +1627,8 @@ public class MyLpView extends BaseView {
                 .setTitle("Save your pool file now")
                 .setMessage("Your pool is live on chain. Its contract exists on this phone only, and PandaPools "
                         + "never sends that copy to any cloud — so right now, if this phone is lost or wiped, "
-                        + "this pool cannot be recovered by anyone.\n\n"
+                        + "recovering this pool would depend on a current MinimaCore wallet backup, and you may "
+                        + "not have one. This file is the other way back.\n\n"
                         + "Saving takes one tap. PandaPools will read the file back and check it before calling "
                         + "it saved.\n\n"
                         + "Pool: " + addr)

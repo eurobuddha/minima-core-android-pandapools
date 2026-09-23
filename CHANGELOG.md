@@ -13,6 +13,13 @@ mirrored across all three.
 
 ---
 
+## [0.9.61] — Say what recovery actually needs, instead of overstating it
+- **The app told users "You need two backups, not one" and "a seed phrase is not enough". The first is wrong and the second is misleading**, and the gap matters: someone holding a pool file but no MinimaCore wallet backup could read that and believe their funds were unrecoverable. They are not — that is exactly the route used to recover a stranded pool on 2026-09-14, with no wallet backup for it.
+- There are **two working routes**, and the app now says so. A current MinimaCore wallet backup restores the owner key *and* its signature counter, so recovery just works. A PandaPools pool file plus your seed also works: the file records which key the pool uses and how many signatures it had spent, your seed rebuilds the key itself, and recovery ends with one node command that sets the counter before the key can sign.
+- What stays true and is now said more precisely: **a seed phrase on its own is not enough.** A seed rebuilds the 64 default keys; a pool's owner key is created separately, and nothing in a seed records how many of its one-time signatures were spent. Signing from a seed-only restore can expose the key.
+- The backup card no longer claims "there is nothing to recover from" when a pool file exists, and the forced post-create prompt no longer says the pool "cannot be recovered by anyone" when a wallet backup would do it.
+- Messaging only — no behaviour change. 303 tests pass in each build variant; release lint passes.
+
 ## [0.9.60] — Revert a signing-guard weakening that 0.9.58 introduced
 - **0.9.58 cleared the owner-key signing quarantine for any pool this node rediscovers on chain. That was wrong and this reverts it.** The reasoning was that `mine(p)` proves the pool is ours — but it proves the wallet HOLDS the key, not that this install holds the NEWEST COUNTER, and those two are indistinguishable at that point.
 - **Why it mattered.** A wallet restored from seed with `keys:<n>` and no `keyuses:` re-creates `$OPK` at `uses = 0`. `mine(p)` then goes true, the backfill cleared the hold, and a scanner-built pool carries `minimumOwnerUses = -1` so `uses >= minimumOwnerUses` is trivially true as well. `PoolRefresher` gates unattended keep-fresh on exactly that flag — so the app would have signed **on its own**, at leaves the previous device had already spent. Reusing a Winternitz leaf leaks that leaf's key. No button press required.
