@@ -30,46 +30,46 @@ public class OwnerKeyReasonTest {
     @Test public void anUnreadableReplyIsNeverReportedAsAnAbsentKey() {
         // We know nothing about the wallet, so we must not conclude the key belongs to another seed.
         assertEquals(OwnerKeyRecovery.Reason.NODE_UNREADABLE,
-                OwnerKeyRecovery.classify(false, false, null, recipe(10, true), false));
+                OwnerKeyRecovery.classify(false, false, null, 262144, recipe(10, true), false));
     }
 
     @Test public void aPresentButUnparsableCountIsUnknownNotZero() {
         // Reading an unparsable counter as 0 would resume signing at the first leaf — the leak itself.
         assertEquals(OwnerKeyRecovery.Reason.NODE_UNREADABLE,
-                OwnerKeyRecovery.classify(true, true, null, recipe(10, true), false));
+                OwnerKeyRecovery.classify(true, true, null, 262144, recipe(10, true), false));
     }
 
     @Test public void aReadableReplyWithoutTheKeyIsAbsent() {
         assertEquals(OwnerKeyRecovery.Reason.KEY_ABSENT,
-                OwnerKeyRecovery.classify(true, false, null, recipe(10, true), false));
+                OwnerKeyRecovery.classify(true, false, null, 262144, recipe(10, true), false));
     }
 
     @Test public void anExhaustedKeyOutranksAbsenceAndQuarantine() {
         assertEquals(OwnerKeyRecovery.Reason.KEY_EXHAUSTED,
-                OwnerKeyRecovery.classify(true, true, 262144, recipe(10, true), true));
+                OwnerKeyRecovery.classify(true, true, 262144, 262144, recipe(10, true), true));
     }
 
     @Test public void aCounterBelowTheRecordedFloorOutranksQuarantine() {
         // The incident shape: recipe recorded 590, the restored node's key reads 46.
         assertEquals(OwnerKeyRecovery.Reason.COUNTER_REGRESSED,
-                OwnerKeyRecovery.classify(true, true, 46, recipe(590, true), false));
+                OwnerKeyRecovery.classify(true, true, 46, 262144, recipe(590, true), false));
     }
 
     @Test public void anUnknownFloorCannotProduceACounterRegression() {
         // minimumOwnerUses defaults to -1. `uses >= -1` is always true, so a recipe with no recorded count
         // gives NO regression signal at all — the quarantine is the only thing still holding.
         assertEquals(OwnerKeyRecovery.Reason.SIGNING_QUARANTINED,
-                OwnerKeyRecovery.classify(true, true, 0, recipe(-1, true), false));
+                OwnerKeyRecovery.classify(true, true, 0, 262144, recipe(-1, true), false));
     }
 
     @Test public void aFailedConfirmationIsReportedAsSuch() {
         assertEquals(OwnerKeyRecovery.Reason.CONFIRMATION_UNSAVED,
-                OwnerKeyRecovery.classify(true, true, 900, recipe(10, true), true));
+                OwnerKeyRecovery.classify(true, true, 900, 262144, recipe(10, true), true));
     }
 
     @Test public void aPlainImportedRecipeIsQuarantined() {
         assertEquals(OwnerKeyRecovery.Reason.SIGNING_QUARANTINED,
-                OwnerKeyRecovery.classify(true, true, 900, recipe(10, true), false));
+                OwnerKeyRecovery.classify(true, true, 900, 262144, recipe(10, true), false));
     }
 
     // ---- messages ----
@@ -157,5 +157,17 @@ public class OwnerKeyReasonTest {
         // by constructing directly — Blocked's constructor is package-visible, which this test shares.
         one.put(p.opk, new OwnerKeyRecovery.Blocked(p.opk, r, uses, floor, p.address));
         return one.get(p.opk);
+    }
+
+    /** Block-as-key-uses (1.1.2.31+): uses track the chain tip block, capacity is 128^4. A healthy
+     *  block-mode key reporting millions of "uses" is NOT exhausted; the same number against a legacy
+     *  64x3 capacity is. */
+    @org.junit.Test public void blockModeCapacityJudgesExhaustion() {
+        org.junit.Assert.assertEquals(OwnerKeyRecovery.Reason.SIGNING_QUARANTINED,
+                OwnerKeyRecovery.classify(true, true, 2342219, 268435456, recipe(10, true), false));
+        org.junit.Assert.assertEquals(OwnerKeyRecovery.Reason.KEY_EXHAUSTED,
+                OwnerKeyRecovery.classify(true, true, 2342219, 262144, recipe(10, true), false));
+        org.junit.Assert.assertEquals(OwnerKeyRecovery.Reason.KEY_EXHAUSTED,
+                OwnerKeyRecovery.classify(true, true, 268435456, 268435456, recipe(10, true), false));
     }
 }

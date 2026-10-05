@@ -47,13 +47,14 @@ final class RestoreExit {
     }
 
     /** Why a pool will not be withdrawn automatically, or null when it will be. */
-    static String refusal(Context ctx, Pool p, Integer nodeUses, int chainBlock) {
+    static String refusal(Context ctx, Pool p, Integer nodeUses, int capacity, int chainBlock) {
         if (p == null) return "no pool";
         if (!ExitStore.withinLifetimeCap(ctx, p.address))
             return "this pool has already used its automatic-withdrawal attempts. Withdraw it yourself from MY LP.";
-        if (!OwnerKeyRecovery.baseSigningAllowed(p, nodeUses)) {
+        if (!OwnerKeyRecovery.baseSigningAllowed(p, nodeUses, capacity)) {
             if (nodeUses == null) return "this node could not read the owner key's signature counter.";
-            if (nodeUses >= 262144) return "the owner key has spent all 262,144 of its one-time signatures.";
+            if (nodeUses >= capacity) return "the owner key has spent all "
+                    + String.format(java.util.Locale.US, "%,d", capacity) + " of its one-time signatures.";
             if (nodeUses < p.minimumOwnerUses)
                 return "this node reports " + nodeUses + " signatures used but the recipe recorded "
                         + p.minimumOwnerUses + ". Signing would reuse one. Restore the newest matching wallet backup.";
@@ -99,7 +100,7 @@ final class RestoreExit {
         node.cmd("keys action:list publickey:" + p.opk, new NodeApi.Cb() {
             @Override public void onResult(JSONObject reply) {
                 Integer uses = KeyUses.extractUses(reply, p.opk);
-                decide(queue, i, p, uses, tally, cb);
+                decide(queue, i, p, uses, KeyUses.capacityOf(reply, p.opk), tally, cb);
             }
             @Override public void onError(String error) {
                 skip(queue, i, p, "the owner key could not be read: " + error, tally, cb);
@@ -107,8 +108,8 @@ final class RestoreExit {
         });
     }
 
-    private void decide(List<Pool> queue, int i, Pool p, Integer uses, int[] tally, Cb cb) {
-        String why = refusal(ctx, p, uses, currentBlock());
+    private void decide(List<Pool> queue, int i, Pool p, Integer uses, int capacity, int[] tally, Cb cb) {
+        String why = refusal(ctx, p, uses, capacity, currentBlock());
         if (why != null) { skip(queue, i, p, why, tally, cb); return; }
 
         // Re-read the LIVE covenant coins before building, the same rule every other owner transaction follows:
@@ -121,7 +122,7 @@ final class RestoreExit {
                 return;
             }
             // The pool may have moved under us, which changes what "withdraw everything" means. Re-check.
-            String again = refusal(ctx, p, uses, currentBlock());
+            String again = refusal(ctx, p, uses, capacity, currentBlock());
             if (again != null) { skip(queue, i, p, again, tally, cb); return; }
             post(queue, i, p, uses, tally, cb);
         });

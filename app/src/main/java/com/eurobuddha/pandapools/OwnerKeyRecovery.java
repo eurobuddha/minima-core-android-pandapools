@@ -23,7 +23,7 @@ public final class OwnerKeyRecovery {
         KEY_ABSENT,
         /** The node did not answer, or its reply could not be parsed. We know NOTHING — never advise a restore. */
         NODE_UNREADABLE,
-        /** All 262,144 one-time signatures are spent. This key can never sign again. */
+        /** Every one-time signature this key holds is spent (262,144 legacy / 268,435,456 block-mode). */
         KEY_EXHAUSTED,
         /** The node's counter is BELOW the recipe's recorded floor: signing here would reuse a leaf. */
         COUNTER_REGRESSED,
@@ -80,7 +80,7 @@ public final class OwnerKeyRecovery {
                             + "posted. This says nothing about the key itself — do not change anything about your "
                             + "wallet on the strength of this message.";
                 case KEY_EXHAUSTED:
-                    return "This owner key has used all 262,144 of its one-time signatures and can never sign "
+                    return "This owner key has used all of its one-time signatures and can never sign "
                             + "again. Nothing was posted.\n\nOwner key: " + opk
                             + (address == null ? "" : "\nPool: " + address);
                 case COUNTER_REGRESSED:
@@ -125,11 +125,11 @@ public final class OwnerKeyRecovery {
      * A regressed counter outranks a quarantine, because "your counter went backwards, get the newer wallet
      * backup" is strictly more actionable than "this recipe was imported".
      */
-    static Reason classify(boolean replyReadable, boolean rowPresent, Integer uses, Pool p, boolean confirmationFailed) {
+    static Reason classify(boolean replyReadable, boolean rowPresent, Integer uses, int capacity, Pool p, boolean confirmationFailed) {
         if (!replyReadable) return Reason.NODE_UNREADABLE;
         if (!rowPresent) return Reason.KEY_ABSENT;
         if (uses == null) return Reason.NODE_UNREADABLE;     // present but unparsable is still "we don't know"
-        if (uses >= 262144) return Reason.KEY_EXHAUSTED;
+        if (uses >= capacity) return Reason.KEY_EXHAUSTED;
         if (p != null && p.minimumOwnerUses >= 0 && uses < p.minimumOwnerUses) return Reason.COUNTER_REGRESSED;
         if (confirmationFailed) return Reason.CONFIRMATION_UNSAVED;
         return Reason.SIGNING_QUARANTINED;
@@ -208,11 +208,12 @@ public final class OwnerKeyRecovery {
             String key = p.opk.toLowerCase(Locale.ROOT);
             if (!wanted.contains(key)) continue;
             Integer uses = readable ? KeyUses.extractUses(reply, p.opk) : null;
-            if (signingAllowed(p, uses)) continue;
+            int cap = KeyUses.capacityOf(reply, p.opk);
+            if (signingAllowed(p, uses, cap)) continue;
             // A pre-flight must not CONSUME the single-use grant — that belongs to the signature boundary — so it
             // only peeks at the shape. baseSigningAllowed still has to hold in full.
-            if (baseSigningAllowed(p, uses) && cmds != null && exitPermits(cmds, p)) continue;
-            Blocked b = new Blocked(key, classify(readable, held.contains(key), uses, p,
+            if (baseSigningAllowed(p, uses, cap) && cmds != null && exitPermits(cmds, p)) continue;
+            Blocked b = new Blocked(key, classify(readable, held.contains(key), uses, cap, p,
                     OwnPoolStore.confirmationFailed(p.opk)), uses, p.minimumOwnerUses, p.address);
             Blocked prev = out.get(key);
             if (prev == null || b.reason.severity() < prev.reason.severity()) out.put(key, b);
@@ -222,8 +223,9 @@ public final class OwnerKeyRecovery {
         for (String key : wanted) {
             if (out.containsKey(key)) continue;
             Integer uses = readable ? KeyUses.extractUses(reply, key) : null;
-            if (readable && held.contains(key) && uses != null && uses >= 0 && uses < 262144) continue;   // fine
-            out.put(key, new Blocked(key, classify(readable, held.contains(key), uses, null, false), uses, -1, null));
+            int cap = KeyUses.capacityOf(reply, key);
+            if (readable && held.contains(key) && uses != null && uses >= 0 && uses < cap) continue;   // fine
+            out.put(key, new Blocked(key, classify(readable, held.contains(key), uses, cap, null, false), uses, -1, null));
         }
         return out;
     }
@@ -237,11 +239,12 @@ public final class OwnerKeyRecovery {
                 Set<String> held = pubkeys(reply);
                 for (Pool p : recipes.get()) {
                     Integer uses = KeyUses.extractUses(reply, p.opk);
-                    if (signingAllowed(p, uses)) continue;
+                    int cap = KeyUses.capacityOf(reply, p.opk);
+                    if (signingAllowed(p, uses, cap)) continue;
                     // Core consolidation chooses its own inputs, so it could pick a coin belonging to THIS key.
                     // Name the actual reason: "consolidation is paused" alone sent users hunting the wrong fix.
                     String key = p.opk == null ? "" : p.opk.toLowerCase(Locale.ROOT);
-                    Reason r = classify(true, held.contains(key), uses, p, OwnPoolStore.confirmationFailed(p.opk));
+                    Reason r = classify(true, held.contains(key), uses, cap, p, OwnPoolStore.confirmationFailed(p.opk));
                     cb.accept("Nothing consolidated: your wallet holds a pool owner key that cannot sign.\n\n"
                             + new Blocked(key, r, uses, p.minimumOwnerUses, p.address).message());
                     return;
@@ -256,7 +259,7 @@ public final class OwnerKeyRecovery {
         Set<String> missing = new LinkedHashSet<>(wanted);
         if (TxPost.truthy(reply, "status") && KeyUses.rows(reply) != null) for (String key : pubkeys(reply)) {
             Integer uses = KeyUses.extractUses(reply, key);
-            if (uses != null && uses >= 0 && uses < 262144) missing.remove(key);
+            if (uses != null && uses >= 0 && uses < KeyUses.capacityOf(reply, key)) missing.remove(key);
         }
         return new ArrayList<>(missing);
     }
@@ -270,14 +273,14 @@ public final class OwnerKeyRecovery {
      *   - an exhausted key;
      *   - a counter BELOW the recipe's recorded floor, which is a signature already spent elsewhere.
      */
-    static boolean baseSigningAllowed(Pool p, Integer uses) {
+    static boolean baseSigningAllowed(Pool p, Integer uses, int capacity) {
         return p != null && !OwnPoolStore.confirmationFailed(p.opk) && uses != null && uses >= 0
-                && uses < 262144 && uses >= p.minimumOwnerUses;
+                && uses < capacity && uses >= p.minimumOwnerUses;
     }
 
     /** The ordinary rule: base checks, plus a recipe whose signing state the owner has confirmed. */
-    static boolean signingAllowed(Pool p, Integer uses) {
-        return baseSigningAllowed(p, uses) && !p.signingStateUnverified;
+    static boolean signingAllowed(Pool p, Integer uses, int capacity) {
+        return baseSigningAllowed(p, uses, capacity) && !p.signingStateUnverified;
     }
 
     /** Final guard at the signature boundary, including keys selected by publickey:auto.
@@ -339,13 +342,14 @@ public final class OwnerKeyRecovery {
                         String key = p.opk.toLowerCase(Locale.ROOT);
                         if (!wanted.contains(key)) continue;
                         Integer uses = KeyUses.extractUses(reply, p.opk);
-                        if (signingAllowed(p, uses)) continue;
+                        int cap = KeyUses.capacityOf(reply, p.opk);
+                        if (signingAllowed(p, uses, cap)) continue;
                         // The ONE exception: a quarantined recipe may make the two signatures that empty its own
                         // pool back to the owner, and nothing else. Everything in baseSigningAllowed still has to
                         // hold, and the shape is verified against the ACTUAL command list — the exemption is
                         // looked up here, never passed in, so no caller can assert its way past this.
-                        if (baseSigningAllowed(p, uses) && cmds != null && ExitAuthority.permits(cmds, p)) continue;
-                        Reason r = classify(true, held.contains(key), uses, p, OwnPoolStore.confirmationFailed(p.opk));
+                        if (baseSigningAllowed(p, uses, cap) && cmds != null && ExitAuthority.permits(cmds, p)) continue;
+                        Reason r = classify(true, held.contains(key), uses, cap, p, OwnPoolStore.confirmationFailed(p.opk));
                         cb.accept("Nothing signed.\n\n" + new Blocked(key, r, uses, p.minimumOwnerUses, p.address).message());
                         return;
                     }

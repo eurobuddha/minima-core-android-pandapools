@@ -108,13 +108,13 @@ public class ReserveRecoveryTest {
     }
     @Test public void restoredSigningStateCannotBeProvedByExceedingBackupCounter() {
         Pool p = pool(); p.minimumOwnerUses = 590; p.signingStateUnverified = true;
-        assertFalse(OwnerKeyRecovery.signingAllowed(p,846));
-        assertFalse(OwnerKeyRecovery.signingAllowed(p,590));
+        assertFalse(OwnerKeyRecovery.signingAllowed(p, 846, 262144));
+        assertFalse(OwnerKeyRecovery.signingAllowed(p, 590, 262144));
         p.signingStateUnverified = false;
-        assertFalse(OwnerKeyRecovery.signingAllowed(p,589));
-        assertFalse(OwnerKeyRecovery.signingAllowed(p,null));
-        assertFalse(OwnerKeyRecovery.signingAllowed(p,262144));
-        assertTrue(OwnerKeyRecovery.signingAllowed(p,900));
+        assertFalse(OwnerKeyRecovery.signingAllowed(p, 589, 262144));
+        assertFalse(OwnerKeyRecovery.signingAllowed(p, null, 262144));
+        assertFalse(OwnerKeyRecovery.signingAllowed(p, 262144, 262144));
+        assertTrue(OwnerKeyRecovery.signingAllowed(p, 900, 262144));
     }
     @Test public void signingBoundarySeesRestoreAfterFundingAndDuringKeyRead() throws Exception {
         for (boolean duringKeys : new boolean[]{false,true}) {
@@ -157,7 +157,7 @@ public class ReserveRecoveryTest {
         OwnerKeyRecovery.checkSignature((q,cb)->cb.onResult(q.startsWith("coins ")?c:k),()->Collections.singletonList(p),Collections.singletonList(M),p.opk,outcome::add);
         assertEquals(1,outcome.size());assertTrue(outcome.get(0).contains("paused"));
         assertTrue(OwnPoolStore.commitConfirmation(p.opk,()->true,()->{}));
-        assertTrue(OwnerKeyRecovery.signingAllowed(p,846));
+        assertTrue(OwnerKeyRecovery.signingAllowed(p, 846, 262144));
     }
     @Test public void storedRecipeMergePreservesSigningHoldCounterIndexAndHints() throws Exception {
         Pool p=pool();p.opk="0x5555";p.oadr="0x6666";p.kidx=64;p.minimumOwnerUses=900;p.signingStateUnverified=true;p.coinidM=M;p.coinidT=T;

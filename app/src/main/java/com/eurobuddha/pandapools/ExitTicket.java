@@ -69,9 +69,9 @@ final class ExitTicket {
      * Whether a pool is even eligible for an exit ticket, independent of any command list. Pure so the whole
      * decision is testable. {@code nodeUses} is the counter the node reports, null when unreadable.
      */
-    static boolean eligible(Pool p, boolean reservesVerified, Integer nodeUses, int chainBlock) {
+    static boolean eligible(Pool p, boolean reservesVerified, Integer nodeUses, int capacity, int chainBlock) {
         if (p == null || !reservesVerified) return false;
-        if (!OwnerKeyRecovery.baseSigningAllowed(p, nodeUses)) return false;
+        if (!OwnerKeyRecovery.baseSigningAllowed(p, nodeUses, capacity)) return false;
         if (p.minimumOwnerUses < 0) return false;                     // no recorded floor ⇒ no regression signal
         int age = p.reserveAge(chainBlock);
         if (age <= 0) return false;                                   // unknown age fails closed for a spend

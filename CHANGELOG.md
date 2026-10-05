@@ -13,6 +13,13 @@ mirrored across all three.
 
 ---
 
+## [0.9.62] — Judge key exhaustion by the key's own capacity (block-as-key-uses support)
+- **Upstream minima-core 1.1.2.31 introduces `-blockaskeyuses`: new keys are 128×4 Winternitz trees (268,435,456 one-time signatures) and a key's `uses` counter tracks the chain-tip BLOCK NUMBER (~2.34M on mainnet) instead of counting up by one.** Every signing guard in this app compared `uses` against the legacy 64×3 capacity, 262,144 — so against a block-mode node (e.g. upstream's own 1.7 Android app, or our MinimaBlock app) a perfectly healthy key read as exhausted/unreadable and **ALL signing stopped**, including plain swaps funded from ordinary wallet coins.
+- Capacity now comes from the key's own row: `KeyUses.capacityOf` reads `size`/`depth` out of the same `keys` reply and computes `size^depth`, falling back to 262,144 when the row does not say (pre-1.1.2.31 nodes only ever mint legacy keys). `classify`, `baseSigningAllowed`, `signingAllowed`, `ExitTicket.eligible` and `RestoreExit.refusal` all take the capacity explicitly; sanity bounds on stored counters widen to the 128×4 maximum.
+- The counter-regression floor and the signing quarantine are unchanged — block-derived uses are monotonic by construction, so those guards simply never fire spuriously on a block-mode node.
+- Legacy pools on legacy nodes behave exactly as before (same 262,144 judgement). NOTE: an existing pool's owner key re-derived from seed on a block-mode node gets the NEW tree shape and therefore a DIFFERENT public key — close or migrate legacy pools from a legacy-mode node; a recipe + seed cannot rebuild a legacy $OPK under `-blockaskeyuses`.
+- 307 tests pass (new: per-key capacity extraction, block-mode uses parse, block-mode classify); release lint passes.
+
 ## [0.9.61] — Say what recovery actually needs, instead of overstating it
 - **The app told users "You need two backups, not one" and "a seed phrase is not enough". The first is wrong and the second is misleading**, and the gap matters: someone holding a pool file but no MinimaCore wallet backup could read that and believe their funds were unrecoverable. They are not — that is exactly the route used to recover a stranded pool on 2026-09-14, with no wallet backup for it.
 - There are **two working routes**, and the app now says so. A current MinimaCore wallet backup restores the owner key *and* its signature counter, so recovery just works. A PandaPools pool file plus your seed also works: the file records which key the pool uses and how many signatures it had spent, your seed rebuilds the key itself, and recovery ends with one node command that sets the counter before the key can sign.

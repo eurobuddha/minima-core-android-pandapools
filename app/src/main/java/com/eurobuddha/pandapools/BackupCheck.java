@@ -195,7 +195,8 @@ final class BackupCheck {
                             + "the pool. Restore the MinimaCore wallet backup that created it first.\n");
                 } else {
                     report.append("  ✓ this wallet holds the owner key (")
-                            .append(uses).append(" of 262144 one-time signatures used)\n");
+                            .append(uses).append(" of ").append(KeyUses.capacityOf(reply, opk))
+                            .append(" one-time signatures used)\n");
                     if (recorded < 0) {
                         report.append("  ⚠ this backup records NO signature count, so nothing here can detect a "
                                 + "counter that has gone backwards. PandaPools will not withdraw automatically "

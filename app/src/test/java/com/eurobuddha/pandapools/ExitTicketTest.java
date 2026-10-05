@@ -256,17 +256,17 @@ public class ExitTicketTest {
     // ---- eligibility: the two extra refusals the exception adds ----
 
     @Test public void anAgedPoolWithAKnownFloorIsEligible() {
-        assertTrue(ExitTicket.eligible(pool(), true, 846, 1000 + PoolRefresher.REFRESH_BLOCKS + 1));
+        assertTrue(ExitTicket.eligible(pool(), true, 846, 262144, 1000 + PoolRefresher.REFRESH_BLOCKS + 1));
     }
 
     @Test public void aYoungReserveIsRefusedBecauseAnotherNodeIsSigningThisKey() {
-        assertFalse(ExitTicket.eligible(pool(), true, 846, 1000 + 10));
+        assertFalse(ExitTicket.eligible(pool(), true, 846, 262144, 1000 + 10));
     }
 
     @Test public void anUnknownReserveAgeIsRefused() {
         Pool p = pool();
         p.reserveBlock = 0;
-        assertFalse(ExitTicket.eligible(p, true, 846, 500000));
+        assertFalse(ExitTicket.eligible(p, true, 846, 262144, 500000));
     }
 
     @Test public void aRecipeWithNoRecordedFloorIsRefused() {
@@ -275,23 +275,23 @@ public class ExitTicketTest {
         // through. It must refuse instead.
         Pool p = pool();
         p.minimumOwnerUses = -1;
-        assertFalse(ExitTicket.eligible(p, true, 0, 500000));
+        assertFalse(ExitTicket.eligible(p, true, 0, 262144, 500000));
     }
 
     @Test public void aCounterBelowTheRecordedFloorIsRefused() {
-        assertFalse(ExitTicket.eligible(pool(), true, 46, 500000));
+        assertFalse(ExitTicket.eligible(pool(), true, 46, 262144, 500000));
     }
 
     @Test public void anUnreadableCounterIsRefused() {
-        assertFalse(ExitTicket.eligible(pool(), true, null, 500000));
+        assertFalse(ExitTicket.eligible(pool(), true, null, 262144, 500000));
     }
 
     @Test public void anExhaustedKeyIsRefused() {
-        assertFalse(ExitTicket.eligible(pool(), true, 262144, 500000));
+        assertFalse(ExitTicket.eligible(pool(), true, 262144, 262144, 500000));
     }
 
     @Test public void unverifiedReservesAreRefused() {
-        assertFalse(ExitTicket.eligible(pool(), false, 846, 500000));
+        assertFalse(ExitTicket.eligible(pool(), false, 846, 262144, 500000));
     }
 
     @Test public void theQuotaIsTwoSignaturesWithAHardLifetimeCap() {

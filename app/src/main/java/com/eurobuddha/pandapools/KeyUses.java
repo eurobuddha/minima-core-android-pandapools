@@ -47,6 +47,33 @@ public final class KeyUses {
 
     private KeyUses() {}
 
+    /** Capacity of a legacy 64x3 Winternitz tree - every key minted before block-as-key-uses. */
+    static final int LEGACY_TREE_USES = 262144;
+
+    /** Capacity of a block-as-key-uses 128x4 tree (minima-core 1.1.2.31+, -blockaskeyuses). On such a
+     *  node a key's `uses` tracks the chain tip BLOCK NUMBER (~millions), so judging exhaustion against
+     *  the legacy 262,144 would wrongly brand every healthy block-mode key as spent. */
+    static final int MAX_TREE_USES = 268435456;
+
+    /** This key's one-time-signature capacity, read from its own row (size^depth). Falls back to the
+     *  legacy 64x3 capacity when the row does not carry size/depth (pre-1.1.2.31 nodes, which only
+     *  ever mint legacy keys). */
+    static int capacityOf(JSONObject reply, String publickey) {
+        JSONArray arr = rows(reply);
+        if (arr == null || publickey == null) return LEGACY_TREE_USES;
+        String want = publickey.toLowerCase();
+        for (int i = 0; i < arr.length(); i++) {
+            JSONObject k = arr.optJSONObject(i);
+            if (k == null || !want.equals(k.optString("publickey", "").toLowerCase())) continue;
+            int size = k.optInt("size", 0), depth = k.optInt("depth", 0);
+            if (size <= 1 || depth <= 0 || depth > 8) return LEGACY_TREE_USES;
+            long cap = 1;
+            for (int d = 0; d < depth; d++) { cap *= size; if (cap > MAX_TREE_USES) return MAX_TREE_USES; }
+            return (int) cap;
+        }
+        return LEGACY_TREE_USES;
+    }
+
     /** Pull one key's `uses` out of a `keys action:list` reply. The response nests the rows under
      *  `response.keys`; a publickey-filtered call returns just the one. Null means UNKNOWN — never 0, because
      *  treating an absent key as "zero uses" would resume at the first leaf, which is the leak. */
@@ -64,7 +91,7 @@ public final class KeyUses {
             if (want.equals(k.optString("publickey", "").toLowerCase()) && k.has("uses")) {
                 try {
                     int uses = new java.math.BigDecimal(k.get("uses").toString()).intValueExact();
-                    return uses >= 0 && uses <= 262144 ? uses : null;
+                    return uses >= 0 && uses <= MAX_TREE_USES ? uses : null;
                 } catch (Exception invalid) { return null; }
             }
         }

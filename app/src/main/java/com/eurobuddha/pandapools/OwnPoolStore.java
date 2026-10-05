@@ -187,7 +187,7 @@ public final class OwnPoolStore {
      * restore; erring low permits a reuse. The asymmetry is entirely one way, so this only ever goes up.
      */
     static synchronized boolean raiseUseFloor(Context c, String opk, Integer observed) {
-        if (c == null || opk == null || observed == null || observed < 0 || observed >= 262144) return false;
+        if (c == null || opk == null || observed == null || observed < 0 || observed >= KeyUses.MAX_TREE_USES) return false;
         SharedPreferences.Editor edit = prefs(c).edit();
         boolean any = false;
         try {
@@ -205,7 +205,7 @@ public final class OwnPoolStore {
 
     /** User attestation only; a counter comparison by itself never clears a restored-key hold. */
     public static synchronized boolean acknowledgeSigningState(Context c, String opk, int uses) {
-        if (c == null || opk == null || uses < 0 || uses >= 262144) return false;
+        if (c == null || opk == null || uses < 0 || uses >= KeyUses.MAX_TREE_USES) return false;
         SharedPreferences.Editor edit = prefs(c).edit();
         SharedPreferences.Editor rollback = prefs(c).edit();
         boolean found = false;

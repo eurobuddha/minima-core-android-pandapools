@@ -38,14 +38,14 @@ public class RestoreExitRefusalTest {
     private static final int AGED = 1000 + PoolRefresher.REFRESH_BLOCKS + 1;
 
     @Test public void anAgedPoolWithAKnownFloorAndAHealthyCounterIsWithdrawn() {
-        assertNull(RestoreExit.refusal(null, pool(), 846, AGED));
+        assertNull(RestoreExit.refusal(null, pool(), 846, 262144, AGED));
     }
 
     // ---- the incident shape ----
 
     @Test public void aCounterBelowTheRecordedFloorRefusesAndQuotesBothNumbers() {
         // Astra2: the backup recorded 590 uses; the restored phone's node reported 46.
-        String why = RestoreExit.refusal(null, pool(), 46, AGED);
+        String why = RestoreExit.refusal(null, pool(), 46, 262144, AGED);
         assertNotNull(why);
         assertTrue(why, why.contains("46"));
         assertTrue(why, why.contains("590"));
@@ -58,7 +58,7 @@ public class RestoreExitRefusalTest {
         // through, which is precisely the accident this whole release exists to prevent.
         Pool p = pool();
         p.minimumOwnerUses = -1;
-        String why = RestoreExit.refusal(null, p, 0, AGED);
+        String why = RestoreExit.refusal(null, p, 0, 262144, AGED);
         assertNotNull("a recipe with no recorded count must never be auto-withdrawn", why);
         assertTrue(why, why.contains("no signature count"));
     }
@@ -68,7 +68,7 @@ public class RestoreExitRefusalTest {
     @Test public void youngReservesRefuseBecauseAnotherDeviceIsSigningThisKey() {
         // Only $OPK can recreate the reserves, so young reserves mean a second live copy of the wallet. Two
         // nodes signing one key is a guaranteed reuse, not a speculative one.
-        String why = RestoreExit.refusal(null, pool(), 846, 1000 + 10);
+        String why = RestoreExit.refusal(null, pool(), 846, 262144, 1000 + 10);
         assertNotNull(why);
         assertTrue(why, why.contains("another device"));
         assertTrue(why, why.contains("10 blocks ago"));
@@ -80,37 +80,37 @@ public class RestoreExitRefusalTest {
         // asymmetry reverses, so unknown must fail closed here.
         Pool p = pool();
         p.reserveBlock = 0;
-        assertNotNull(RestoreExit.refusal(null, p, 846, AGED));
+        assertNotNull(RestoreExit.refusal(null, p, 846, 262144, AGED));
     }
 
     @Test public void ageExactlyAtTheRefreshThresholdIsStillTooYoung() {
-        assertNotNull(RestoreExit.refusal(null, pool(), 846, 1000 + PoolRefresher.REFRESH_BLOCKS));
-        assertNull(RestoreExit.refusal(null, pool(), 846, 1000 + PoolRefresher.REFRESH_BLOCKS + 1));
+        assertNotNull(RestoreExit.refusal(null, pool(), 846, 262144, 1000 + PoolRefresher.REFRESH_BLOCKS));
+        assertNull(RestoreExit.refusal(null, pool(), 846, 262144, 1000 + PoolRefresher.REFRESH_BLOCKS + 1));
     }
 
     // ---- the key itself ----
 
     @Test public void anUnreadableCounterRefusesAndIsNotTreatedAsZero() {
-        String why = RestoreExit.refusal(null, pool(), null, AGED);
+        String why = RestoreExit.refusal(null, pool(), null, 262144, AGED);
         assertNotNull(why);
         assertTrue(why, why.contains("could not read"));
     }
 
     @Test public void anExhaustedKeyRefuses() {
-        String why = RestoreExit.refusal(null, pool(), 262144, AGED);
+        String why = RestoreExit.refusal(null, pool(), 262144, 262144, AGED);
         assertNotNull(why);
         assertTrue(why, why.contains("262,144"));
     }
 
     @Test public void aNullPoolRefuses() {
-        assertNotNull(RestoreExit.refusal(null, null, 846, AGED));
+        assertNotNull(RestoreExit.refusal(null, null, 846, 262144, AGED));
     }
 
     // ---- wording ----
 
     @Test public void noRefusalClaimsAnythingIsSafe() {
         for (Integer uses : new Integer[]{ null, 0, 46, 262144 }) {
-            String why = RestoreExit.refusal(null, pool(), uses, 1000 + 10);
+            String why = RestoreExit.refusal(null, pool(), uses, 262144, 1000 + 10);
             if (why == null) continue;
             String low = why.toLowerCase();
             assertFalse(why, low.contains("is safe"));
@@ -120,7 +120,7 @@ public class RestoreExitRefusalTest {
 
     @Test public void noRefusalTruncatesAnIdentifier() {
         for (Integer uses : new Integer[]{ null, 46, 262144 }) {
-            String why = RestoreExit.refusal(null, pool(), uses, 1000 + 10);
+            String why = RestoreExit.refusal(null, pool(), uses, 262144, 1000 + 10);
             if (why != null) assertFalse(why, why.contains("…"));
         }
     }

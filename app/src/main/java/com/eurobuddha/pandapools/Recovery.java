@@ -325,7 +325,7 @@ public class Recovery {
         if (e.has("opkuses")) {
             try {
                 int uses = new BigDecimal(e.get("opkuses").toString()).intValueExact();
-                if (uses < 0 || uses > 262144) return false;
+                if (uses < 0 || uses > KeyUses.MAX_TREE_USES) return false;
             } catch (Exception invalid) { return false; }
         }
         return dec >= 0 && dec <= 44 && PoolCovenant.matches(e.optString("script", ""),

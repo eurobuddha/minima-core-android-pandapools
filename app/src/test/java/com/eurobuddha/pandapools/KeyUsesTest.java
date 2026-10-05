@@ -50,4 +50,31 @@ public class KeyUsesTest {
             assertEquals(Integer.valueOf(5), KeyUses.extractUses(j, "0xABC"));
         } catch (Exception e) { throw new RuntimeException(e); }
     }
+
+    // ---- per-key capacity (block-as-key-uses, 1.1.2.31+) ----
+
+    private static JSONObject keysReplyShaped(String pubkey, int uses, int size, int depth) {
+        try {
+            JSONObject k = new JSONObject().put("publickey", pubkey).put("uses", uses)
+                    .put("size", size).put("depth", depth);
+            JSONObject resp = new JSONObject().put("keys", new JSONArray().put(k)).put("total", 1);
+            return new JSONObject().put("status", true).put("response", resp);
+        } catch (Exception e) { throw new RuntimeException(e); }
+    }
+
+    @Test public void capacityComesFromTheKeysOwnShape() {
+        assertEquals(262144, KeyUses.capacityOf(keysReplyShaped("0xABC", 5, 64, 3), "0xABC"));
+        assertEquals(268435456, KeyUses.capacityOf(keysReplyShaped("0xABC", 2342219, 128, 4), "0xABC"));
+    }
+
+    @Test public void capacityFallsBackToLegacyWhenTheRowDoesNotSay() {
+        assertEquals(262144, KeyUses.capacityOf(keysReply("0xABC", 5), "0xABC"));
+        assertEquals(262144, KeyUses.capacityOf(null, "0xABC"));
+    }
+
+    @Test public void blockModeUsesParseInsteadOfVanishing() {
+        // A block-mode key reports uses around the chain tip (~2.34M). The old 262,144 parse bound
+        // returned null for that, which read as NODE_UNREADABLE and froze ALL signing.
+        assertEquals(Integer.valueOf(2342219), KeyUses.extractUses(keysReplyShaped("0xABC", 2342219, 128, 4), "0xABC"));
+    }
 }
