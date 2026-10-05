@@ -13,6 +13,11 @@ mirrored across all three.
 
 ---
 
+## [0.9.63] — Remove the drifted eligibility mirror; document the capacity edge cases
+- **`ExitTicket.eligible` is gone.** Nothing in production called it — the live gate is `RestoreExit.refusal`, which enforces everything `eligible` described *plus* the lifetime signature cap that `eligible` never learned. A pure mirror that drifts from the enforcement path it documents is worse than no mirror; `RestoreExitRefusalTest` pins every condition with its message.
+- Documented two deliberate capacity edge cases in `KeyUses`: the 128^4 clamp for the never-released 192×4 interim tree shape, and why a corrupt legacy counter above 262,144 now reads KEY_EXHAUSTED instead of NODE_UNREADABLE (both fail closed).
+- No behaviour change to any signing path. 299 tests pass; release lint passes.
+
 ## [0.9.62] — Judge key exhaustion by the key's own capacity (block-as-key-uses support)
 - **Upstream minima-core 1.1.2.31 introduces `-blockaskeyuses`: new keys are 128×4 Winternitz trees (268,435,456 one-time signatures) and a key's `uses` counter tracks the chain-tip BLOCK NUMBER (~2.34M on mainnet) instead of counting up by one.** Every signing guard in this app compared `uses` against the legacy 64×3 capacity, 262,144 — so against a block-mode node (e.g. upstream's own 1.7 Android app, or our MinimaBlock app) a perfectly healthy key read as exhausted/unreadable and **ALL signing stopped**, including plain swaps funded from ordinary wallet coins.
 - Capacity now comes from the key's own row: `KeyUses.capacityOf` reads `size`/`depth` out of the same `keys` reply and computes `size^depth`, falling back to 262,144 when the row does not say (pre-1.1.2.31 nodes only ever mint legacy keys). `classify`, `baseSigningAllowed`, `signingAllowed`, `ExitTicket.eligible` and `RestoreExit.refusal` all take the capacity explicitly; sanity bounds on stored counters widen to the 128×4 maximum.

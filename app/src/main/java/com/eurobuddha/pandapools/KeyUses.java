@@ -68,6 +68,9 @@ public final class KeyUses {
             int size = k.optInt("size", 0), depth = k.optInt("depth", 0);
             if (size <= 1 || depth <= 0 || depth > 8) return LEGACY_TREE_USES;
             long cap = 1;
+            //Clamped at 128^4: upstream briefly built 192x4 trees (never released). A clamped
+            //capacity under-reports such a key and its uses beyond the parse bound read as
+            //unreadable - both fail CLOSED, which is the right direction for a signing guard.
             for (int d = 0; d < depth; d++) { cap *= size; if (cap > MAX_TREE_USES) return MAX_TREE_USES; }
             return (int) cap;
         }
@@ -91,6 +94,11 @@ public final class KeyUses {
             if (want.equals(k.optString("publickey", "").toLowerCase()) && k.has("uses")) {
                 try {
                     int uses = new java.math.BigDecimal(k.get("uses").toString()).intValueExact();
+                    //The bound is the LARGEST tree's capacity, so a corrupt legacy counter in
+                    //(262144, 268435456] parses and classifies as KEY_EXHAUSTED rather than
+                    //NODE_UNREADABLE - slightly over-confident wording for corruption, but both
+                    //fail closed, and for the common cause (a block-mode number on a legacy row)
+                    //"exhausted" is the actionable answer.
                     return uses >= 0 && uses <= MAX_TREE_USES ? uses : null;
                 } catch (Exception invalid) { return null; }
             }

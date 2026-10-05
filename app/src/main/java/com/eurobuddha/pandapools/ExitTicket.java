@@ -65,18 +65,11 @@ final class ExitTicket {
         this.amountM = amountM; this.amountT = amountT; this.stage = stage;
     }
 
-    /**
-     * Whether a pool is even eligible for an exit ticket, independent of any command list. Pure so the whole
-     * decision is testable. {@code nodeUses} is the counter the node reports, null when unreadable.
-     */
-    static boolean eligible(Pool p, boolean reservesVerified, Integer nodeUses, int capacity, int chainBlock) {
-        if (p == null || !reservesVerified) return false;
-        if (!OwnerKeyRecovery.baseSigningAllowed(p, nodeUses, capacity)) return false;
-        if (p.minimumOwnerUses < 0) return false;                     // no recorded floor ⇒ no regression signal
-        int age = p.reserveAge(chainBlock);
-        if (age <= 0) return false;                                   // unknown age fails closed for a spend
-        return age > PoolRefresher.REFRESH_BLOCKS;                     // young ⇒ another node is signing this key
-    }
+    /* Eligibility is enforced, with per-condition messages, by RestoreExit.refusal(...) -
+     * lifetime cap, baseSigningAllowed, a KNOWN use floor, and aged reserves - and pinned by
+     * RestoreExitRefusalTest. A pure boolean mirror of it used to live here; it had already
+     * drifted (it never learned the lifetime cap) and nothing in production called it, so it
+     * was removed rather than left to drift further (0.9.63). */
 
     /** Whether this ticket authorises exactly the transaction {@code cmds} builds, for pool {@code p}. */
     boolean permits(List<String> cmds, Pool p) {

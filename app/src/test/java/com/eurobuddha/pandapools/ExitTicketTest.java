@@ -253,46 +253,9 @@ public class ExitTicketTest {
         assertFalse(fwd.permits(close(), pool()));
     }
 
-    // ---- eligibility: the two extra refusals the exception adds ----
-
-    @Test public void anAgedPoolWithAKnownFloorIsEligible() {
-        assertTrue(ExitTicket.eligible(pool(), true, 846, 262144, 1000 + PoolRefresher.REFRESH_BLOCKS + 1));
-    }
-
-    @Test public void aYoungReserveIsRefusedBecauseAnotherNodeIsSigningThisKey() {
-        assertFalse(ExitTicket.eligible(pool(), true, 846, 262144, 1000 + 10));
-    }
-
-    @Test public void anUnknownReserveAgeIsRefused() {
-        Pool p = pool();
-        p.reserveBlock = 0;
-        assertFalse(ExitTicket.eligible(p, true, 846, 262144, 500000));
-    }
-
-    @Test public void aRecipeWithNoRecordedFloorIsRefused() {
-        // The incident shape. minimumOwnerUses defaults to -1 and `uses >= -1` is trivially true, so a backup
-        // that recorded no counter offers NO regression signal — a seed-restored wallet reading 0 would sail
-        // through. It must refuse instead.
-        Pool p = pool();
-        p.minimumOwnerUses = -1;
-        assertFalse(ExitTicket.eligible(p, true, 0, 262144, 500000));
-    }
-
-    @Test public void aCounterBelowTheRecordedFloorIsRefused() {
-        assertFalse(ExitTicket.eligible(pool(), true, 46, 262144, 500000));
-    }
-
-    @Test public void anUnreadableCounterIsRefused() {
-        assertFalse(ExitTicket.eligible(pool(), true, null, 262144, 500000));
-    }
-
-    @Test public void anExhaustedKeyIsRefused() {
-        assertFalse(ExitTicket.eligible(pool(), true, 262144, 262144, 500000));
-    }
-
-    @Test public void unverifiedReservesAreRefused() {
-        assertFalse(ExitTicket.eligible(pool(), false, 846, 262144, 500000));
-    }
+    // Eligibility (lifetime cap, signing floor, reserve age) is enforced by RestoreExit.refusal
+    // and pinned by RestoreExitRefusalTest; the pure ExitTicket.eligible mirror was removed in
+    // 0.9.63 (production-dead and already drifted - it never learned the lifetime cap).
 
     @Test public void theQuotaIsTwoSignaturesWithAHardLifetimeCap() {
         assertTrue(ExitTicket.SIGNATURES_PER_EXIT == 2);
