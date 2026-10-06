@@ -488,6 +488,7 @@ public class MainActivity extends AppCompatActivity {
     private void openMinimaCore() {
         try {
             Intent i = getPackageManager().getLaunchIntentForPackage("org.minimarex.minimacore");
+            if (i == null) i = getPackageManager().getLaunchIntentForPackage("org.minimarex.minimablock");
             if (i != null) startActivity(i);
         } catch (Exception ignore) {}
     }
