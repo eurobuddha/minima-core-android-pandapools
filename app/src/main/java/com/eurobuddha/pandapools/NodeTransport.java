@@ -3,7 +3,7 @@ package com.eurobuddha.pandapools;
 import android.content.*;
 import android.os.*;
 import org.json.JSONObject;
-import org.minimarex.minimaapi.MinimaAPIListener;
+import com.eurobuddha.minimaapi.MinimaAPIListener;
 import java.io.*;
 import java.nio.charset.StandardCharsets;
 import java.util.*;

@@ -27,6 +27,8 @@ public class TokenMeta {
             m.ticker = "MINIMA";
             return m;
         }
+        JSONObject structured = asObject(token);
+        if (structured != null) token = structured;
         if (token instanceof String) {
             m.name = (String) token;
             return m;
@@ -37,6 +39,8 @@ public class TokenMeta {
 
             JSONObject meta = null;
             Object nameNode = t.opt("name");
+            JSONObject structuredName = asObject(nameNode);
+            if (structuredName != null) nameNode = structuredName;
             if (nameNode instanceof JSONObject) {
                 meta = (JSONObject) nameNode;
                 m.name = meta.optString("name", "Token");
@@ -69,6 +73,15 @@ public class TokenMeta {
                     t.optString("external_url", "")));
         }
         return m;
+    }
+
+    // Reuses the core wallet's asObject normalization for balance and raw coin metadata.
+    static JSONObject asObject(Object value) {
+        if (value instanceof JSONObject) return (JSONObject) value;
+        if (value instanceof String && ((String) value).trim().startsWith("{")) {
+            try { return new JSONObject((String) value); } catch (Exception malformed) { }
+        }
+        return null;
     }
 
     private static String first(String... vals) {

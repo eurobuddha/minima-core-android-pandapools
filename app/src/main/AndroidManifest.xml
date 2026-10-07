@@ -20,7 +20,7 @@
     <!-- Android 11+ package visibility: needed to launch the node app and to deliver
          our targeted (setPackage) IPC broadcasts to it -->
     <queries>
-        <package android:name="org.minimarex.minimacore" />
+        <package android:name="com.eurobuddha.minimacore" />
     </queries>
 
     <!-- allowBackup stays TRUE here on purpose — see res/xml/data_extraction_rules.xml. The pool recovery

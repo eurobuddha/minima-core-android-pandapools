@@ -51,21 +51,8 @@ public final class Util {
     }
 
     private static String resolveTokenName(Object token) {
-        if (token instanceof String) return (String) token;
-        if (token instanceof JSONObject) {
-            JSONObject t = (JSONObject) token;
-            Object name = t.opt("name");
-            if (name instanceof JSONObject) {
-                JSONObject n = (JSONObject) name;
-                String tick = n.optString("ticker", "");   // e.g. "USDT" — the nicest short label
-                if (!tick.isEmpty()) return tick;
-                return n.optString("name", "Token");
-            }
-            if (name instanceof String && !((String) name).isEmpty()) {
-                return (String) name;
-            }
-        }
-        return "Token";
+        TokenMeta meta = TokenMeta.parse(token, "non-minima");
+        return meta.ticker.isEmpty() ? meta.name : meta.ticker;
     }
 
     /**
@@ -75,10 +62,10 @@ public final class Util {
      * is full 44-dp precision. Defaults to 8 (mxUSDT) if the metadata is missing; clamped to [0,44].
      */
     public static int tokenDecimals(Object token) {
-        if (token instanceof JSONObject) {
-            JSONObject t = (JSONObject) token;
+        JSONObject t = TokenMeta.asObject(token);
+        if (t != null) {
             if (t.has("decimals")) return clampDecimals(t.optInt("decimals", 8));
-            JSONObject inner = t.optJSONObject("token");
+            JSONObject inner = TokenMeta.asObject(t.opt("token"));
             if (inner != null && inner.has("decimals")) return clampDecimals(inner.optInt("decimals", 8));
         }
         return 8;

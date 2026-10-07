@@ -4,7 +4,7 @@ import android.app.Service;
 import android.content.Intent;
 import android.os.*;
 import org.json.JSONObject;
-import org.minimarex.minimaapi.MinimaAPI;
+import com.eurobuddha.minimaapi.MinimaAPI;
 import java.io.File;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;

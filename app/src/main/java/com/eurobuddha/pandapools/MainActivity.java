@@ -487,8 +487,9 @@ public class MainActivity extends AppCompatActivity {
 
     private void openMinimaCore() {
         try {
-            Intent i = getPackageManager().getLaunchIntentForPackage("org.minimarex.minimacore");
-            if (i == null) i = getPackageManager().getLaunchIntentForPackage("org.minimarex.minimablock");
+            Intent i = getPackageManager().getLaunchIntentForPackage("com.eurobuddha.minimacore");
+            if (i == null) i = getPackageManager().getLaunchIntentForPackage("com.eurobuddha.minimablock");
+        if (i == null) i = getPackageManager().getLaunchIntentForPackage("com.eurobuddha.pandamonium");
             if (i != null) startActivity(i);
         } catch (Exception ignore) {}
     }
