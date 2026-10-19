@@ -1,3 +1,4 @@
 <resources>
     <string name="app_name">PandaPools</string>
+    <string name="style_description">Switch visual style</string>
 </resources>

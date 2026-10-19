@@ -27,6 +27,9 @@
 
             <TextView
                 android:id="@+id/poolsRefresh"
+                android:minHeight="48dp"
+                android:minWidth="48dp"
+                android:gravity="center"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:text="↻ SCAN"
@@ -54,6 +57,9 @@
 
             <TextView
                 android:id="@+id/poolsIndivTab"
+                android:minHeight="48dp"
+                android:minWidth="48dp"
+                android:gravity="center"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:text="INDIVIDUAL"
@@ -69,6 +75,9 @@
 
             <TextView
                 android:id="@+id/poolsCombinedTab"
+                android:minHeight="48dp"
+                android:minWidth="48dp"
+                android:gravity="center"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:text="COMBINED"

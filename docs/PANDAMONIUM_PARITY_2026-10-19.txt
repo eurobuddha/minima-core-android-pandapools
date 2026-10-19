@@ -1,0 +1,21 @@
+PandaPools standalone repair checkpoint: 0.9.67/code967
+Branch: review/0.8.9 (preserved; main is older).
+
+Reuses scripts/adapt-pandamonium-pools-languages.py control sizing: 48dp style,
+scan and individual/combined controls, centered labels and a style description.
+Corrects one existing indentation-only lint error in openMinimaCore.
+No financial calculation, node command or transaction logic changed.
+
+Review: inspected source layouts, style/refresh handlers, canonical adapter and
+final diff. No correctness finding in this bounded UI port.
+Validation: offline testDebugUnitTest, assembleRelease and lintRelease passed.
+303 JVM tests passed; lint: 0 errors, 316 warnings.
+Actual package/version/family signing certificate verified.
+Local candidate: dist/pandapools-0.9.67-candidate.apk
+SHA256: f8650aee34f83a0290a74899effe01173402bef33d828918459366e54b047e6d
+Certificate SHA256:
+eca1383c9d27683a281fbe6355356267877dc2dd14d963d7cc289ca0700e517f
+
+Partial parity only: collection/evidence/reserve reporting and remaining feature
+comparisons are still open. No live transactions, installation or publication.
+Unrelated existing graph changes are excluded from this commit.
