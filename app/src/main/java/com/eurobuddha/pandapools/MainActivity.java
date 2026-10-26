@@ -1,5 +1,6 @@
 package com.eurobuddha.pandapools;
 
+import com.eurobuddha.minimaapi.MinimaAPI;
 import android.content.Intent;
 import android.net.Uri;
 import android.os.Bundle;
@@ -487,9 +488,7 @@ public class MainActivity extends AppCompatActivity {
 
     private void openMinimaCore() {
         try {
-            Intent i = getPackageManager().getLaunchIntentForPackage("com.eurobuddha.minimacore");
-            if (i == null) i = getPackageManager().getLaunchIntentForPackage("com.eurobuddha.minimablock");
-            if (i == null) i = getPackageManager().getLaunchIntentForPackage("com.eurobuddha.pandamonium");
+            Intent i = MinimaAPI.launchNode(this);
             if (i != null) startActivity(i);
         } catch (Exception ignore) {}
     }
