@@ -20,8 +20,8 @@ import java.util.concurrent.atomic.AtomicInteger;
  * even a brand-new light node where the coins aged out and the beacon pruned — plus an archive-node
  * "does this pool still exist on-chain" CHECK.
  *
- * This class only issues node commands that add KNOWLEDGE of coins ({@code coinexport}/{@code coinimport}/
- * {@code newscript}) or read an archive ({@code archive addresscheck}). It never builds a spend — every
+ * Reserve recovery adds knowledge of coins or reads an archive. Explicit file restore also delegates
+ * block-mode key recovery to {@link BlockOwnerRecovery}. It never builds a spend — every
  * withdrawal still goes through the covenant's {@code SIGNEDBY($OPK)} owner branch. All callbacks land on
  * the main thread (via {@link NodeApi}).
  */
@@ -32,8 +32,10 @@ public class Recovery {
      *  the height it was read at. Without them a restore has no way to know where the key left off and
      *  resumes at leaf 0, re-signing leaves the pre-restore node already spent (see {@link KeyUses}).
      *  v3 adds {@code kidx}, the owner key's derivation index. These fields describe backup-time state;
-     *  they cannot establish the latest signing state and are never used to regenerate signing keys. */
+     *  they cannot establish Classic signing state. Diagnostic recovery uses kidx to locate the key,
+     *  but does not authorize signing in either mode. */
     static final int BACKUP_VERSION = 3;
+    private static final SerialQueue OWNER_RECOVERY = new SerialQueue();
 
     public interface BackupCb { void onBackup(String json); void onError(String msg); }
     public interface RestoreCb {
@@ -45,6 +47,8 @@ public class Recovery {
          * and only ever sees pools that actually reached this point.
          */
         default void onVerified(Pool p) {}
+        default void onSaved(Pool p) {}
+        default void onOwnerRecovery(BlockOwnerRecovery.Result result) {}
     }
 
     private final NodeApi node;
@@ -93,7 +97,7 @@ public class Recovery {
      * Stamp this pool's owner-key use count into the backup entry.
      *
      * Records what the key had spent at backup time. Later signatures are not represented here;
-     * safe key restoration requires the matching, current MinimaCore wallet backup.
+     * Classic key restoration requires the matching, current MinimaCore wallet backup.
      */
     private void recordUses(final Context ctx, final Pool r, final JSONObject e,
                             final int chainBlock, final Runnable done) {
@@ -211,6 +215,11 @@ public class Recovery {
 
     /** @param chainBlock retained for caller compatibility; never used to guess signing state. */
     public void restore(Context ctx, String json, final int chainBlock, RestoreCb cb) {
+        restore(ctx, json, chainBlock, false, cb);
+    }
+
+    /** Automatic ownership recovery is explicit: the reserve-check button must never create/sign keys. */
+    public void restore(Context ctx, String json, final int chainBlock, boolean recoverOwners, RestoreCb cb) {
         final JSONArray pools;
         try {
             JSONObject root = new JSONObject(json);
@@ -222,32 +231,31 @@ public class Recovery {
         } catch (Exception e) { cb.onProgress("That doesn't look like a PandaPools backup."); cb.onDone(0, 0); return; }
 
         final int total = pools.length();
-        // Check ownership after import. Never regenerate keys or guess their historic signing counts.
-        final List<String> opks = new ArrayList<>();
-        for (int i = 0; i < total; i++) {
-            JSONObject e = pools.optJSONObject(i);
-            if (e != null) { String o = e.optString("opk", ""); if (!o.isEmpty()) opks.add(o); }
-        }
+        // Only verified covenants that were durably saved may request owner-key recovery.
+        final List<Pool> imported = new ArrayList<>();
+        final RestoreCb forwarding = new RestoreCb() {
+            public void onProgress(String line) { cb.onProgress(line); }
+            public void onDone(int restored, int count) { cb.onDone(restored, count); }
+            public void onVerified(Pool p) { cb.onVerified(p); }
+            public void onSaved(Pool p) { imported.add(p); cb.onSaved(p); }
+        };
         final AtomicInteger pending = new AtomicInteger(total);
         final AtomicInteger okCount = new AtomicInteger(0);
         for (int i = 0; i < total; i++) {
             final JSONObject e = pools.optJSONObject(i);
-            restoreOne(ctx, e, cb, () -> { okCount.incrementAndGet(); }, () -> {
+            restoreOne(ctx, e, forwarding, () -> { okCount.incrementAndGet(); }, () -> {
                 if (pending.decrementAndGet() == 0) {
-                    // Recipes (incl. kidx) are already recorded by restoreOne — but a degenerate entry
-                    // (no covenant script → no recipe) can still carry opk + kidx, so merge the backup's
-                    // own indexes on top of the store's. Larger wins, same rule as kidxFromStore.
-                    final Map<String, Integer> kidx = OwnerKeyRecovery.kidxFromStore(ctx);
-                    for (int k = 0; k < pools.length(); k++) {
-                        JSONObject en = pools.optJSONObject(k);
-                        if (en == null) continue;
-                        String o = en.optString("opk", "").toLowerCase();
-                        int ki = en.optInt("kidx", -1);
-                        if (o.isEmpty() || ki < 0) continue;
-                        Integer prev = kidx.get(o);
-                        if (prev == null || prev < ki) kidx.put(o, ki);
+                    if (recoverOwners) {
+                        OWNER_RECOVERY.submit(release -> new BlockOwnerRecovery(node::cmd,
+                                recoveryState(ctx), imported, cb::onProgress, result -> {
+                            try { cb.onOwnerRecovery(result); cb.onDone(okCount.get(), total); }
+                            finally { release.run(); }
+                        }).start());
+                        return;
                     }
-                    OwnerKeyRecovery.ensure(ctx, node, opks, kidx, blocked -> {
+                    List<String> opks = new ArrayList<>();
+                    for (Pool p : imported) opks.add(p.opk);
+                    OwnerKeyRecovery.ensure(ctx, node, opks, blocked -> {
                         // One line per DISTINCT reason, so a restore onto a foreign seed and a restore whose
                         // counter went backwards no longer read as the same problem with the same wrong fix.
                         java.util.Set<OwnerKeyRecovery.Reason> seen = new java.util.LinkedHashSet<>();
@@ -284,6 +292,27 @@ public class Recovery {
         });
     }
 
+    private static BlockOwnerRecovery.State recoveryState(Context ctx) {
+        return new BlockOwnerRecovery.State() {
+            public int searchLimit(String fingerprint, String owner, int total) {
+                android.content.SharedPreferences prefs = ctx.getSharedPreferences("pandapools_block_recovery", Context.MODE_PRIVATE);
+                String key = fingerprint + "|" + owner;
+                if (prefs.contains(key)) return prefs.getInt(key, -1);
+                long limit = (long) total + BlockOwnerRecovery.UNKNOWN_INDEX_BUDGET;
+                if (limit > Integer.MAX_VALUE) return -1;
+                return prefs.edit().putInt(key, (int) limit).commit() ? (int) limit : -1;
+            }
+            public boolean recordMatch(String owner, int index) {
+                for (Pool p : OwnPoolStore.all(ctx)) if (owner.equalsIgnoreCase(p.opk)) {
+                    p.kidx = index;
+                    p.signingStateUnverified = true;
+                    if (!OwnPoolStore.recordDurably(ctx, p)) return false;
+                }
+                return true;
+            }
+        };
+    }
+
     private void registerRecipe(Context ctx, JSONObject e, RestoreCb cb, Runnable onOk, Runnable done) {
         String label = e.optString("addr", "pool");
         String script = e.optString("script", "");
@@ -292,6 +321,7 @@ public class Recovery {
         if (!OwnPoolStore.recordDurably(ctx, restored)) {
             cb.onProgress("Could not save " + label + ". Nothing imported."); done.run(); return;
         }
+        cb.onSaved(restored);
         for (Pool saved : OwnPoolStore.all(ctx)) if (restored.address.equalsIgnoreCase(saved.address)) {
             restored.coinidM = saved.coinidM; restored.coinidT = saved.coinidT;
             restored.minimumOwnerUses = saved.minimumOwnerUses; break;
@@ -328,6 +358,7 @@ public class Recovery {
                 if (uses < 0 || uses > KeyUses.MAX_TREE_USES) return false;
             } catch (Exception invalid) { return false; }
         }
+        if (e.has("kidx") && BlockOwnerRecovery.integer(e, "kidx", -2) < -1) return false;
         return dec >= 0 && dec <= 44 && PoolCovenant.matches(e.optString("script", ""),
                 e.optString("opk", ""), e.optString("oadr", ""), e.optString("tok", ""), e.optString("kmin", ""));
     }

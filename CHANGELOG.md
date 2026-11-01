@@ -13,6 +13,17 @@ mirrored across all three.
 
 ---
 
+## [0.9.70-diagnostic] — Pool key discovery with signing paused
+- Diagnostic restore reuses bounded owner-key regeneration and reserve checks, but never issues the recovery signature, clears signing holds, or automatically withdraws pools in either node mode.
+- Reports exact matching owner-key indexes and readable node counters without treating them as proof of safe signing state. Results can be copied for support.
+- Replaces the unpublished 0.9.69 candidate, whose automatic signing path failed the actual-node review in `reviews/2026-10-31/recovery-publication-review.md`.
+
+## [0.9.69] — Unpublished candidate; blocked by signing review
+- File restore detects the running key mode using a public, disposable derivation probe. On block-based nodes it regenerates missing owner keys within a bounded search, checks the exact public key and index, requires a recent chain tip beyond saved signing floors, prepares the key with the node's block-index signer, and verifies and durably saves the result. Successful pools stay open with owner controls and automatic refresh enabled.
+- Classic nodes retain the existing guarded restore-and-withdraw flow. Unknown mode, wrong wallet, stale chain, failed persistence and uncertain signing replies keep the pool paused. Reserve-only checks do not create keys or sign.
+- Old backups without a key index get a persisted search ceiling, so repeated wrong-wallet imports cannot grow the wallet indefinitely. The user's seed never leaves the node. Recovery still assumes only one active copy of the wallet; local checks cannot detect every signature made on another device.
+- Distinguish a missing owner key from missing reserves in My LP and update the backup/recovery instructions.
+
 ## [0.9.63] — Remove the drifted eligibility mirror; document the capacity edge cases
 - **`ExitTicket.eligible` is gone.** Nothing in production called it — the live gate is `RestoreExit.refusal`, which enforces everything `eligible` described *plus* the lifetime signature cap that `eligible` never learned. A pure mirror that drifts from the enforcement path it documents is worse than no mirror; `RestoreExitRefusalTest` pins every condition with its message.
 - Documented two deliberate capacity edge cases in `KeyUses`: the 128^4 clamp for the never-released 192×4 interim tree shape, and why a corrupt legacy counter above 262,144 now reads KEY_EXHAUSTED instead of NODE_UNREADABLE (both fail closed).

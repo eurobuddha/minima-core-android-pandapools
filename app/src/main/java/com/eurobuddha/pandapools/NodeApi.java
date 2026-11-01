@@ -78,7 +78,7 @@ public class NodeApi {
     /** Transaction/PoW commands can take a long time on a phone; reads are quick. */
     private static long timeoutFor(String command) {
         String c = command == null ? "" : command.trim();
-        if (writesFunds(c) || c.startsWith("txnsign")
+        if (writesFunds(c) || c.equals("newaddress") || c.equals(BlockOwnerRecovery.MODE_COMMAND) || c.startsWith("txnsign")
                 || c.startsWith("txnpost") || c.startsWith("tokencreate") || c.startsWith("txnbasics")) {
             return WRITE_TIMEOUT_MS;
         }

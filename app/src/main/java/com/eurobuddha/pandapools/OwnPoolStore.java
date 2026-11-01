@@ -203,8 +203,11 @@ public final class OwnPoolStore {
         } catch (Exception invalid) { return false; }
     }
 
-    /** User attestation only; a counter comparison by itself never clears a restored-key hold. */
+    /** User attestation only. Diagnostic key recovery must never clear a restored-key hold. */
     public static synchronized boolean acknowledgeSigningState(Context c, String opk, int uses) {
+        // Diagnostic installs must not turn a successful identity match into signing authority,
+        // including through the existing manual confirmation button.
+        if (BuildConfig.VERSION_NAME.endsWith("-diagnostic")) return false;
         if (c == null || opk == null || uses < 0 || uses >= KeyUses.MAX_TREE_USES) return false;
         SharedPreferences.Editor edit = prefs(c).edit();
         SharedPreferences.Editor rollback = prefs(c).edit();

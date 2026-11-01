@@ -312,13 +312,14 @@ public class MyLpView extends BaseView {
         LinearLayout card = dialogBox();
         Ui.card(card);
         boolean held = p.signingStateUnverified || OwnPoolStore.confirmationFailed(p.opk);
-        card.addView(text("Saved pool · reserves not found", Design.dim(), 16, true));
+        card.addView(text(mine(p) ? "Saved pool · reserves not found" : "Saved pool · owner key missing", Design.dim(), 16, true));
         identifiers(card, p);
         TextView note = new TextView(act);
-        note.setText("This node cannot currently see both of this pool's reserve coins. That is what a pool that "
-                + "has been closed looks like, and also what one looks like on a node that is still catching up.\n\n"
+        note.setText((mine(p)
+                ? "This node cannot currently see both reserve coins. It may still be syncing, or the pool may have closed.\n\n"
+                : "This pool is saved, but its owner key has not been recovered. Its reserves may still be visible in Pools.\n\n")
                 + (mine(p) ? "The owner key for it is on this device."
-                           : "The owner key for it is NOT on this device. Restore the matching MinimaCore wallet backup.")
+                           : "The owner key is not loaded on this device. Restore your pool file on the original wallet to recover it.")
                 + (held ? " Owner signing is paused for it — see below." : ""));
         card.addView(note);
         Button recover = new Button(act); recover.setText("Check for reserves"); card.addView(recover);
@@ -794,16 +795,10 @@ public class MyLpView extends BaseView {
         one.setTextColor(Design.text()); box.addView(one);
 
         TextView two = new TextView(act);
-        two.setText("2.  A seed phrase on its own is NOT enough — but one backup is.\n\n"
-                + "Your pool's owner key is created separately from your 64 default keys, so a seed rebuilds "
-                + "everything EXCEPT that key. Either of these fills the gap:\n\n"
-                + "•  a current MinimaCore wallet backup — the easy one. It restores the owner key and how many "
-                + "of its one-time signatures have been used, so recovery just works.\n"
-                + "•  a PandaPools pool file + your seed — also works. The file records which key your pool "
-                + "uses and how many signatures it had spent; your seed rebuilds the key itself. You then run "
-                + "one node command to set the key's signature counter before it can sign.\n\n"
-                + "Keep at least one. With neither, a pool whose beacon has aged out of the last ~1700 blocks "
-                + "cannot be reached at all.");
+        two.setText("2. Save the pool file and keep your wallet seed safe.\n\n"
+                + "This diagnostic build can find matching block-based owner keys and check reserves. "
+                + "It does not restore signing controls. Restored pools remain paused. "
+                + "Keep a current complete node backup for signing state.");
         two.setPadding(0, Ui.dp(act, 14), 0, 0);
         two.setTextColor(Design.text()); box.addView(two);
 
@@ -828,8 +823,7 @@ public class MyLpView extends BaseView {
         box.addView(fix);
 
         final android.widget.CheckBox ack = new android.widget.CheckBox(act);
-        ack.setText("I understand: I must keep this app running, and I need both the pool file and a current "
-                + "wallet backup.");
+        ack.setText("I understand: I must keep this app running, save the pool file and keep my wallet seed safe.");
         ack.setPadding(0, Ui.dp(act, 16), 0, 0);
         box.addView(ack);
 
@@ -1542,6 +1536,10 @@ public class MyLpView extends BaseView {
     /** Confirm ONE key — the one on the card the user tapped. A card that names a key must not then open a
      *  picker listing every key: that is how someone attests to the wrong one. */
     private void confirmSigningState(String key) {
+        if (BuildConfig.VERSION_NAME.endsWith("-diagnostic")) {
+            info("Signing remains paused", "This diagnostic build cannot enable restored pool signing. Copy the recovery result for support.");
+            return;
+        }
         if (act.node() == null) { info("Signing remains paused", "Connect the node before checking its wallet state."); return; }
         if (key == null || key.isEmpty()) { confirmSigningState(); return; }
         new AlertDialog.Builder(act).setTitle("Confirm current wallet signing state")
@@ -1591,16 +1589,9 @@ public class MyLpView extends BaseView {
                             + (json.contains("proof_warning")
                                 ? "Some reserve coin proofs were unavailable or changed while exporting, so they are not in the file. That is not a problem: proofs are only a shortcut, they expire anyway, and recovery works from the recipe plus an archive lookup.\n\n"
                                 : "The coin proofs inside it expire; the recipes do not, and they are what recovery actually needs.\n\n")
-                            + "THIS FILE NEEDS YOUR SEED PHRASE WITH IT. It holds your pool contracts and which "
-                            + "key each pool uses, but not the keys themselves — your seed rebuilds those. What "
-                            + "neither carries is how many of that key's one-time signatures have been spent, so "
-                            + "recovery ends with one node command that sets the counter before the key can sign. "
-                            + "PandaPools will show you that command with the numbers filled in.\n\n"
-                            + "A current MinimaCore wallet backup is the shortcut: it restores the key AND its "
-                            + "counter, so there is no command to run. Either route works — keep at least one, "
-                            + "somewhere off this phone.\n\n"
-                            + "To recover: install PandaPools on the new node, restore the wallet backup if you "
-                            + "have one, then My LP → Back up / Restore → Restore.");
+                            + "Keep this file, your original wallet seed, and a current complete node backup safe. "
+                            + "This diagnostic build checks reserves and finds matching block-based owner keys, "
+                            + "but leaves restored pools paused. It does not restore signing controls.");
                     act.pools().refresh();   // re-render so the "not backed up" banner clears
                 });
             }
@@ -1697,23 +1688,15 @@ public class MyLpView extends BaseView {
     }
 
     private void doRestore() {
-        // The one place a user can still back out, so it carries the whole warning. Restore no longer only
-        // inspects: it withdraws. "Check a backup file" is the look-only path and is named in the message.
         new AlertDialog.Builder(act)
-                .setTitle("Restore and withdraw")
-                .setMessage("Restoring will rebuild your pools' contracts on this node and then WITHDRAW every "
-                        + "pool whose reserves it can verify, straight away, without asking again.\n\n"
-                        + "That is deliberate. A restored pool cannot refresh itself — PandaPools will not sign "
-                        + "automatically for a recipe whose signing history it cannot verify — so leaving it live "
-                        + "means it ages out of the chain's recent window and becomes unrecoverable. Withdrawing "
-                        + "uses two of the owner key's one-time signatures and ends the risk.\n\n"
-                        + "Pools are NOT withdrawn if anything looks wrong: a signature counter below what the "
-                        + "backup recorded, no recorded counter at all, or reserves young enough that another "
-                        + "device is still running this wallet.\n\n"
-                        + "Only want to look at the file? Use \"Check a backup file\" instead — it changes nothing.\n\n"
-                        + "To keep a restored pool running instead, cancel, restore the matching MinimaCore wallet "
-                        + "backup, and confirm its signing state.")
-                .setPositiveButton("Restore and withdraw", (d, w) -> pickRestoreFile())
+                .setTitle("Restore your pools")
+                .setMessage("Use the original wallet. This diagnostic build checks pool reserves and finds "
+                        + "matching owner keys on block-based nodes. It may generate missing addresses.\n\n"
+                        + "Signing remains paused. It does not sign, withdraw pools, or enable automatic refresh "
+                        + "for restored pools, in either key mode.\n\n"
+                        + "Save or copy the result for support. A matching key alone does not prove which "
+                        + "one-time signing indexes were previously used.")
+                .setPositiveButton("Choose pool backup", (d, w) -> pickRestoreFile())
                 .setNegativeButton("Cancel", null)
                 .show();
     }
@@ -1727,9 +1710,7 @@ public class MyLpView extends BaseView {
         });
     }
 
-    /** {@code withdraw} true only for a restore from a FILE. The per-pool "Recover reserves" card feeds the same
-     *  method with a one-pool synthetic backup, and must stay a read-only reserve check — it would otherwise
-     *  silently become a Withdraw button. */
+    /** Diagnostic file restore discovers keys; neither this nor a reserve check can withdraw. */
     private void restoreJson(String json) { restoreJson(json, false); }
 
     private void restoreJson(String json, boolean withdraw) {
@@ -1738,7 +1719,9 @@ public class MyLpView extends BaseView {
             status("Restoring pools…");
             final StringBuilder log = new StringBuilder();
             final List<Pool> verified = new ArrayList<>();
-            recovery.restore(act, json, act.chainBlock(), new Recovery.RestoreCb() {
+            recovery.restore(act, json, act.chainBlock(), withdraw, new Recovery.RestoreCb() {
+                private BlockOwnerRecovery.Result owners;
+                @Override public void onOwnerRecovery(BlockOwnerRecovery.Result result) { owners = result; }
                 @Override public void onProgress(String line) { log.append(line).append('\n'); status("Restoring… " + line); }
                 @Override public void onVerified(Pool p) { verified.add(p); }
                 @Override public void onDone(int restored, int total) {
@@ -1749,7 +1732,18 @@ public class MyLpView extends BaseView {
                                 + "pandapools-backup.json you saved from Back up.");
                         return;
                     }
-                    if (!withdraw || verified.isEmpty()) {
+                    if (withdraw && owners != null) {
+                        int running = 0;
+                        for (Pool p : verified) if (owners.matched(p)) running++;
+                        busy = false;
+                        status(running + " of " + total + " pool(s) have matching keys and verified reserves. Signing paused.");
+                        copyableReport("Recovery diagnostic",
+                                running + " of " + total + " pool(s) have verified reserves and matching owner keys. "
+                                + "Signing remains paused. No recovery signature or withdrawal was sent.\n\n" + log.toString().trim());
+                        loadKeys(); act.pools().refresh();
+                        return;
+                    }
+                    if (!withdraw || owners == null || verified.isEmpty()) {
                         busy = false;
                         status("Reserve check finished ·  " + restored + " of " + total + " pool(s) verified.");
                         info(restored == total ? "Reserves verified" : "Recovery needs attention", restored + " of " + total + " pool(s) have both reserves verified on this node.\n\n"
@@ -1760,7 +1754,8 @@ public class MyLpView extends BaseView {
                         act.pools().refresh();
                         return;
                     }
-                    autoWithdraw(verified, log, restored, total);
+                    // Diagnostic builds never invoke the Classic withdrawal path.
+                    busy = false;
                 }
             });
     }
@@ -1804,14 +1799,12 @@ public class MyLpView extends BaseView {
     }
 
     private void showRecoveryGuide() {
-        info("How pool recovery works", "Keep both a current MinimaCore wallet backup and your PandaPools recipe file. "
-                + "The wallet backup preserves keys and signing state; the recipe records the pool contracts.\n\n"
-                + "Restore the matching wallet in MinimaCore, then restore the recipes here. Check live reserves before spending. "
-                + "A seed or recipe alone does not establish which one-time signatures were used. PandaPools will not automatically recreate missing owner keys. "
-                + "Do not run two restored copies of the same wallet and sign from both.\n\n"
-                + "Coin proofs in recipe backups expire. If live reserves are missing, Recover reserves checks the backup proofs, this node's MegaMMR, and your configured archive connection. The receiving node validates proofs before import. "
-                + "An empty local lookup does not prove the funds were spent. Recovery needs an available archive or fresh proofs; a recipe alone cannot reconstruct chain proofs.\n\n"
-                + "Restored recipes pause owner signing, including automatic refresh, until you confirm current wallet signing state. Check both reserve amounts and signing status before withdrawing.");
+        info("How pool recovery works", "This is a diagnostic recovery build. Restore your pool file on "
+                + "the original wallet to check reserves and find matching block-based owner keys.\n\n"
+                + "Restored pools remain paused in both key modes. No recovery signatures or automatic "
+                + "withdrawals are sent. Share the diagnostic result with support.\n\n"
+                + "A matching key and a current chain tip do not establish which one-time signatures were "
+                + "previously used. Keep your pool file, seed, and a current complete node backup safe.");
     }
 
     private boolean writeUri(android.net.Uri uri, String content) {

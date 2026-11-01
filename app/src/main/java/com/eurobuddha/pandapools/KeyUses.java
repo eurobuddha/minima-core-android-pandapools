@@ -22,7 +22,8 @@ import org.json.JSONObject;
  * The node's own restore margins do not help: {@code restore.java} (+256) and {@code vault.java} (=100) both
  * run BEFORE an owner key is re-minted, and only touch keys that exist at that moment.
  *
- * WHAT THIS CLASS DELIBERATELY DOES NOT DO. It does not advance a counter, and nothing in this app does.
+ * WHAT THIS CLASS DELIBERATELY DOES NOT DO. It never advances or guesses a Classic signing counter.
+ * BlockOwnerRecovery only locates the matching key. It never signs or advances a counter.
  *
  * There is no command to set one — {@code keys} offers only {@code list / genkey / checkkeys / new /
  * createallkeys}, {@code updateAllKeyUses} rewrites all 64 defaults at once, and the private key cannot be

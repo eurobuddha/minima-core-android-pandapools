@@ -1,0 +1,3 @@
+Minima @ 31/10/2026 19:32:15 [207.0 MB] : BLOCK AS KEYUSES TreeKeyDB:2399999 topblock:2399999 lastused:2399999 higher:2400000
+Minima @ 31/10/2026 19:32:16 [109.7 MB] : BLOCK AS KEYUSES TreeKeyDB:0 topblock:2400000 lastused:0 higher:2400000
+REVIEW oldIndex=2400000 restoredIndex=2400000 sameOneTimePublicKey=true signaturesVerify=true readbackUses=2400001

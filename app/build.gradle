@@ -4,14 +4,15 @@ plugins {
 
 android {
     namespace 'com.eurobuddha.pandapools'
+    buildFeatures { buildConfig true }
     compileSdk 36
 
     defaultConfig {
         applicationId "com.eurobuddha.pandapools"
         minSdk 28
         targetSdk 35
-        versionCode 968
-        versionName "0.9.68"
+        versionCode 970
+        versionName "0.9.70-diagnostic"
 
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
     }
