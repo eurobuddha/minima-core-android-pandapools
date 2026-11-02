@@ -35,6 +35,7 @@ final class BackupState {
     private static final String KEY_POOLS = "backup_exported_pools";
 
     private BackupState() {}
+    private static volatile boolean combinedPersistenceFailed;
 
     /**
      * A digest over the pools a backup must cover. Order-independent (addresses are sorted), case-insensitive,
@@ -57,12 +58,27 @@ final class BackupState {
     }
 
     /** True when the last verified export covers exactly the pools owned now. */
-    static boolean upToDate(Context ctx) {
-        if (ctx == null) return true;
-        List<Pool> owned = OwnPoolStore.all(ctx);
-        if (owned.isEmpty()) return true;                 // nothing to back up yet
-        String recorded = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(KEY_DIGEST, "");
-        return !recorded.isEmpty() && recorded.equals(digest(owned));
+    static boolean upToDate(Context ctx) { return combinedUpToDate(ctx); }
+
+    /** Pool-only exports cannot satisfy the complete recovery-backup requirement. */
+    static boolean combinedUpToDate(Context ctx) {
+        if (ctx == null || combinedPersistenceFailed) return false;
+        try {
+            List<Pool> owned = OwnPoolStore.all(ctx);
+            if (owned.isEmpty()) return true;
+            return digest(owned).equals(ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString("combined_backup_digest_v1", ""));
+        }catch(RuntimeException unavailable){return false;}
+    }
+    static boolean recordCombinedExport(Context ctx, List<Pool> owned) {
+        if (ctx == null) return false;
+        combinedPersistenceFailed=true; // SharedPreferences mutates memory even when commit returns false.
+        try {
+            boolean saved=ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+                    .putString("combined_backup_digest_v1", digest(owned))
+                    .putString(KEY_DIGEST, digest(owned)).putLong(KEY_AT,System.currentTimeMillis())
+                    .putInt(KEY_POOLS,owned == null ? 0 : owned.size()).commit();
+            combinedPersistenceFailed=!saved;return saved;
+        }catch(RuntimeException unavailable){return false;}
     }
 
     /** How many owned pools exist, for the banner's wording. */

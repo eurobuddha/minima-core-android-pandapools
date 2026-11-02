@@ -46,6 +46,9 @@ public class PoolManager {
 
     /** Create a MINIMA/token pool seeded with x0 MINIMA and y0 token. Mints a fresh owner key+address. */
     public void createPool(String tokenid, int tokDecimals, BigDecimal x0, BigDecimal y0, CreateResult cb) {
+        if (!BackupState.combinedUpToDate(node.context())) {
+            cb.onFailed("BACKUP_REQUIRED: save and verify a password-encrypted pool + node backup before creating another pool. Recovery and withdrawal remain available."); return;
+        }
         if (!FundingCoins.hex(tokenid) || Util.MINIMA_TOKENID.equalsIgnoreCase(tokenid)
                 || tokDecimals < 0 || tokDecimals > 44) { cb.onFailed("Invalid paired token or precision"); return; }
         if (x0 == null || y0 == null || x0.signum() <= 0 || y0.signum() <= 0) {
@@ -201,6 +204,9 @@ public class PoolManager {
     /** Owner-signed migrate: old reserves sweep to $OADR, a fresh pool of (newX,newY) is created at a new
      *  address with KMIN reset to the new product, and a new announce beacon is posted. */
     public void migrate(Pool p, BigDecimal newX, BigDecimal newY, CreateResult cb) {
+        if (!BackupState.combinedUpToDate(node.context())) {
+            cb.onFailed("BACKUP_REQUIRED: save and verify a password-encrypted pool + node backup before creating another pool. Recovery and withdrawal remain available."); return;
+        }
         if (!p.funded()) { cb.onFailed("pool has no live reserves"); return; }
         if (newX == null || newY == null || newX.signum() <= 0 || newY.signum() <= 0) { cb.onFailed("enter the new reserves"); return; }
         final BigDecimal newYc = newY.setScale(p.tokDecimals, RoundingMode.DOWN);

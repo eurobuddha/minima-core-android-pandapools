@@ -108,8 +108,8 @@ public final class TxPost {
                     + FundingCoins.MAX_INPUTS + ". Consolidate coins or use fewer pools. Nothing was posted.");
             return;
         }
-        if (!CoinLock.claimInputs(inputIds)) {
-            done.fail("An input is already in another queued transaction, or appears twice. Wait for Activity to update and retry.");
+        if (!CoinLock.loadPosted(node.context()) || !CoinLock.claimInputs(inputIds)) {
+            done.fail("An input is already queued, submitted, or has an uncertain outcome. Refresh after confirmation to use the new pool reserves. Nothing was posted.");
             return;
         }
         final Done gatedDone = gated(new Done() {
@@ -118,7 +118,10 @@ public final class TxPost {
         });
         submit(() -> OwnerKeyRecovery.ensure(node.context(), node, guardedKeys, cmdsThroughBasics, blocked -> {
             if (!blocked.isEmpty()) { gatedDone.fail("Nothing was posted.\n\n" + OwnerKeyRecovery.worst(blocked).message()); return; }
-            runChain(node, txid, cmdsThroughBasics, gatedDone);
+            CoinLock.checkAvailable(node::cmd,inputIds,0,available->{
+                if(!available){gatedDone.fail("An input is spent, pending in another transaction, or unreadable. Refresh and verify reserves before retrying. Nothing was signed.");return;}
+                runChain(node, txid, cmdsThroughBasics, gatedDone);
+            });
         }));
     }
 
@@ -132,9 +135,13 @@ public final class TxPost {
                     node.cmd("txndelete id:" + txid, NOOP);
                     done.fail(invalid); return;
                 }
+                if (!CoinLock.rememberPosting(Cmd.inputCoinIds(cmdsThroughBasics),txid)) {
+                    node.cmd("txndelete id:"+txid,NOOP);
+                    done.fail("Could not durably reserve the transaction inputs, or an input is already submitted. Nothing was posted.");return;
+                }
                 node.cmd("txnpost id:" + txid, new NodeApi.Cb() {
                     @Override public void onResult(JSONObject j) {
-                        if (j.optBoolean("status", false)) {
+                        if (Boolean.TRUE.equals(j.opt("status")) && !Boolean.TRUE.equals(j.opt("pending"))) {
                             node.cmd("txndelete id:" + txid, NOOP);
                             String postedId = Util.extractTxpowid(j, txid);
                             ActivityLog.rememberSubmission(node.context(), j, postedId);

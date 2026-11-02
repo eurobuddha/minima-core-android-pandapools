@@ -15,7 +15,7 @@ import java.nio.file.Files;
 public final class NodeTransportService extends Service {
     private MinimaAPI api;
     private final Handler handler = new Handler(Looper.getMainLooper(), msg -> {
-        if (msg.what != 1 || msg.replyTo == null || msg.sendingUid != android.os.Process.myUid()) return true;
+        if ((msg.what != 1 && msg.what != 2) || msg.replyTo == null || msg.sendingUid != android.os.Process.myUid()) return true;
         String id = msg.getData().getString("id", "");
         if (!NodeTransport.validId(id)) return true;
         Messenger target = msg.replyTo;
@@ -23,7 +23,12 @@ public final class NodeTransportService extends Service {
         try {
             String command = NodeTransport.read(request);
             request.delete();
-            api.Command(command, reply -> respond(target, id, reply));
+            if (msg.what == 2) {
+                JSONObject file = new JSONObject(command);
+                api.FileCommand(file.getString("action"), file.getString("path"), file.optString("newPath", null),
+                        file.has("uri") ? android.net.Uri.parse(file.getString("uri")) : null,
+                        reply -> respond(target, id, reply));
+            } else api.Command(command, reply -> respond(target, id, reply));
         } catch (Exception error) { respond(target, id, NodeTransport.failure("Node transport could not read the request.")); }
         return true;
     });

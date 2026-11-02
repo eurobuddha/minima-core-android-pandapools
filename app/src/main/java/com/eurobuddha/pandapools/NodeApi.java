@@ -78,7 +78,7 @@ public class NodeApi {
     /** Transaction/PoW commands can take a long time on a phone; reads are quick. */
     private static long timeoutFor(String command) {
         String c = command == null ? "" : command.trim();
-        if (writesFunds(c) || c.equals("newaddress") || c.equals(BlockOwnerRecovery.MODE_COMMAND) || c.startsWith("txnsign")
+        if (c.startsWith("backup ") || writesFunds(c) || c.equals("newaddress") || c.equals(BlockOwnerRecovery.MODE_COMMAND) || c.startsWith("txnsign")
                 || c.startsWith("txnpost") || c.startsWith("tokencreate") || c.startsWith("txnbasics")) {
             return WRITE_TIMEOUT_MS;
         }
@@ -130,6 +130,28 @@ public class NodeApi {
         // match the current wording ("Result too long!") and the size cap itself, so a reworded message
         // still trips the guard as long as the byte-cap marker is present.
         return s.contains("too long") || s.contains("max(256000)");
+    }
+
+    /** Existing admin-gated FILE service; bytes travel through content URIs, never Binder payloads. */
+    public void file(String action, String path, String newPath, android.net.Uri uri, Cb cb) {
+        if (Looper.myLooper() != Looper.getMainLooper()) { mMain.post(() -> file(action,path,newPath,uri,cb)); return; }
+        if (mReleased) { cb.onError("Node connection closed."); return; }
+        queuedCommands++;
+        IPC_QUEUE.submit(finish -> {
+            final boolean[] delivered = {false};
+            final Runnable[] timer = new Runnable[1];
+            java.util.function.Consumer<JSONObject> complete = reply -> {
+                if (delivered[0]) return; delivered[0] = true;
+                mMain.removeCallbacks(timer[0]); mPending.remove(timer[0]);
+                try {
+                    if (reply == null || reply.has("transporterror")) cb.onError("Node file access is unavailable. Check Admin permission and node version.");
+                    else cb.onResult(reply);
+                } finally { queuedCommands--; mMain.post(finish); finishDestroy(); }
+            };
+            timer[0] = () -> complete.accept(null); mPending.add(timer[0]); mMain.postDelayed(timer[0],180000);
+            try { mApi.FileCommand(action,path,newPath,uri,reply -> mMain.post(() -> complete.accept(reply))); }
+            catch (RuntimeException failed) { complete.accept(null); }
+        });
     }
 
     public void cmd(String command, Cb cb) {

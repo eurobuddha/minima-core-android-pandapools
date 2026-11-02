@@ -1246,7 +1246,7 @@ public class MyLpView extends BaseView {
                     OwnPoolStore.setRetired(act, p.address, true);
                     ActivityLog.record(act, ActivityLog.MIGRATE, "Migrate MINIMA / " + p.tokenLabel() + " pool  ·  new size "
                             + trim(pool.reserveM) + " MINIMA + " + trim(pool.reserveT) + " " + p.tokenLabel(), txpowid, act.chainBlock());
-                    act.runOnUiThread(() -> { busy = false; status("Migrated ✓ " + txpowid + " — confirming on-chain.", txpowid); act.pools().refresh(); });
+                    act.runOnUiThread(() -> { busy = false; status("Migrated ✓ " + txpowid + " — confirming on-chain.", txpowid); act.pools().refresh(); forceBackupAfterCreate(pool); });
                 }
                 @Override public void onFailed(String message) {
                     ActivityLog.recordFailed(act, ActivityLog.MIGRATE, "Migrate MINIMA / " + p.tokenLabel() + " pool", message);
@@ -1559,44 +1559,9 @@ public class MyLpView extends BaseView {
     }
 
     private void doBackup() {
-        status("Preparing backup…");
-        final java.util.List<Pool> owned = OwnPoolStore.all(act);
-        recovery.backup(act, new ArrayList<>(myPools), act.chainBlock(), new Recovery.BackupCb() {
-            @Override public void onBackup(String json) {
-                act.pickSaveFile("pandapools-backup.json", uri -> {
-                    if (uri == null) { status("Backup cancelled."); return; }
-                    if (!writeUri(uri, json)) { status("Could not write the backup file."); return; }
-                    // A write that did not throw is NOT evidence the file is usable. Read it back and prove it
-                    // can recover every pool: a truncated or partially-written backup otherwise fails for the
-                    // first time during a real recovery, which is the worst possible moment to discover it.
-                    String readBack = readUri(uri);
-                    int written = json.getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
-                    String problem = BackupState.verifyExport(readBack, owned, written);
-                    if (problem != null) {
-                        status("Backup NOT verified: " + problem);
-                        info("Backup could not be verified",
-                                "PandaPools saved the file but could not read it back intact: " + problem + ".\n\n"
-                                + "Do not rely on it. Try a different location — a local folder rather than a "
-                                + "cloud-synced one, which may not have finished writing.");
-                        return;
-                    }
-                    BackupState.recordVerifiedExport(act, owned);
-                    clearProoflessWithProofs(readBack);   // any pool whose entry now carries proofs is done
-                    status("Backup saved and verified ✓");
-                    info("Backup saved and verified",
-                            "PandaPools read the file back and confirmed it can rebuild "
-                            + (owned.size() == 1 ? "your pool's contract" : "all " + owned.size() + " of your pools' contracts") + ".\n\n"
-                            + (json.contains("proof_warning")
-                                ? "Some reserve coin proofs were unavailable or changed while exporting, so they are not in the file. That is not a problem: proofs are only a shortcut, they expire anyway, and recovery works from the recipe plus an archive lookup.\n\n"
-                                : "The coin proofs inside it expire; the recipes do not, and they are what recovery actually needs.\n\n")
-                            + "Keep this file, your original wallet seed, and a current complete node backup safe. "
-                            + "This diagnostic build checks reserves and finds matching block-based owner keys, "
-                            + "but leaves restored pools paused. It does not restore signing controls.");
-                    act.pools().refresh();   // re-render so the "not backed up" banner clears
-                });
-            }
-            @Override public void onError(String msg) { status(msg); }
-        });
+        if (busy) return;
+        busy = true;
+        CombinedBackupUi.backup(act, recovery, new ArrayList<>(myPools), this::status, () -> busy = false);
     }
 
     /**
@@ -1612,23 +1577,8 @@ public class MyLpView extends BaseView {
      * warnings on the one screen where they must not.
      */
     private void forceBackupAfterCreate(Pool pool) {
-        final String addr = pool == null ? "" : pool.address;
-        markProofless(addr);
-        AlertDialog dlg = new AlertDialog.Builder(act)
-                .setTitle("Save your pool file now")
-                .setMessage("Your pool is live on chain. Its contract exists on this phone only, and PandaPools "
-                        + "never sends that copy to any cloud — so right now, if this phone is lost or wiped, "
-                        + "recovering this pool would depend on a current MinimaCore wallet backup, and you may "
-                        + "not have one. This file is the other way back.\n\n"
-                        + "Saving takes one tap. PandaPools will read the file back and check it before calling "
-                        + "it saved.\n\n"
-                        + "Pool: " + addr)
-                .setCancelable(false)
-                .setPositiveButton("Save file…", (d, w) -> doBackup())
-                .create();
-        dlg.show();
-        TextView body = dlg.findViewById(android.R.id.message);
-        if (body != null) body.setTextIsSelectable(true);
+        markProofless(pool == null ? "" : pool.address);
+        doBackup();
     }
 
     /** Remember that this pool's exported recipe has no coin proofs yet, so we can offer a re-export once the
@@ -1646,8 +1596,7 @@ public class MyLpView extends BaseView {
     private void doCheckBackup() {
         act.pickOpenFile(uri -> {
             if (uri == null) { status("Check cancelled."); return; }
-            String json = readUri(uri);
-            if (json == null || json.isEmpty()) { status("Could not read that file."); return; }
+            CombinedBackupUi.inspect(act,uri,json->{
             NodeApi n = act.node();
             if (n == null) { status("Connect the node before checking a backup file."); return; }
             if (busy) return;
@@ -1664,6 +1613,7 @@ public class MyLpView extends BaseView {
                     });
                 }
             });
+            },this::status);
         });
     }
 
@@ -1704,9 +1654,7 @@ public class MyLpView extends BaseView {
     private void pickRestoreFile() {
         act.pickOpenFile(uri -> {
             if (uri == null) { status("Restore cancelled."); return; }
-            String json = readUri(uri);
-            if (json == null || json.isEmpty()) { status("Could not read that file."); return; }
-            restoreJson(json, true);
+            CombinedBackupUi.open(act, uri, json -> restoreJson(json, true), this::status);
         });
     }
 

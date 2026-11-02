@@ -17,6 +17,7 @@ final class NodeTransport {
     private final ExecutorService reader = Executors.newSingleThreadExecutor();
     private final Map<String, MinimaAPIListener> callbacks = new LinkedHashMap<>();
     private final Set<String> unsent = new LinkedHashSet<>();
+    private final Map<String,Integer> requestTypes = new HashMap<>();
     private Messenger remote;
     private boolean bound, closed;
     private final Messenger replies = new Messenger(new Handler(Looper.getMainLooper(), msg -> {
@@ -60,7 +61,16 @@ final class NodeTransport {
         });
     }
 
-    void Command(String command, MinimaAPIListener cb) {
+    void FileCommand(String action, String path, String newPath, android.net.Uri uri, MinimaAPIListener cb) {
+        try {
+            JSONObject value = new JSONObject().put("action", action).put("path", path);
+            if (newPath != null) value.put("newPath", newPath);
+            if (uri != null) value.put("uri", uri.toString());
+            stage(value.toString(), 2, cb);
+        } catch (Exception invalid) { cb.response(failure("Could not stage file request.")); }
+    }
+    void Command(String command, MinimaAPIListener cb) { stage(command, 1, cb); }
+    private void stage(String command, int type, MinimaAPIListener cb) {
         if (closed || !bound) { cb.response(failure("Node reply service is unavailable.")); return; }
         String id = UUID.randomUUID().toString();
         try {
@@ -68,7 +78,7 @@ final class NodeTransport {
             if (bytes.length > MAX_BYTES) throw new IOException("Oversized command");
             java.nio.file.Files.write(file(context, id, ".cmd").toPath(), bytes);
         } catch (Exception error) { cb.response(failure("Could not stage node command.")); return; }
-        callbacks.put(id, cb); unsent.add(id);
+        callbacks.put(id, cb); requestTypes.put(id, type); unsent.add(id);
         if (remote != null) send(id);
         // Cancel a command that has NOT crossed the service boundary before the outer read timeout.
         main.postDelayed(() -> {
@@ -77,13 +87,13 @@ final class NodeTransport {
     }
     private void send(String id) {
         if (!unsent.remove(id)) return;
-        Message request = Message.obtain(null, 1);
+        Message request = Message.obtain(null, requestTypes.getOrDefault(id, 1));
         Bundle b = new Bundle(); b.putString("id", id); request.setData(b); request.replyTo = replies;
         try { remote.send(request); }
         catch (RemoteException error) { complete(id, failure("Node reply service disconnected.")); }
     }
     private void complete(String id, JSONObject reply) {
-        unsent.remove(id); file(context, id, ".cmd").delete();
+        unsent.remove(id); requestTypes.remove(id); file(context, id, ".cmd").delete();
         MinimaAPIListener cb = callbacks.remove(id);
         if (cb != null) cb.response(reply);
     }
