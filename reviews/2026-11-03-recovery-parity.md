@@ -91,3 +91,29 @@ IPFS publication completed and the immutable public catalogs were checked for al
 matching SHA-256 values at CID
 `bafybeidryx37xkgpkf76azmqzuj7dagg2yh233s3cskwlqxhqjg2mjnidm`.
 The server completion marker was updated after IPNS publication at 2026-11-03 10:18:18 UTC.
+
+### Desktop blocker resolved
+
+The owner restored the `minimadesk` notarization profile. The unchanged signed-build workflow passed:
+app notarization submission `3495c8ce-2d79-47a9-a440-99f1c7c156de`, DMG submission
+`ee02d7e9-175c-4cbb-87d3-2150e3d89ed7`, strict Developer ID verification, hardened runtime, stapled
+app/DMG tickets and Gatekeeper acceptance. Team ID remains `Z4JD286WF4`.
+
+The existing `scripts/release-desktop.sh 0.18.33` completed with `ALL THREE PLATFORMS PUBLISHED`.
+The live updater feed now lists version 0.18.33 for Mac ARM64, Windows x64 and Linux x64. Each feed
+hash and size matched GitHub's public asset metadata; the Mac hash also matched the tested local DMG:
+
+- Mac: `d996d6ca6b2ad10e8b905a8de304966b3f65639820e7b7a1fe09b2fd2e94270f`
+- Windows: `93935151ceed46bcb97fe64e7c37df790558c022beac847c85e42c9b9d7d710b`
+- Linux: `8afb0a12363968d365beebc74997f6510d5e556ded70f20fbebc0699afd66db1`
+
+Release: https://github.com/eurobuddha/minimacore-desktop/releases/tag/v0.18.33
+The generated `pandaapps/minimacore-desktop.json` is intentionally gitignored; it was published by
+the release script, not force-added to source control. No app installation or node restart occurred.
+
+Desktop catalog commit `74c1794` passed the required 58-entry / 57-binary validation and was pushed.
+The live catalog was updated atomically after checking its previous hash. All three desktop 0.18.33
+versions and hashes were verified on HTTPS and in the final public IPFS snapshot:
+`bafybeifghotwwphuo5vmadcu77ydnawk2krtxpqm6eupr6lq7ujmxky4py`.
+The snapshot publication marker was recorded at 2026-11-03 11:32:25 UTC. Desktop publication is
+complete; the earlier notarization blocker is resolved.
