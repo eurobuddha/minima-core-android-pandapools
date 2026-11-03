@@ -55,3 +55,39 @@ Automated recovery cannot manufacture missing keys, unknown historical signing s
 The MDS flow supports the usual preserved-wallet case; seed-only situations stop with instructions.
 A full resync interrupts all applications and must preserve the correct wallet/key mode. Runtime proof
 requests require the newly packaged node support; older nodes get an actionable error.
+
+## Publication — 2026-11-03
+
+Published releases and verified GitHub asset SHA-256 digests against the tested local files:
+
+- PandaPools 0.9.75 — commit `00ded0c`; APK SHA-256
+  `2faf660ff9dcab8958c381a2b0c239f5d3e8a281eed6c9bdb4aed5b4b7b4c45e`.
+- PandaPools MDS 0.6.36 — commit `d7adf101`; ZIP SHA-256
+  `b2318f30a9a3ee4512fc166ebf79206f9ecde320c17d2bad09ef64953ce1c69d`.
+- Pandamonium 2.2.8 — commit `3bb59e2d`; APK SHA-256
+  `25b5160b88c2c5d8f76a1fbf9897847ef7d21d3844c522e5011bcf1d50a17f97`.
+- Android node source `4b9d5853e3` pushed to fork/keets-android;
+  desktop node source `4954c4cee7` pushed to fork/keets.
+
+Android catalog commit `9256fd1` passed all 58 entries / 57 binary checks and was deployed with a
+compare-and-swap hash guard. MDS store commit `7e9a81a` was likewise deployed; origin and Sally mirror
+both verified PandaPools 0.6.36. Unrelated graph/cache/worktree changes were not included.
+
+Desktop 0.18.33 source commit `ad3d845` and tag were pushed. GitHub Actions run `41616329505` passed
+all three platforms; CI published Windows and Linux assets. The local signed Mac build stopped at
+notarization: `No Keychain password item found for profile: minimadesk`. No unsigned Mac installer
+was substituted. The updater feed deliberately remains at the complete 0.18.32 release. Restore the
+existing Apple notary profile, rerun `npm run dist:mac:signed`, then use the existing
+`scripts/release-desktop.sh 0.18.33` procedure and verify all three feed rows before updating catalogs.
+
+User-facing MDS route: update the node to Pandamonium 2.2.8 (or equivalent proof-command support),
+install MDS 0.6.36 with WRITE trust, pass the block-as-key-uses/startup checks, import the backup,
+confirm the existing matching wallet's current signing state, and choose **Recover & withdraw**.
+Keep the screen open through confirmation/collection. After interruption, reopening the same backup
+resumes the durable journal. Classic funded wallets must use native existing-wallet recovery; do not
+change their key mode merely to pass the MDS gate.
+
+IPFS publication completed and the immutable public catalogs were checked for all three versions and
+matching SHA-256 values at CID
+`bafybeidryx37xkgpkf76azmqzuj7dagg2yh233s3cskwlqxhqjg2mjnidm`.
+The server completion marker was updated after IPNS publication at 2026-11-03 10:18:18 UTC.
