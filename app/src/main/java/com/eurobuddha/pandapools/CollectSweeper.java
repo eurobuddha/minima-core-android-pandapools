@@ -10,7 +10,7 @@ import java.util.List;
 
 /**
  * Finishes the job of getting withdrawn funds off the owner payout addresses, and keeps finishing it
- * until they are actually empty.
+ * until they are actually empty and every journalled withdrawal has fresh chain confirmation.
  *
  * The rule this enforces, which the old retry loop did not: **success is the address being empty, read
  * back from the node — not a forward transaction reporting that it posted.** One forward moves the coins
@@ -33,7 +33,7 @@ final class CollectSweeper {
 
     /** What to do with one tracked payout address. */
     enum Verdict {
-        /** The address is empty. This is the ONLY thing that finishes the job. */
+        /** The address is empty; the caller must still verify withdrawal evidence before clearing. */
         CLEAR,
         /** Keep the entry and come back next pass. */
         RETRY,
@@ -51,7 +51,7 @@ final class CollectSweeper {
      * exactly what stranded 2934.95626348 MxUSD. CLEAR is reachable only from a zero read.
      */
     static Verdict decide(Integer remaining, Boolean canSign) {
-        if (remaining == null) return Verdict.RETRY;        // unknown: never conclude anything
+        if (remaining == null || remaining < 0) return Verdict.RETRY;        // unknown: never conclude anything
         if (remaining == 0) return Verdict.CLEAR;
         if (canSign == null) return Verdict.RETRY;          // unknown is not "unreachable"
         return canSign ? Verdict.RETRY : Verdict.STRANDED;
@@ -69,7 +69,7 @@ final class CollectSweeper {
     void run(Cb cb) {
         List<PendingCollect.Entry> queue = PendingCollect.all(ctx);
         if (queue.isEmpty()) { cb.onDone(0, 0, 0); return; }
-        step(queue, 0, new int[]{0, 0, 0}, cb);
+        new CollectConfirmation(ctx, node).scan(() -> step(PendingCollect.all(ctx), 0, new int[]{0, 0, 0}, cb));
     }
 
     private void step(List<PendingCollect.Entry> queue, int i, int[] tally, Cb cb) {
@@ -77,12 +77,22 @@ final class CollectSweeper {
         final PendingCollect.Entry e = queue.get(i);
         final String oadr = e.oadr;
 
-        // Read the address FIRST. Empty means done — and that is the only thing that means done.
+        // An empty address may mean its withdrawal has not arrived yet.
         readRemaining(oadr, remaining -> {
             if (decide(remaining, null) == Verdict.CLEAR) {
-                PendingCollect.clear(ctx, oadr);
-                tally[0]++;
-                step(queue, i + 1, tally, cb);
+                new CollectConfirmation(ctx, node).confirmed(e, confirmed -> {
+                    if (!confirmed) { pendingEmpty(e, queue, i, tally, cb); return; }
+                    // Re-read after confirmation; never clear from an earlier balance snapshot.
+                    readRemaining(oadr, latest -> {
+                        if (latest != null && latest == 0 && PendingCollect.clear(ctx, e)) {
+                            Pool recovered = ExitStore.recoveryPool(ctx, oadr);
+                            if (recovered != null) ExitStore.set(ctx, recovered.address, recovered.opk,
+                                    ExitStore.State.DONE, "Confirmed collection; payout address empty.", "", 0);
+                            tally[0]++;
+                            step(queue, i + 1, tally, cb);
+                        } else pendingEmpty(e, queue, i, tally, cb);
+                    });
+                });
                 return;
             }
             if (remaining == null) {                       // could not read; leave it and try next pass
@@ -139,22 +149,19 @@ final class CollectSweeper {
         });
     }
 
+    private void pendingEmpty(PendingCollect.Entry entry, List<PendingCollect.Entry> queue, int index,
+                              int[] tally, Cb cb) {
+        PendingCollect.attempted(ctx, entry.oadr, PendingCollect.Status.RETRYING,
+                "Waiting for verified withdrawal confirmation and an empty payout address. Older entries without transaction evidence remain unresolved.");
+        tally[1]++;
+        step(queue, index + 1, tally, cb);
+    }
+
     /** How many coins sit at {@code oadr} right now, or null when the node could not say. */
     private void readRemaining(String oadr, java.util.function.Consumer<Integer> cb) {
         node.cmd("balance address:" + oadr, new NodeApi.Cb() {
             @Override public void onResult(JSONObject reply) {
-                JSONArray rows = FundingCoins.rows(reply);
-                if (rows == null) { cb.accept(null); return; }
-                int count = 0;
-                try {
-                    for (int i = 0; i < rows.length(); i++) {
-                        JSONObject r = rows.optJSONObject(i);
-                        if (r == null) continue;
-                        count = Math.addExact(count,
-                                new java.math.BigDecimal(r.get("coins").toString()).intValueExact());
-                    }
-                } catch (Exception invalid) { cb.accept(null); return; }
-                cb.accept(count);
+                cb.accept(CollectionEvidence.remaining(reply));
             }
             @Override public void onError(String m) { cb.accept(null); }
         });
@@ -170,7 +177,8 @@ final class CollectSweeper {
             @Override public void onResult(JSONObject reply) {
                 JSONObject r = reply == null ? null : reply.optJSONObject("response");
                 if (!TxPost.truthy(reply, "status") || r == null || !r.has("relevant")) { cb.accept(null); return; }
-                cb.accept(r.optBoolean("relevant", false));
+                Object relevant = r.opt("relevant");
+                cb.accept(relevant instanceof Boolean ? (Boolean) relevant : null);
             }
             // null = UNKNOWN, never false. A transient failure must not be reported to the user as
             // "your funds are unreachable".

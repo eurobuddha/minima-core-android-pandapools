@@ -80,11 +80,12 @@ final class WalletTools {
     }
     void resolveInterruptedWrite() {
         if (!act.node().hasInterruptedWrite()) { message("There is no interrupted write to resolve."); return; }
+        final String reviewed = act.node().interruptedWriteId();
         new androidx.appcompat.app.AlertDialog.Builder(act, Design.isDark() ? androidx.appcompat.R.style.Theme_AppCompat_Dialog_Alert : androidx.appcompat.R.style.Theme_AppCompat_Light_Dialog_Alert).setTitle("Resolve interrupted write")
                 .setMessage("A node write lost its reply. It may have completed. First restart MinimaCore to stop any old command, "
                         + "then check your transactions and balances. Clearing this safety pause does not undo or retry any transaction.")
                 .setNegativeButton("Keep paused", null)
-                .setPositiveButton("I restarted and checked", (d, w) -> { message(act.node().acknowledgeInterruptedWrite() ? "Safety pause cleared. Review your balances before starting a new transaction." : "A write is still active or the safety state could not be saved. Keep paused."); }).show();
+                .setPositiveButton("I restarted and checked", (d, w) -> { message(act.node().acknowledgeInterruptedWrite(reviewed) ? "Safety pause cleared. Review your balances before starting a new transaction." : "A write is still active or the safety state could not be saved. Keep paused."); }).show();
     }
     private static String nodeError(JSONObject j) { return j.optString("error", j.optString("message", "No coins could be combined.")); }
     private void message(String text) {

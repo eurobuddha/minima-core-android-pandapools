@@ -19,6 +19,8 @@ public final class TxPost {
 
     public interface Done { void ok(String txpowid); void fail(String message); }
 
+    interface BeforePost { void prepare(Runnable post, java.util.function.Consumer<String> fail); }
+
     private TxPost() {}
 
     static final NodeApi.Cb NOOP = new NodeApi.Cb() {
@@ -89,6 +91,11 @@ public final class TxPost {
     }
 
     static void checkThenPost(NodeApi node, String txid, List<String> cmdsThroughBasics, List<String> ownerKeys, Done done) {
+        checkThenPost(node, txid, cmdsThroughBasics, ownerKeys, null, done);
+    }
+
+    static void checkThenPost(NodeApi node, String txid, List<String> cmdsThroughBasics, List<String> ownerKeys,
+                              BeforePost beforePost, Done done) {
         // Both scans go through the shared Cmd parser, which refuses a duplicated parameter instead of
         // resolving it. This layer LOCKS the coins and authorises the signature; CmdChain verifies them at the
         // signature boundary. The two must never disagree about which coins a command spends.
@@ -109,7 +116,7 @@ public final class TxPost {
             return;
         }
         if (!CoinLock.loadPosted(node.context()) || !CoinLock.claimInputs(inputIds)) {
-            done.fail("An input is already queued, submitted, or has an uncertain outcome. Refresh after confirmation to use the new pool reserves. Nothing was posted.");
+            done.fail("An input is already in another queued transaction, or appears twice. Wait for Activity to update and retry.");
             return;
         }
         final Done gatedDone = gated(new Done() {
@@ -120,12 +127,12 @@ public final class TxPost {
             if (!blocked.isEmpty()) { gatedDone.fail("Nothing was posted.\n\n" + OwnerKeyRecovery.worst(blocked).message()); return; }
             CoinLock.checkAvailable(node::cmd,inputIds,0,available->{
                 if(!available){gatedDone.fail("An input is spent, pending in another transaction, or unreadable. Refresh and verify reserves before retrying. Nothing was signed.");return;}
-                runChain(node, txid, cmdsThroughBasics, gatedDone);
+                runChain(node, txid, cmdsThroughBasics, beforePost, gatedDone);
             });
         }));
     }
 
-    private static void runChain(NodeApi node, String txid, List<String> cmdsThroughBasics, Done done) {
+    private static void runChain(NodeApi node, String txid, List<String> cmdsThroughBasics, BeforePost beforePost, Done done) {
         List<String> cmds = new ArrayList<>(cmdsThroughBasics);
         cmds.add("txncheck id:" + txid);
         CmdChain.run(node, cmds, "txndelete id:" + txid, new CmdChain.Done() {
@@ -135,11 +142,9 @@ public final class TxPost {
                     node.cmd("txndelete id:" + txid, NOOP);
                     done.fail(invalid); return;
                 }
-                if (!CoinLock.rememberPosting(Cmd.inputCoinIds(cmdsThroughBasics),txid)) {
-                    node.cmd("txndelete id:"+txid,NOOP);
-                    done.fail("Could not durably reserve the transaction inputs, or an input is already submitted. Nothing was posted.");return;
-                }
-                node.cmd("txnpost id:" + txid, new NodeApi.Cb() {
+                Runnable post = () -> {
+                    if (!CoinLock.rememberPosting(Cmd.inputCoinIds(cmdsThroughBasics),txid)) { node.cmd("txndelete id:"+txid,NOOP);done.fail("Input is already submitted or reservation could not be saved. Nothing was posted.");return; }
+                    node.cmd("txnpost id:" + txid, new NodeApi.Cb() {
                     @Override public void onResult(JSONObject j) {
                         if (Boolean.TRUE.equals(j.opt("status")) && !Boolean.TRUE.equals(j.opt("pending"))) {
                             node.cmd("txndelete id:" + txid, NOOP);
@@ -153,6 +158,12 @@ public final class TxPost {
                         if (!NodeApi.ERR_WRITE_UNCERTAIN.equals(m)) node.cmd("txndelete id:" + txid, NOOP);
                         done.fail(m);
                     }
+                });
+                };
+                if (beforePost == null) post.run();
+                else beforePost.prepare(post, message -> {
+                    node.cmd("txndelete id:" + txid, NOOP);
+                    done.fail(message);
                 });
             }
             @Override public void fail(String message) { done.fail(message); }

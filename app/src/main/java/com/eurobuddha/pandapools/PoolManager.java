@@ -278,7 +278,9 @@ public class PoolManager {
                         if (tchange.signum() > 0)
                             cmds.add("txnoutput id:" + txid + " amount:" + amt(tchange) + " address:" + tChg + tokArg + " storestate:false");
                         addAnnounceState(cmds, txid, np);
-                        ownerSignPost(txid, p.opk, cmds, new Result() {
+                        final String payoutAddress = p.oadr;
+                        ownerSignPost(txid, p.opk, cmds,
+                                (post, fail) -> CollectConfirmation.beforePost(node, txid, payoutAddress, post, fail), new Result() {
                             @Override public void onPosted(String txpowid) { cb.onCreated(np, txpowid); }
                             @Override public void onFailed(String message) { cb.onFailed(message); }
                         });
@@ -303,7 +305,9 @@ public class PoolManager {
         cmds.add("txninput id:" + txid + " coinid:" + p.coinidT);   // 1 -> owner exit
         cmds.add("txnoutput id:" + txid + " amount:" + amt(p.reserveM) + " address:" + p.oadr + " storestate:false");
         cmds.add("txnoutput id:" + txid + " amount:" + amt(p.reserveT) + " address:" + p.oadr + tokArg + " storestate:false");
-        ownerSignPost(txid, p.opk, cmds, cb);
+        final String payoutAddress = p.oadr;
+        ownerSignPost(txid, p.opk, cmds, false,
+                (post, fail) -> CollectConfirmation.beforePost(node, txid, payoutAddress, post, fail), cb);
     }
 
     // ===================================================================== FORWARD TO DEFAULT WALLET
@@ -320,6 +324,8 @@ public class PoolManager {
      */
     public void forwardOwnerFunds(final String oadr, final ForwardResult cb) {
         if (!FundingCoins.hex(oadr)) { cb.onFailed("Invalid owner address."); return; }
+        Pool recovery = ExitStore.recoveryPool(node.context(), oadr);
+        if (recovery != null) { forwardRecovery(recovery, cb); return; }
         List<String> owners = new ArrayList<>();
         for (Pool p : OwnPoolStore.all(node.context())) if (oadr.equalsIgnoreCase(p.oadr)) owners.add(p.opk);
         OwnerKeyRecovery.ensure(node.context(), node, owners, blocked -> {
@@ -331,7 +337,24 @@ public class PoolManager {
         });
     }
 
+    /** Resumes only an explicitly accepted recovery, after its journalled withdrawal confirms. */
+    private void forwardRecovery(Pool p, ForwardResult cb) {
+        ExitStore.Record record = ExitStore.get(node.context(), p.address);
+        if (record == null || record.stateOf() != ExitStore.State.POSTED || record.signatures != 1
+                || !p.opk.equalsIgnoreCase(record.opk)) {
+            cb.onFailed("Recovery collection is already submitted or needs review. No extra signature was made."); return;
+        }
+        new CollectConfirmation(node.context(), node).confirmed(PendingCollect.get(node.context(), p.oadr), confirmed -> {
+            if (!confirmed) { cb.onNothing(); return; }
+            forwardCheckedOwnerFunds(p.oadr, p, cb);
+        });
+    }
+
     private void forwardCheckedOwnerFunds(final String oadr, final ForwardResult cb) {
+        forwardCheckedOwnerFunds(oadr, null, cb);
+    }
+
+    private void forwardCheckedOwnerFunds(final String oadr, final Pool recovery, final ForwardResult cb) {
         node.cmd("balance address:" + oadr, new NodeApi.Cb() {
             public void onResult(JSONObject reply) {
                 JSONArray rows = FundingCoins.rows(reply);
@@ -347,18 +370,21 @@ public class PoolManager {
                 if (!FundingCoins.listIsSafe(count)) {
                     cb.onFailed("Owner address has " + count + " coins. Collection is paused because this node cannot safely list that group."); return;
                 }
-                forwardSmallAddress(oadr, cb);
+                forwardSmallAddress(oadr, recovery, count, cb);
             }
             public void onError(String error) { cb.onFailed(error); }
         });
     }
 
-    private void forwardSmallAddress(String oadr, ForwardResult cb) {
+    private void forwardSmallAddress(String oadr, Pool recovery, int expected, ForwardResult cb) {
         node.cmd("coins relevant:true sendable:true checkmempool:true coinage:3 address:" + oadr, new NodeApi.Cb() {
             @Override public void onResult(JSONObject j) {
                 JSONArray arr = FundingCoins.rows(j);
                 if (arr == null) { cb.onFailed("Could not read owner-address coins."); return; }
                 if (arr.length() == 0) { cb.onNothing(); return; }
+                // The bounded continuation must wait for ALL payout coins; never spend its only attempt
+                // on the first leg to mature while the other is still confirming.
+                if (recovery != null && arr.length() != expected) { cb.onNothing(); return; }
                 final List<String> coinids = new ArrayList<>();
                 final Map<String, BigDecimal> byTok = new LinkedHashMap<>();   // tokenid -> summed human amount
                 for (int i = 0; i < arr.length(); i++) {
@@ -370,7 +396,7 @@ public class PoolManager {
                     Object state = c.opt("state");
                     if ((state instanceof JSONArray && ((JSONArray)state).length() > 0)
                             || (state instanceof JSONObject && ((JSONObject)state).length() > 0)) continue;
-                    String tid = coin.tokenid, cid = coin.coinid;
+                    String tid = coin.tokenid.toLowerCase(java.util.Locale.ROOT), cid = coin.coinid;
                     if (!FundingCoins.hex(cid) || !oadr.equalsIgnoreCase(coin.address)) {
                         cb.onFailed("Unexpected owner-address coin."); return;
                     }
@@ -380,7 +406,8 @@ public class PoolManager {
                     BigDecimal prev = byTok.get(tid);
                     byTok.put(tid, prev == null ? a : prev.add(a));
                 }
-                if (coinids.isEmpty()) { cb.onNothing(); return; }
+                if (coinids.isEmpty() || (recovery != null && coinids.size() != expected)) { cb.onNothing(); return; }
+                if (recovery != null && (!byTok.containsKey("0x00") || !byTok.containsKey(recovery.tok.toLowerCase(java.util.Locale.ROOT)))) { cb.onNothing(); return; }
                 // fresh DEFAULT-64 wallet address to receive (getaddress, not newaddress)
                 node.cmd("getaddress", new NodeApi.Cb() {
                     @Override public void onResult(JSONObject aj) {
@@ -395,14 +422,38 @@ public class PoolManager {
                             String tokArg = "0x00".equals(en.getKey()) ? "" : " tokenid:" + en.getKey();
                             cmds.add("txnoutput id:" + txid + " amount:" + amt(en.getValue()) + " address:" + dest + tokArg + " storestate:false");
                         }
-                        cmds.add("txnsign id:" + txid + " publickey:auto");
+                        cmds.add("txnsign id:" + txid + " publickey:" + (recovery == null ? "auto" : recovery.opk));
                         cmds.add("txnbasics id:" + txid);
                         final int n = coinids.size();
                         List<String> ownerKeys = new ArrayList<>();
                         for (Pool p : OwnPoolStore.all(node.context())) if (oadr.equalsIgnoreCase(p.oadr)) ownerKeys.add(p.opk);
-                        TxPost.checkThenPost(node, txid, cmds, ownerKeys, new TxPost.Done() {
-                            @Override public void ok(String txpowid) { cb.onForwarded(txpowid, n); }
-                            @Override public void fail(String message) { cb.onFailed(message); }
+                        ExitTicket ticket = recovery == null ? null : ExitTicket.forward(recovery, txid, coinids, byTok, dest);
+                        if (recovery != null) {
+                            if (!ExitAuthority.tryGrant(ticket)) { cb.onFailed("Recovery collection is busy or invalid; nothing signed."); return; }
+                            if (!ExitStore.beginForward(node.context(), recovery)) {
+                                ExitAuthority.revoke(ticket);
+                                cb.onFailed("Could not record a new collection attempt; nothing signed."); return;
+                            }
+                        }
+                        TxPost.checkThenPost(node, txid, cmds, ownerKeys,
+                                recovery == null ? null : (post, fail) -> CollectConfirmation.beforePost(node, txid, oadr, post, fail),
+                                new TxPost.Done() {
+                            @Override public void ok(String txpowid) {
+                                if (ticket != null) {
+                                    ExitAuthority.revoke(ticket);
+                                    ExitStore.set(node.context(), recovery.address, recovery.opk, ExitStore.State.FORWARDED,
+                                            "Collection submitted; waiting for confirmation.", "", 0);
+                                }
+                                cb.onForwarded(txpowid, n);
+                            }
+                            @Override public void fail(String message) {
+                                if (ticket != null) {
+                                    ExitAuthority.revoke(ticket);
+                                    ExitStore.set(node.context(), recovery.address, recovery.opk, ExitStore.State.UNCERTAIN,
+                                            "Collection stopped; check Activity before any retry. " + message, "", 0);
+                                }
+                                cb.onFailed(message);
+                            }
                         });
                     }
                     @Override public void onError(String m) { cb.onFailed(m); }
@@ -524,17 +575,25 @@ public class PoolManager {
     // ===================================================================== helpers
 
     private void ownerSignPost(String txid, String opk, List<String> cmds, Result cb) {
+        ownerSignPost(txid, opk, cmds, null, cb);
+    }
+
+    private void ownerSignPost(String txid, String opk, List<String> cmds, TxPost.BeforePost beforePost, Result cb) {
+        ownerSignPost(txid, opk, cmds, true, beforePost, cb);
+    }
+
+    private void ownerSignPost(String txid, String opk, List<String> cmds, boolean fundingSignature, TxPost.BeforePost beforePost, Result cb) {
         // Append the signing lines BEFORE the pre-flight, so the pre-flight judges the transaction that will
         // actually run. A check against a half-built list cannot evaluate an exit exemption — whose whole
         // premise is verifying the real command list — and would refuse a permitted close.
-        cmds.add("txnsign id:" + txid + " publickey:auto");        // any wallet funding coins
+        if (fundingSignature) cmds.add("txnsign id:" + txid + " publickey:auto"); // funding coins only
         cmds.add("txnsign id:" + txid + " publickey:" + opk);      // the owner signature the covenant requires
         cmds.add("txnbasics id:" + txid);
         OwnerKeyRecovery.ensure(node.context(), node, java.util.Collections.singletonList(opk), cmds, blocked -> {
             if (!blocked.isEmpty()) {
                 cb.onFailed("Nothing was posted.\n\n" + OwnerKeyRecovery.worst(blocked).message()); return;
             }
-            TxPost.checkThenPost(node, txid, cmds, new TxPost.Done() {
+            TxPost.checkThenPost(node, txid, cmds, java.util.Collections.emptyList(), beforePost, new TxPost.Done() {
                 @Override public void ok(String txpowid) { cb.onPosted(txpowid); }
                 @Override public void fail(String message) { cb.onFailed(message); }
             });

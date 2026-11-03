@@ -7,26 +7,8 @@ import org.json.JSONObject;
 import java.util.ArrayList;
 import java.util.List;
 
-/**
- * Withdraws restored pools automatically, one at a time, and is the ONLY thing that can issue an exit exemption.
- *
- * WHY THIS EXISTS AT ALL. A restored recipe is signing-quarantined, and {@link PoolRefresher} excludes
- * quarantined pools from keep-fresh. So a restored pool cannot refresh, drifts past the ~1700-block cascade, and
- * strands — the safe state is a slow death. Before this, the only ways out were the owner attestation, which
- * unlocks unlimited signing forever, or losing the pool. Every unsophisticated user was funnelled into the
- * dangerous button under time pressure. This is the bounded exit: two signatures, then the pool is gone and so is
- * the exposure.
- *
- * WHAT IT DOES NOT CLAIM. This is not safe. A signature the original node made that never reached the chain, or
- * made after the last backup, is invisible to every check here, and in that case the close reuses a leaf. What it
- * does is refuse every case where a reuse is DETECTABLE and cap the exposure at two leaves of 262,144 where it is
- * not. Strictly better than unbounded signing on an unproven key; not a guarantee, and nothing it prints says
- * otherwise.
- *
- * WHY IT IS SERIAL. Two concurrent exits would mean two chains signing with owner keys at once, which is the
- * hazard the whole signing gate exists to prevent. One at a time also keeps the progress log truthful and bounds
- * how much can go wrong before a person sees it.
- */
+/** Opt-in, bounded exit for matched restored keys. It never establishes prior signing history.
+ * One close may be attempted per pool; confirmed payouts get one collection attempt. */
 final class RestoreExit {
 
     /** Per run, so a restore of many pools cannot fire a long unattended burst of signing. */
@@ -41,14 +23,21 @@ final class RestoreExit {
     private final NodeApi node;
     private final PoolManager mgr;
     private int chainBlock;
+    private final boolean existingWallet;
 
-    RestoreExit(Context ctx, NodeApi node) {
-        this.ctx = ctx; this.node = node; this.mgr = new PoolManager(node);
+    RestoreExit(Context ctx, NodeApi node) { this(ctx, node, false); }
+    RestoreExit(Context ctx, NodeApi node, boolean existingWallet) {
+        this.ctx = ctx; this.node = node; this.mgr = new PoolManager(node); this.existingWallet = existingWallet;
     }
 
     /** Why a pool will not be withdrawn automatically, or null when it will be. */
     static String refusal(Context ctx, Pool p, Integer nodeUses, int capacity, int chainBlock) {
+        return refusal(ctx, p, nodeUses, capacity, chainBlock, false);
+    }
+    static String refusal(Context ctx, Pool p, Integer nodeUses, int capacity, int chainBlock, boolean existingWallet) {
         if (p == null) return "no pool";
+        if (!ExitStore.unattempted(ctx, p.address))
+            return "a recovery withdrawal was already attempted. Check Activity and recovery status; it will not be signed again automatically.";
         if (!ExitStore.withinLifetimeCap(ctx, p.address))
             return "this pool has already used its automatic-withdrawal attempts. Withdraw it yourself from MY LP.";
         if (!OwnerKeyRecovery.baseSigningAllowed(p, nodeUses, capacity)) {
@@ -63,15 +52,16 @@ final class RestoreExit {
         if (p.minimumOwnerUses < 0)
             return "this backup recorded no signature count, so nothing can detect a counter that has gone "
                     + "backwards. PandaPools will not sign for it automatically.";
+        // Recent swaps do not imply a lost wallet. This mode requires explicit preserved-state attestation;
+        // known counter floors, missing counters, exhaustion, live reserves and attempt limits still apply.
+        if (existingWallet) return null;
         int age = p.reserveAge(chainBlock);
         if (age <= 0)
             return "the age of this pool's reserves is unknown, so PandaPools cannot tell whether another device "
                     + "is still running this wallet.";
         if (age <= PoolRefresher.REFRESH_BLOCKS)
-            return "these reserves were recreated " + age + " blocks ago. Only this pool's owner key can do that, "
-                    + "so another device is still running this wallet. Nothing was posted — signing here while that "
-                    + "device is also signing could expose the key. Stop the other device, then use Withdraw on "
-                    + "this pool's card.";
+            return "these reserves were recreated " + age + " blocks ago, possibly by swaps or another device. "
+                    + "Stop the other device before recovery. This bounded recovery requires older reserves.";
         return null;
     }
 
@@ -109,7 +99,7 @@ final class RestoreExit {
     }
 
     private void decide(List<Pool> queue, int i, Pool p, Integer uses, int capacity, int[] tally, Cb cb) {
-        String why = refusal(ctx, p, uses, capacity, currentBlock());
+        String why = refusal(ctx, p, uses, capacity, currentBlock(), existingWallet);
         if (why != null) { skip(queue, i, p, why, tally, cb); return; }
 
         // Re-read the LIVE covenant coins before building, the same rule every other owner transaction follows:
@@ -122,7 +112,7 @@ final class RestoreExit {
                 return;
             }
             // The pool may have moved under us, which changes what "withdraw everything" means. Re-check.
-            String again = refusal(ctx, p, uses, capacity, currentBlock());
+            String again = refusal(ctx, p, uses, capacity, currentBlock(), existingWallet);
             if (again != null) { skip(queue, i, p, again, tally, cb); return; }
             post(queue, i, p, uses, tally, cb);
         });
@@ -138,27 +128,32 @@ final class RestoreExit {
         }
         // Mark POSTING before the post, and treat a failed write as a refusal: without a durable marker a crash
         // mid-post would look untried on relaunch, and the retry would double-post against the same coins.
-        if (!ExitStore.set(ctx, p.address, p.opk, ExitStore.State.POSTING, "", "", ExitTicket.SIGNATURES_PER_EXIT)) {
+        ExitTicket ticket = new ExitTicket(p.opk, p.address, p.oadr, p.tok,
+                p.coinidM, p.coinidT, PoolManager.amt(p.reserveM), PoolManager.amt(p.reserveT), ExitTicket.Stage.CLOSE);
+        if (!ExitAuthority.tryGrant(ticket)) {
+            skip(queue, i, p, "another recovery transaction is in progress; try again after it finishes.", tally, cb); return;
+        }
+        if (!ExitStore.beginClose(ctx, p)) {
+            ExitAuthority.revoke(ticket);
             skip(queue, i, p, "could not record the withdrawal on this device, so nothing was posted.", tally, cb); return;
         }
 
         cb.onProgress("Withdrawing " + p.address + " …");
-        ExitAuthority.grant(new ExitTicket(p.opk, p.address, p.oadr, p.tok,
-                p.coinidM, p.coinidT, PoolManager.amt(p.reserveM), PoolManager.amt(p.reserveT),
-                ExitTicket.Stage.CLOSE));
         mgr.close(p, new PoolManager.Result() {
             @Override public void onPosted(String txpowid) {
-                ExitAuthority.revoke();
+                ExitAuthority.revoke(ticket);
                 ExitStore.set(ctx, p.address, p.opk, ExitStore.State.POSTED, "", txpowid, 0);
                 LpStore.remove(ctx, p.address);
                 ActivityLog.record(ctx, ActivityLog.CLOSE,
                         "Automatic withdrawal after restore  ·  " + p.address, txpowid, currentBlock());
                 tally[0]++;
-                cb.onProgress("Withdrawn ✓ " + txpowid);
-                forward(p, () -> step(queue, i + 1, tally, cb));
+                cb.onProgress("Withdrawal submitted: " + txpowid + ". Collection waits for chain confirmation.");
+                // PoolManager.close journals the exact withdrawal before broadcasting. The durable sweeper
+                // waits for confirmation and then uses a fresh, single-use collection ticket.
+                step(queue, i + 1, tally, cb);
             }
             @Override public void onFailed(String message) {
-                ExitAuthority.revoke();
+                ExitAuthority.revoke(ticket);
                 boolean uncertain = message != null && message.contains(NodeApi.ERR_WRITE_UNCERTAIN);
                 ExitStore.set(ctx, p.address, p.opk,
                         uncertain ? ExitStore.State.UNCERTAIN : ExitStore.State.FAILED, message, "", 0);
@@ -170,48 +165,9 @@ final class RestoreExit {
         });
     }
 
-    /**
-     * Second hop: move what the close landed at $OADR onward to a default-64 wallet address.
-     *
-     * Covered by the exception on purpose. The covenant pins the owner exit to $OADR, which is a
-     * {@code newaddress} key a seed-only restore does not reproduce — so stopping after the close would swap a
-     * stranded pool for stranded funds, which is worse: a pool at least has a durable recipe and a covenant an
-     * archive can prove. Two leaves, and the user has nothing left to do.
-     */
-    private void forward(Pool p, Runnable next) {
-        // Durable FIRST. The hop below is one attempt; CollectSweeper owns finishing it, and only an empty
-        // read of $OADR ends the job. Without this a forward that moved part of the funds would look done.
-        PendingCollect.add(ctx, p.oadr);
-        ExitAuthority.grant(new ExitTicket(p.opk, p.address, p.oadr, p.tok,
-                p.coinidM, p.coinidT, PoolManager.amt(p.reserveM), PoolManager.amt(p.reserveT),
-                ExitTicket.Stage.FORWARD));
-        mgr.forwardOwnerFunds(p.oadr, new PoolManager.ForwardResult() {
-            @Override public void onForwarded(String txpowid, int coins) {
-                ExitAuthority.revoke();
-                // NOT DONE on the strength of a post: this forward moved the coins it could see, and any that
-                // were not yet spendable are still there. The sweeper decides, by reading the address.
-                ExitStore.set(ctx, p.address, p.opk, ExitStore.State.POSTED,
-                        "withdrawn; moving the funds into your wallet", "", 0);
-                next.run();
-            }
-            @Override public void onNothing() {
-                ExitAuthority.revoke();
-                // Nothing spendable at $OADR yet (coinage:3 after the close). Queued, so the keep-alive pass
-                // finishes it without the user needing to do anything.
-                next.run();
-            }
-            @Override public void onFailed(String message) {
-                ExitAuthority.revoke();
-                ExitStore.set(ctx, p.address, p.opk, ExitStore.State.POSTED,
-                        "withdrawn to the owner address; the transfer to your wallet did not complete: " + message,
-                        "", 0);
-                next.run();
-            }
-        });
-    }
-
     private void skip(List<Pool> queue, int i, Pool p, String why, int[] tally, Cb cb) {
-        ExitStore.set(ctx, p.address, p.opk, ExitStore.State.SKIPPED, why, "", 0);
+        if (ExitStore.unattempted(ctx, p.address))
+            ExitStore.set(ctx, p.address, p.opk, ExitStore.State.SKIPPED, why, "", 0);
         tally[1]++;
         cb.onProgress("NOT withdrawn — " + p.address + ": " + why);
         step(queue, i + 1, tally, cb);

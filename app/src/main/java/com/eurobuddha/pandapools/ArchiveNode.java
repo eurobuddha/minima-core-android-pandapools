@@ -26,8 +26,8 @@ final class ArchiveNode implements FundingCoins.Command {
                 .edit().putString("archive", value).commit();
     }
     static FundingCoins.Command configured(Context ctx) {
-        String url = setting(ctx);
-        return validEndpoint(url) ? new ArchiveNode(url.endsWith("/") ? url : url + "/") : null;
+        // Pandamonium recovery uses only the user-designated non-pruning native archive.
+        return new MegaArchive();
     }
     static boolean validEndpoint(String url) {
         try {

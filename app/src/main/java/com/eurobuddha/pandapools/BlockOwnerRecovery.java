@@ -40,11 +40,18 @@ final class BlockOwnerRecovery {
     private String fingerprint;
     private int minted;
     private boolean finished;
+    private boolean existingOnly;
 
     BlockOwnerRecovery(FundingCoins.Command node, State state, List<Pool> targets,
                        Consumer<String> progress, Consumer<Result> done) {
         this.node = node; this.state = state; this.targets = targets;
         this.progress = progress; this.done = done;
+    }
+    BlockOwnerRecovery existingOnly() { existingOnly = true; return this; }
+    private boolean supportedShape(JSONObject row) {
+        int size = result.mode == Mode.CLASSIC ? 64 : 128;
+        int depth = result.mode == Mode.CLASSIC ? 3 : 4;
+        return row != null && integer(row, "size", -1) == size && integer(row, "depth", -1) == depth;
     }
     void start() {
         for (Pool p : targets) {
@@ -57,8 +64,8 @@ final class BlockOwnerRecovery {
         if (owners.isEmpty()) { finish(); return; }
         request(MODE_COMMAND, reply -> {
             result.mode = mode(reply);
-            if (result.mode == Mode.CLASSIC) { failAll("Classic node: diagnostic restore does not regenerate keys or withdraw pools. Owner signing remains paused."); return; }
-            if (result.mode != Mode.BLOCK) { failAll("Could not identify this node's key mode. No owner keys were changed."); return; }
+            if (result.mode == Mode.CLASSIC && !existingOnly) { failAll("Classic node: diagnostic restore does not regenerate keys or withdraw pools. Owner signing remains paused."); return; }
+            if (result.mode == Mode.UNKNOWN) { failAll("Could not identify this node's key mode. No owner keys were changed."); return; }
             request("status", status -> {
                 JSONObject r = status.optJSONObject("response");
                 if (r == null || !Boolean.FALSE.equals(r.opt("locked"))) {
@@ -84,6 +91,9 @@ final class BlockOwnerRecovery {
             if (!sameWallet(reply)) { failAll("The wallet changed or its keys became unreadable. Restore again on the original wallet."); return; }
             JSONObject row = row(reply, p.opk);
             if (row != null) { recordMatch(p, reply, row); return; }
+            if (existingOnly) {
+                problem(p, "OWNER_KEY_MISSING: this wallet does not contain the pool owner key. Restore the matching complete wallet backup; no replacement key was generated."); return;
+            }
             int count = total(reply);
             if (p.kidx >= 0 && count > p.kidx) {
                 problem(p, "This wallet did not reproduce the pool's owner key. Restore the original seed in its original key mode."); return;
@@ -105,19 +115,18 @@ final class BlockOwnerRecovery {
     private void recordMatch(Pool p, JSONObject keys, JSONObject row) {
         Integer uses = KeyUses.extractUses(keys, p.opk);
         int index = KeyUses.modifierOf(keys, p.opk);
-        if (integer(row, "size", -1) != 128 || integer(row, "depth", -1) != 4) {
+        if (!supportedShape(row)) {
             problem(p, "This pool uses a Classic owner key. Diagnostic recovery leaves it paused."); return;
         }
         if (uses == null || index < 0 || (p.kidx >= 0 && index != p.kidx)) {
             problem(p, "The owner key's index or counter could not be read."); return;
         }
         request(MODE_COMMAND, probe -> {
-            if (mode(probe) != Mode.BLOCK) { failAll("The node's key mode changed. Restore again in block mode. Nothing signed."); return; }
+            if (mode(probe) != result.mode) { failAll("The node's key mode changed. Restore again in block mode. Nothing signed."); return; }
             request("keys", after -> {
                 JSONObject actualRow = row(after, p.opk);
                 Integer actual = KeyUses.extractUses(after, p.opk);
-                if (!sameWallet(after) || actualRow == null || integer(actualRow, "size", -1) != 128
-                        || integer(actualRow, "depth", -1) != 4 || KeyUses.modifierOf(after, p.opk) != index
+                if (!sameWallet(after) || !supportedShape(actualRow) || KeyUses.modifierOf(after, p.opk) != index
                         || actual == null) {
                     failAll("The wallet or owner key changed during the check. Signing remains paused."); return;
                 }

@@ -59,6 +59,9 @@ final class PendingCollect {
 
     /** One tracked payout address. */
     static final class Entry {
+        String raw;
+        boolean legacy = true;
+        final java.util.LinkedHashMap<String,String> transactions = new java.util.LinkedHashMap<>();
         String oadr;
         String status;
         String lastError;
@@ -97,7 +100,19 @@ final class PendingCollect {
         try {
             JSONObject o = new JSONObject(raw);
             Entry e = new Entry();
+            e.raw = raw;
             e.oadr = o.optString("oadr", oadr);
+            if (!FundingCoins.hex(e.oadr) || !e.oadr.equalsIgnoreCase(oadr)) return null;
+            org.json.JSONArray receipts = o.optJSONArray("transactions");
+            e.legacy = !Integer.valueOf(1).equals(o.opt("format")) || !Boolean.FALSE.equals(o.opt("legacy"));
+            if (receipts == null || receipts.length() == 0) e.legacy = true;
+            if (receipts != null) for (int i = 0; i < receipts.length(); i++) {
+                JSONObject receipt = receipts.optJSONObject(i);
+                String transaction = receipt == null ? "" : receipt.optString("transaction", "");
+                String mined = receipt == null ? "" : receipt.optString("mined", "");
+                if (!CollectionEvidence.id(transaction) || (!mined.isEmpty() && !CollectionEvidence.id(mined))
+                        || e.transactions.put(transaction.toLowerCase(Locale.ROOT), mined) != null) e.legacy = true;
+            }
             e.status = o.optString("status", Status.RETRYING.name());
             e.lastError = o.optString("last_error", "");
             e.attempts = o.optInt("attempts", 0);
@@ -123,24 +138,89 @@ final class PendingCollect {
         Entry e = get(c, oadr);
         if (c == null || e == null) return;
         try {
-            JSONObject o = new JSONObject()
+            JSONObject o = new JSONObject(e.raw)
                     .put("oadr", e.oadr)
                     .put("status", status.name())
-                    .put("attempts", e.attempts + 1)
+                    .put("attempts", e.attempts == Integer.MAX_VALUE ? e.attempts : e.attempts + 1)
                     .put("added_at", e.addedAt)
                     .put("last_try_at", System.currentTimeMillis())
                     .put("last_error", error == null ? "" : error);
-            prefs(c).edit().putString(key(oadr), o.toString()).commit();
+            save(c, oadr, e.raw, o.toString());
         } catch (Exception ignore) { /* the next pass re-reads and retries anyway */ }
     }
 
-    /**
-     * Stop tracking. The ONLY legitimate reason is that the address is empty — proven by a read, never
-     * inferred from a forward reporting success, which is the mistake that stranded real funds.
-     */
-    static synchronized boolean clear(Context c, String oadr) {
-        if (c == null || oadr == null) return false;
-        return prefs(c).edit().remove(key(oadr)).commit();
+    /** Clear only the exact evidence snapshot checked by the current chain/address callbacks. */
+    static synchronized boolean clear(Context c, Entry expected) {
+        if (c == null || expected == null || expected.legacy || expected.transactions.isEmpty()) return false;
+        for (String mined : expected.transactions.values()) if (!CollectionEvidence.id(mined)) return false;
+        return save(c, expected.oadr, expected.raw, null);
+    }
+
+    /** Commit a change only while its previous snapshot is current. Restore memory on failed commit. */
+    private static boolean save(Context c, String address, String before, String after) {
+        SharedPreferences store = prefs(c);
+        if (!java.util.Objects.equals(before, store.getString(key(address), null))) return false;
+        try {
+            SharedPreferences.Editor edit = store.edit();
+            boolean committed = (after == null ? edit.remove(key(address)) : edit.putString(key(address), after)).commit();
+            if (committed) return true;
+        } catch (RuntimeException failed) { /* Keep the old job in memory even when commit failed. */ }
+        try {
+            SharedPreferences.Editor rollback = store.edit();
+            if (before == null) rollback.remove(key(address)); else rollback.putString(key(address), before);
+            rollback.commit();
+        } catch (RuntimeException ignored) { /* The caller must treat this operation as failed. */ }
+        return false;
+    }
+
+    /** Durable barrier before txnpost. The transaction hash survives the miner changing the TxPoW ID. */
+    static synchronized boolean track(Context c, String address, String transaction) {
+        if (c == null || !FundingCoins.hex(address) || !CollectionEvidence.id(transaction)) return false;
+        try {
+            String raw = prefs(c).getString(key(address), null);
+            Entry entry = get(c, address);
+            if (raw != null && entry == null) return false;
+            JSONObject value = raw == null ? new JSONObject().put("oadr", address)
+                    .put("status", Status.RETRYING.name()).put("attempts", 0)
+                    .put("added_at", System.currentTimeMillis()).put("last_try_at", 0).put("last_error", "")
+                    : new JSONObject(raw);
+            java.util.LinkedHashMap<String,String> transactions = entry == null
+                    ? new java.util.LinkedHashMap<>() : entry.transactions;
+            String id = transaction.toLowerCase(Locale.ROOT);
+            if (!transactions.containsKey(id)) transactions.put(id, "");
+            value.put("format", 1).put("legacy", entry != null && entry.legacy)
+                    .put("transactions", receipts(transactions));
+            return save(c, address, raw, value.toString());
+        } catch (Exception invalid) { return false; }
+    }
+    private static org.json.JSONArray receipts(java.util.Map<String,String> values) throws org.json.JSONException {
+        org.json.JSONArray result = new org.json.JSONArray();
+        for (java.util.Map.Entry<String,String> value : values.entrySet())
+            result.put(new JSONObject().put("transaction", value.getKey()).put("mined", value.getValue()));
+        return result;
+    }
+
+    /** Matching an immutable transaction hash identifies a candidate; fresh inclusion is still required. */
+    static synchronized void observe(Context c, JSONObject txpow) {
+        if (txpow == null || !Boolean.TRUE.equals(txpow.opt("istransaction"))) return;
+        String transaction = ActivityLog.transactionId(txpow).toLowerCase(Locale.ROOT);
+        String mined = txpow.optString("txpowid", "");
+        if (!CollectionEvidence.id(transaction) || !CollectionEvidence.id(mined)) return;
+        for (Entry entry : all(c)) {
+            if (!entry.transactions.containsKey(transaction) || mined.equals(entry.transactions.get(transaction))) continue;
+            try {
+                entry.transactions.put(transaction, mined);
+                JSONObject value = new JSONObject(entry.raw).put("transactions", receipts(entry.transactions));
+                save(c, entry.oadr, entry.raw, value.toString());
+            } catch (Exception invalid) { /* Leave the job unresolved. */ }
+        }
+    }
+    static int scanOffset(Context c) {
+        try { return Math.max(0, prefs(c).getInt("collection_history_offset", 0)); }
+        catch (RuntimeException invalid) { return 0; }
+    }
+    static void scanOffset(Context c, int offset) {
+        prefs(c).edit().putInt("collection_history_offset", offset).apply();
     }
 
     /** Addresses the user needs to know about: funds present that this wallet cannot move. */

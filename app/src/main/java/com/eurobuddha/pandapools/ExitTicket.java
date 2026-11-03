@@ -3,35 +3,8 @@ package com.eurobuddha.pandapools;
 import java.util.List;
 import java.util.Locale;
 
-/**
- * Authority to make the two signatures that empty ONE pool back to its owner, and nothing else.
- *
- * THE PROBLEM THIS SOLVES. A restored recipe is signing-quarantined ({@code signingStateUnverified}), and
- * {@link PoolRefresher} excludes quarantined pools from keep-fresh. So a restored pool cannot refresh, ages past
- * the ~1700-block cascade, and strands — the safe state is a slow death. Its only exits today are the owner
- * attestation, which unlocks UNLIMITED signing forever, or losing the pool. This is the third door: exactly two
- * signatures, then the pool is gone and so is the exposure.
- *
- * WHY A SHAPE AND NOT A MODE. Nothing in the call chain carries authority — no boolean, no flag, no parameter.
- * Each guard looks the ticket up for itself and re-verifies it against the ACTUAL command list it is about to
- * run. So a caller cannot assert "this is a permitted close"; it can only build a transaction that either is or
- * is not one. A widened exception is then not a matter of trust, it is a matter of the command list failing to
- * match, which is what the adversarial tests pin.
- *
- * WHAT IT DELIBERATELY DOES NOT WAIVE. Only {@code signingStateUnverified} is set aside.
- * {@link OwnerKeyRecovery#baseSigningAllowed} still applies in full, and this class adds two refusals of its
- * own that ordinary signing does not need:
- *   - the recipe must carry a KNOWN use floor. {@code minimumOwnerUses} defaults to -1, and {@code uses >= -1}
- *     is trivially true, so a backup that recorded no counter gives no regression signal at all. That is the
- *     incident shape — a seed-restored wallet reading 0 against a -1 floor — and it must refuse, not pass.
- *   - the reserves must be aged and their age KNOWN. Young reserves mean only $OPK could have recreated them,
- *     so another live copy of the wallet is signing right now; two nodes signing one key is a guaranteed reuse.
- *     PoolRefresher treats an unknown age as "aging" because a needless refresh is harmless, but for a SPEND the
- *     asymmetry reverses, so unknown fails closed here.
- *
- * None of this makes signing safe. It makes the exposure bounded and terminal, and refuses every case where a
- * reuse is detectable. A signature the original node made that never reached the chain is invisible to all of it.
- */
+/** A single-use exemption for an exact close or collection transaction; never a wallet unlock.
+ * Unknown prior signature use remains a risk even for a disposable wallet. */
 final class ExitTicket {
 
     /** Which of the two permitted signatures this ticket is for. */
@@ -57,6 +30,37 @@ final class ExitTicket {
     final String amountM;      // exact amt() strings, as the close will emit them
     final String amountT;
     final Stage stage;
+    private List<String> forwardCommands;
+    private String forwardCheck;
+
+    /** Pin the independently validated payout inputs, full token sums and node wallet destination. */
+    static ExitTicket forward(Pool p, String txid, List<String> coins,
+                              java.util.Map<String, java.math.BigDecimal> amounts, String destination) {
+        if (p == null || !FundingCoins.hex(p.opk) || !FundingCoins.hex(p.address)
+                || !FundingCoins.hex(p.oadr) || !FundingCoins.hex(destination)
+                || destination.equalsIgnoreCase(p.oadr) || !txid.matches("ppfwd_[a-zA-Z0-9_]+")
+                || coins == null || coins.isEmpty() || coins.size() > FundingCoins.SAFE_COINS
+                || amounts == null || amounts.isEmpty()) return null;
+        java.util.Set<String> seen = new java.util.HashSet<>();
+        List<String> expected = new java.util.ArrayList<>();
+        expected.add("txncreate id:" + txid);
+        for (String coin : coins) {
+            if (!FundingCoins.hex(coin) || !seen.add(coin.toLowerCase(Locale.ROOT))) return null;
+            expected.add("txninput id:" + txid + " coinid:" + coin);
+        }
+        for (java.util.Map.Entry<String, java.math.BigDecimal> amount : amounts.entrySet()) {
+            if (!FundingCoins.hex(amount.getKey()) || amount.getValue() == null || amount.getValue().signum() <= 0) return null;
+            String token = "0x00".equals(amount.getKey()) ? "" : " tokenid:" + amount.getKey();
+            expected.add("txnoutput id:" + txid + " amount:" + PoolManager.amt(amount.getValue())
+                    + " address:" + destination + token + " storestate:false");
+        }
+        expected.add("txnsign id:" + txid + " publickey:" + p.opk);
+        expected.add("txnbasics id:" + txid);
+        ExitTicket t = new ExitTicket(p.opk, p.address, p.oadr, p.tok, "", "", "", "", Stage.FORWARD);
+        t.forwardCommands = java.util.Collections.unmodifiableList(expected);
+        t.forwardCheck = "txncheck id:" + txid;
+        return t;
+    }
 
     ExitTicket(String opk, String address, String oadr, String tok,
                String coinidM, String coinidT, String amountM, String amountT, Stage stage) {
@@ -75,7 +79,13 @@ final class ExitTicket {
     boolean permits(List<String> cmds, Pool p) {
         if (cmds == null || cmds.isEmpty() || p == null) return false;
         if (!lower(p.address).equals(address) || !lower(p.opk).equals(opk)) return false;
-        return stage == Stage.CLOSE ? permitsClose(cmds) : false;      // FORWARD shape lands with its issuer
+        if (!lower(p.oadr).equals(oadr)) return false;
+        if (stage == Stage.CLOSE) return permitsClose(cmds);
+        if (forwardCommands == null) return false;
+        if (cmds.equals(forwardCommands)) return true;
+        return cmds.size() == forwardCommands.size() + 1
+                && forwardCheck.equals(cmds.get(cmds.size() - 1))
+                && cmds.subList(0, cmds.size() - 1).equals(forwardCommands);
     }
 
     /**

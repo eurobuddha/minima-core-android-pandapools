@@ -39,6 +39,10 @@ final class ExitStore {
         POSTING,
         /** The close posted; the funds are at $OADR and the forward hop may follow. */
         POSTED,
+        /** Collection signing has started. Never automatically re-sign after interruption. */
+        FORWARDING,
+        /** Collection submitted; fresh confirmation and an empty address are still required. */
+        FORWARDED,
         /** Reached the wallet. Done. */
         DONE,
         /** Deliberately not attempted (young reserves, no recorded floor, and so on). */
@@ -98,6 +102,38 @@ final class ExitStore {
         return out;
     }
 
+    /** Unknown/corrupt records are not permission to repeat a signature. */
+    static boolean unattempted(Context c, String address) {
+        if (c == null) return true; // pure eligibility tests only; beginClose requires a real context
+        try {
+            String raw = prefs(c).getString(key(address), null);
+            if (raw == null) return true;
+            Record r = get(c, address);
+            return r != null && r.signatures == 0 && r.stateOf() == State.SKIPPED;
+        } catch (RuntimeException unavailable) { return false; }
+    }
+
+    static synchronized boolean beginClose(Context c, Pool p) {
+        return c != null && p != null && unattempted(c, p.address)
+                && set(c, p.address, p.opk, State.POSTING, "", "", 1);
+    }
+
+    static synchronized boolean beginForward(Context c, Pool p) {
+        Record r = p == null ? null : get(c, p.address);
+        return r != null && r.signatures == 1 && r.stateOf() == State.POSTED
+                && p.opk.equalsIgnoreCase(r.opk)
+                && set(c, p.address, p.opk, State.FORWARDING, "Collection started; do not retry signing.", "", 1);
+    }
+
+    /** A recorded recovery routes collection through the bounded path, even after a failure. */
+    static Pool recoveryPool(Context c, String payout) {
+        for (Pool p : OwnPoolStore.all(c)) if (payout.equalsIgnoreCase(p.oadr)) {
+            Record r = get(c, p.address);
+            if (r != null && r.signatures > 0) return p;
+        }
+        return null;
+    }
+
     /** Signatures already spent on this address's automatic withdrawals, across every attempt ever. */
     static int signaturesUsed(Context c, String address) {
         Record r = get(c, address);
@@ -139,7 +175,7 @@ final class ExitStore {
         List<Record> out = new ArrayList<>();
         for (Record r : all(c)) {
             State s = r.stateOf();
-            if (s == State.POSTING || s == State.UNCERTAIN) out.add(r);
+            if (s == State.POSTING || s == State.FORWARDING || s == State.UNCERTAIN) out.add(r);
         }
         return out;
     }

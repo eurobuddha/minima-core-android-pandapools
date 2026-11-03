@@ -55,12 +55,20 @@ public class NodeApi {
     private boolean hasPendingWrite() { return failedWriteAcknowledgement || !writePrefs().getString("pending", "").isEmpty(); }
     public boolean hasInterruptedWrite() { return hasPendingWrite() && activeWrite.isEmpty(); }
     /** Only invoked after the user's explicit restart-and-reconcile confirmation. */
-    public boolean acknowledgeInterruptedWrite() {
-        if (!activeWrite.isEmpty()) return false;
-        String previous = writePrefs().getString("pending", "");
+    public String interruptedWriteId() { return writePrefs().getString("pending", ""); }
+    public boolean acknowledgeInterruptedWrite(String expected) {
+        String previous = interruptedWriteId();
         String marker = previous.isEmpty() ? java.util.UUID.randomUUID().toString() : previous;
-        return commitWriteAcknowledgement(() -> writePrefs().edit().remove("pending").commit(),
+        return acknowledgeReviewedWrite(expected, previous, activeWrite,
+                () -> writePrefs().edit().remove("pending").commit(),
                 () -> writePrefs().edit().putString("pending", marker).commit());
+    }
+
+    /** UI and node callbacks run on the main Looper. Consent applies only to the reviewed marker. */
+    static boolean acknowledgeReviewedWrite(String expected, String current, String active,
+                                            java.util.function.BooleanSupplier clear, Runnable rollback) {
+        if (expected == null || !expected.equals(current) || !active.isEmpty()) return false;
+        return commitWriteAcknowledgement(clear, rollback);
     }
 
     static boolean commitWriteAcknowledgement(java.util.function.BooleanSupplier clear, Runnable rollback) {

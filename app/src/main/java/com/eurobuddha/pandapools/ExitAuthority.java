@@ -39,6 +39,18 @@ final class ExitAuthority {
         grantedAt = System.currentTimeMillis();
     }
 
+    /** Do not replace another in-flight recovery's authority. */
+    static synchronized boolean tryGrant(ExitTicket t) {
+        if (t == null || current() != null) return false;
+        grant(t);
+        return true;
+    }
+
+    /** A late callback cannot revoke a newer operation's ticket. */
+    static synchronized void revoke(ExitTicket expected) {
+        if (granted == expected) revoke();
+    }
+
     /** Drop the grant. Safe to call when there is none — every exit path calls it. */
     static synchronized void revoke() {
         granted = null;

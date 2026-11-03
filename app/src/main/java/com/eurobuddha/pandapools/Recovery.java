@@ -220,6 +220,10 @@ public class Recovery {
 
     /** Automatic ownership recovery is explicit: the reserve-check button must never create/sign keys. */
     public void restore(Context ctx, String json, final int chainBlock, boolean recoverOwners, RestoreCb cb) {
+        restore(ctx, json, chainBlock, recoverOwners, false, cb);
+    }
+
+    public void restore(Context ctx, String json, final int chainBlock, boolean recoverOwners, boolean existingOnly, RestoreCb cb) {
         final JSONArray pools;
         try {
             JSONObject root = new JSONObject(json);
@@ -246,11 +250,15 @@ public class Recovery {
             restoreOne(ctx, e, forwarding, () -> { okCount.incrementAndGet(); }, () -> {
                 if (pending.decrementAndGet() == 0) {
                     if (recoverOwners) {
-                        OWNER_RECOVERY.submit(release -> new BlockOwnerRecovery(node::cmd,
+                        OWNER_RECOVERY.submit(release -> {
+                            BlockOwnerRecovery check = new BlockOwnerRecovery(node::cmd,
                                 recoveryState(ctx), imported, cb::onProgress, result -> {
                             try { cb.onOwnerRecovery(result); cb.onDone(okCount.get(), total); }
                             finally { release.run(); }
-                        }).start());
+                        });
+                            if (existingOnly) check.existingOnly();
+                            check.start();
+                        });
                         return;
                     }
                     List<String> opks = new ArrayList<>();
@@ -270,10 +278,10 @@ public class Recovery {
 
     private void restoreOne(final Context ctx, final JSONObject e, final RestoreCb cb,
                             final Runnable onOk, final Runnable done) {
-        if (e == null) { done.run(); return; }
+        if (e == null) { cb.onProgress("BACKUP_ENTRY_INVALID: a pool entry is not an object; nothing imported for it."); done.run(); return; }
         final String script = e.optString("script", "");
         final String addr = e.optString("addr", "");
-        final String label = addr.isEmpty() ? "pool" : addr;
+        final String label = addr.isEmpty() ? "pool" : FundingCoins.hex(addr) ? addr : JSONObject.quote(addr);
         if (script.isEmpty()) { cb.onProgress("Skipped " + label + " (no covenant in backup)."); done.run(); return; }
 
         if (!validRecipe(e)) { cb.onProgress("Skipped " + label + " (invalid recipe fields)."); done.run(); return; }

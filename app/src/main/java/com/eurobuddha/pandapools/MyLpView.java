@@ -1493,7 +1493,8 @@ public class MyLpView extends BaseView {
         // changing anything, so nobody has to commit to a restore just to find out whether their file is good.
         String[] items = { "Collect withdrawn funds to my wallet", "Back up my pools to a file",
                 "Check a backup file (changes nothing)", "Restore pools from a file",
-                "Archive connection", "Confirm wallet signing state", "How recovery works" };
+                "Archive connection", "Confirm wallet signing state", "How recovery works",
+                "Recover & withdraw (one-time exit)", "Recover on existing wallet" };
         new AlertDialog.Builder(act)
                 .setTitle("Pool recovery")
                 .setItems(items, (d, w) -> {
@@ -1503,22 +1504,16 @@ public class MyLpView extends BaseView {
                     else if (w == 3) doRestore();
                     else if (w == 4) archiveConnection();
                     else if (w == 5) confirmSigningState();
-                    else showRecoveryGuide();
+                    else if (w == 6) showRecoveryGuide();
+                    else if (w == 7) recoverAndWithdraw();
+                    else if (w == 8) recoverExistingWallet();
                 })
                 .setNegativeButton("Close", null)
                 .show();
     }
 
     private void archiveConnection() {
-        EditText input = new EditText(act);
-        input.setSingleLine(true); input.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
-        input.setText(ArchiveNode.setting(act));
-        new AlertDialog.Builder(act).setTitle("Archive connection")
-                .setMessage("HTTPS URL of a public read-only Minima MegaMMR RPC service. Only the pool address and public coin IDs are queried. This is an RPC URL, not a P2P host:port. Leave blank to use this node and backup proofs only.")
-                .setView(input).setPositiveButton("Save", (d, w) -> {
-                    if (ArchiveNode.save(act, input.getText().toString())) status("Archive connection saved.");
-                    else status("Enter an HTTPS URL without credentials, query parameters or a fragment.");
-                }).setNegativeButton("Cancel", null).show();
+        copyableReport("Recovery archive", "eurobuddha.com:9001\n\nPandaPools requests fresh reserve proofs from this archive only. Each proof must pass validation on this node before it is imported. No seed or wallet signing state is sent.\n\nA pool older than the cascade does not by itself require a full resync. If current proofs cannot be validated, recovery reports the failure. Register the pool recipe before any full resync and preserve the existing wallet and its signing state.");
     }
 
     /** The recovery menu's entry point: no pool in hand, so it still has to ask which key. */
@@ -1640,7 +1635,7 @@ public class MyLpView extends BaseView {
     private void doRestore() {
         new AlertDialog.Builder(act)
                 .setTitle("Restore your pools")
-                .setMessage("Use the original wallet. This diagnostic build checks pool reserves and finds "
+                .setMessage("This check-only option verifies pool reserves and finds "
                         + "matching owner keys on block-based nodes. It may generate missing addresses.\n\n"
                         + "Signing remains paused. It does not sign, withdraw pools, or enable automatic refresh "
                         + "for restored pools, in either key mode.\n\n"
@@ -1658,16 +1653,43 @@ public class MyLpView extends BaseView {
         });
     }
 
+    private void recoverExistingWallet() {
+        if (busy) return;
+        new AlertDialog.Builder(act).setTitle("Recover on existing wallet")
+                .setMessage("Use this when this node still has the original wallet keys and their current signing state, including after a chain resync that preserved the wallet. A seed-only restore does not meet that condition. Stop every other copy of the wallet first.\n\nChoose the pool backup. PandaPools will register its recipes, fetch missing reserve proofs from eurobuddha.com:9001, check existing owner keys and counters, then attempt one withdrawal and confirmed collection for each eligible pool. Missing data or uncertain transactions stop with a report. No keys will be regenerated.\n\nContinue only if you confirm that this wallet's signing state has been preserved. PandaPools cannot prove that from the seed or pool backup alone.")
+                .setPositiveButton("Confirm wallet & choose backup", (d, which) -> act.pickOpenFile(uri -> {
+                    if (uri == null) return;
+                    CombinedBackupUi.open(act,uri,json->restoreJson(json,true,true,true),this::status);
+                })).setNegativeButton("Cancel", null).show();
+    }
+
+    private void recoverAndWithdraw() {
+        if (busy) return;
+        new AlertDialog.Builder(act).setTitle("Recover & withdraw")
+                .setMessage("Use this only after stopping every other copy of this wallet. The original seed must already be restored locally on this node; never share it here.\n\n"
+                        + "This attempts one withdrawal per verified pool to its fixed owner payout address, waits for confirmation, then attempts one transfer into this node's wallet.\n\n"
+                        + "The seed does not prove previous signature use. Reusing a signing slot can expose funds even on a throwaway node. Normal pool signing stays paused. Uncertain attempts stop for review.\n\n"
+                        + "By continuing you confirm the other copies are stopped and accept that remaining risk.")
+                .setPositiveButton("Accept risk & choose backup", (d, which) -> act.pickOpenFile(uri -> {
+                    if (uri == null) return;
+                    CombinedBackupUi.open(act,uri,json->restoreJson(json,true,true),this::status);
+                })).setNegativeButton("Cancel", null).show();
+    }
+
     /** Diagnostic file restore discovers keys; neither this nor a reserve check can withdraw. */
     private void restoreJson(String json) { restoreJson(json, false); }
 
-    private void restoreJson(String json, boolean withdraw) {
+    private void restoreJson(String json, boolean withdraw) { restoreJson(json, withdraw, false, false); }
+
+    private void restoreJson(String json, boolean withdraw, boolean acceptedExit) { restoreJson(json, withdraw, acceptedExit, false); }
+
+    private void restoreJson(String json, boolean withdraw, boolean acceptedExit, boolean existingOnly) {
             if (busy) return;
             busy = true;
             status("Restoring pools…");
             final StringBuilder log = new StringBuilder();
             final List<Pool> verified = new ArrayList<>();
-            recovery.restore(act, json, act.chainBlock(), withdraw, new Recovery.RestoreCb() {
+            recovery.restore(act, json, act.chainBlock(), withdraw, existingOnly, new Recovery.RestoreCb() {
                 private BlockOwnerRecovery.Result owners;
                 @Override public void onOwnerRecovery(BlockOwnerRecovery.Result result) { owners = result; }
                 @Override public void onProgress(String line) { log.append(line).append('\n'); status("Restoring… " + line); }
@@ -1678,6 +1700,12 @@ public class MyLpView extends BaseView {
                         status("That file isn't a PandaPools backup.");
                         info("Nothing restored", "That file isn't a readable PandaPools backup — pick the "
                                 + "pandapools-backup.json you saved from Back up.");
+                        return;
+                    }
+                    if (acceptedExit && owners != null) {
+                        List<Pool> eligible = new ArrayList<>();
+                        for (Pool p : verified) if (owners.matched(p)) eligible.add(p);
+                        autoWithdraw(eligible, log, restored, total, existingOnly);
                         return;
                     }
                     if (withdraw && owners != null) {
@@ -1702,25 +1730,18 @@ public class MyLpView extends BaseView {
                         act.pools().refresh();
                         return;
                     }
-                    // Diagnostic builds never invoke the Classic withdrawal path.
+                    // Unmatched or unsupported wallets never receive an exit exception.
                     busy = false;
                 }
             });
     }
 
-    /**
-     * Withdraw the pools a file restore just verified.
-     *
-     * A restored recipe is signing-quarantined, and keep-fresh skips quarantined pools — so a restored pool
-     * cannot refresh, ages past the cascade and strands. Leaving it live is not the safe option; it is the slow
-     * one. So Restore finishes the job, and the alternative (confirming the wallet's signing state to keep the
-     * pool alive) stays available as the deliberate expert path.
-     */
-    private void autoWithdraw(List<Pool> verified, StringBuilder log, int restored, int total) {
-        status("Withdrawing restored pools…");
+    /** Explicit opt-in authorizes one close and one confirmed collection, never unlimited signing. */
+    private void autoWithdraw(List<Pool> verified, StringBuilder log, int restored, int total, boolean existingOnly) {
+        status("Recovering and withdrawing eligible pools…");
         NodeApi n = act.node();
         if (n == null) { busy = false; status("Connect the node to withdraw the restored pools."); return; }
-        new RestoreExit(act, n).run(verified, act.chainBlock(), new RestoreExit.Cb() {
+        new RestoreExit(act, n, existingOnly).run(verified, act.chainBlock(), new RestoreExit.Cb() {
             @Override public void onProgress(String line) {
                 log.append(line).append('\n');
                 act.runOnUiThread(() -> status(line));
@@ -1728,31 +1749,37 @@ public class MyLpView extends BaseView {
             @Override public void onDone(int withdrawn, int skipped) {
                 act.runOnUiThread(() -> {
                     busy = false;
-                    status(withdrawn + " pool(s) withdrawn, " + skipped + " not withdrawn.");
-                    info(skipped == 0 ? "Restored and withdrawn" : "Restored — some pools need you",
-                            restored + " of " + total + " pool(s) had verified reserves.\n\n"
-                            + withdrawn + " withdrawn to your wallet. " + skipped + " not withdrawn.\n\n"
-                            + log.toString().trim()
-                            + "\n\nA restored pool cannot refresh itself, so it would have aged out of the chain's "
-                            + "recent window and become unrecoverable. Withdrawing ends that. Each withdrawal used "
-                            + "two of the owner key's one-time signatures and nothing else.\n\n"
-                            + "No signing-state problem was detected for the pools withdrawn. That is not proof "
-                            + "their keys were unused: a signature the original device made that never reached the "
-                            + "chain cannot be detected by anything.");
-                    loadKeys();
-                    act.pools().refresh();
+                    int notSubmitted = Math.max(skipped, total - withdrawn);
+                    if (withdrawn > 0) resumeRecoveryCollection(24);
+                    String result = withdrawn + " withdrawal(s) submitted; " + notSubmitted + " not submitted.";
+                    status(result);
+                    copyableReport(notSubmitted == 0 ? "Recovery submitted" : "Recovery needs attention",
+                            restored + " of " + total + " pool(s) had verified reserves.\n\n" + result + "\n\n" + log.toString().trim()
+                            + "\n\nSubmitted does not mean confirmed or collected. Keep the app and node running. "
+                            + "After the withdrawal confirms, PandaPools attempts one collection into this wallet and verifies confirmation. "
+                            + "Uncertain attempts stop for review; normal restored-pool signing remains paused.");
+                    loadKeys(); act.pools().refresh();
                 });
             }
         });
     }
 
+    private void resumeRecoveryCollection(int remaining) {
+        if (remaining <= 0) return; // keep-alive service continues after leaving the screen
+        act.ui().postDelayed(() -> {
+            NodeApi node = act.node();
+            if (node == null) return;
+            new CollectSweeper(act, node).run((cleared, pending, stranded) -> {
+                if (cleared > 0) status("Recovery collection confirmed. Check your wallet balance.");
+                if (pending > 0) resumeRecoveryCollection(remaining - 1);
+            });
+        }, 20000);
+    }
+
     private void showRecoveryGuide() {
-        info("How pool recovery works", "This is a diagnostic recovery build. Restore your pool file on "
-                + "the original wallet to check reserves and find matching block-based owner keys.\n\n"
-                + "Restored pools remain paused in both key modes. No recovery signatures or automatic "
-                + "withdrawals are sent. Share the diagnostic result with support.\n\n"
-                + "A matching key and a current chain tip do not establish which one-time signatures were "
-                + "previously used. Keep your pool file, seed, and a current complete node backup safe.");
+        info("How pool recovery works", "Recover on existing wallet handles the usual case: the original keys and current signing state are still on this node, including after a chain resync that preserved the wallet. Confirm that condition and choose your backup once. PandaPools checks recipes and keys, requests missing proofs from eurobuddha.com:9001, and attempts a bounded withdrawal followed by confirmed collection.\n\n"
+                + "Use Recover & withdraw only for the separately explained seed-restore case. Matching keys alone do not prove previous signature use. Missing data, invalid proofs, counter regression and uncertain transactions stop with a report. A full node resync is never started automatically.\n\n"
+                + "Keep a verified, password-encrypted combined pool and node backup off this device. A phone hosting pools must keep its node running and connected 24/7, preferably on reliable power and Wi-Fi. Extended downtime may strand reserves and require recovery.");
     }
 
     private boolean writeUri(android.net.Uri uri, String content) {
