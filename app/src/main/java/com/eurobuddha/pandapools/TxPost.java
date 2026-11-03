@@ -143,7 +143,7 @@ public final class TxPost {
                     done.fail(invalid); return;
                 }
                 Runnable post = () -> {
-                    if (!CoinLock.rememberPosting(Cmd.inputCoinIds(cmdsThroughBasics),txid)) { node.cmd("txndelete id:"+txid,NOOP);done.fail("Input is already submitted or reservation could not be saved. Nothing was posted.");return; }
+                    if (!CoinLock.rememberPosting(Cmd.inputCoinIds(cmdsThroughBasics),txid)) { CoinLock.forgetPosting(Cmd.inputCoinIds(cmdsThroughBasics),txid);node.cmd("txndelete id:"+txid,NOOP);done.fail("Input is already submitted or reservation could not be saved. Nothing was posted.");return; }
                     node.cmd("txnpost id:" + txid, new NodeApi.Cb() {
                     @Override public void onResult(JSONObject j) {
                         if (Boolean.TRUE.equals(j.opt("status")) && !Boolean.TRUE.equals(j.opt("pending"))) {
@@ -152,7 +152,13 @@ public final class TxPost {
                             ActivityLog.rememberSubmission(node.context(), j, postedId);
                             done.ok(postedId);
                         }
-                        else { node.cmd("txndelete id:" + txid, NOOP); done.fail(postError(j)); }
+                        else {
+                            node.cmd("txndelete id:" + txid, NOOP);
+                            // Refused by the node (status:false, not pending): nothing was broadcast, so free the inputs.
+                            if (Boolean.FALSE.equals(j.opt("status")) && !Boolean.TRUE.equals(j.opt("pending")))
+                                CoinLock.forgetPosting(Cmd.inputCoinIds(cmdsThroughBasics), txid);
+                            done.fail(postError(j));
+                        }
                     }
                     @Override public void onError(String m) {
                         if (!NodeApi.ERR_WRITE_UNCERTAIN.equals(m)) node.cmd("txndelete id:" + txid, NOOP);
