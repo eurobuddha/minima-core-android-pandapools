@@ -339,4 +339,50 @@ public class HandoverTest {
         Handover.end();
         assertFalse(Handover.busy());
     }
+
+    /** Review fix 1: a retired recipe (close merely posted, or put away) is still listed, kept_here unless handed over. */
+    @Test public void stateProviderListsRetiredRecipesToo() {
+        Map<String, Object> m = new HashMap<>();
+        m.put(h("4"), "{\"addr\":\"" + h("4") + "\",\"script\":\"RETURN TRUE\",\"retired\":true}");
+        m.put(h("7"), "{\"addr\":\"" + h("7") + "\",\"script\":\"RETURN TRUE\"}");
+        Context c = mock(Context.class);
+        SharedPreferences sp = mock(SharedPreferences.class);
+        when(c.getSharedPreferences(anyString(), anyInt())).thenReturn(sp);
+        when(sp.getAll()).thenAnswer(i -> m);
+        when(sp.getStringSet(anyString(), any())).thenReturn(new HashSet<>(Collections.singletonList(h("7"))));
+        assertEquals(1, OwnPoolStore.active(c).size());
+        Map<String, String> got = new HashMap<>();
+        for (String[] r : HandoverStateProvider.rows(c)) got.put(r[0], r[1]);
+        assertEquals(2, got.size());
+        assertEquals("kept_here", got.get(h("4")));            // retired, but PandaPools' keeper still keeps it
+        assertEquals("handed_over", got.get(h("7")));
+    }
+
+    /** Review fix 2: a RuntimeException before the callback answers once, plainly, and never leaks the RUNNING mark. */
+    @Test public void aThrowBeforeTheAnswerEndsTheMarkExactlyOnce() {
+        Context c = store();
+        NodeApi node = mock(NodeApi.class);
+        when(node.context()).thenReturn(c);
+        org.mockito.Mockito.doThrow(new IllegalStateException("node gone")).when(node).cmd(anyString(), any());
+        PoolManager mgr = new PoolManager(node);
+        int[] answers = new int[1];
+        String[] last = new String[1];
+        PoolManager.Result r = new PoolManager.Result() {
+            @Override public void onPosted(String txpowid) { throw new AssertionError(); }
+            @Override public void onFailed(String message) { answers[0]++; last[0] = message; }
+        };
+        PoolManager.CreateResult cr = new PoolManager.CreateResult() {
+            @Override public void onCreated(Pool pool, String txpowid) { throw new AssertionError(); }
+            @Override public void onFailed(String message) { answers[0]++; last[0] = message; }
+        };
+        assertFalse(Handover.busy());
+        mgr.deposit(null, java.math.BigDecimal.ONE, java.math.BigDecimal.ONE, r);
+        mgr.close(null, r);
+        mgr.migrate(null, java.math.BigDecimal.ONE, java.math.BigDecimal.ONE, cr);
+        mgr.createPool(h("b"), 8, java.math.BigDecimal.ONE, java.math.BigDecimal.ONE, cr);   // newaddress throws
+        assertEquals(4, answers[0]);
+        assertTrue(last[0], last[0].contains("node gone"));
+        assertFalse(Handover.busy());
+        assertTrue(Handover.running(Handover.busy()).ok);
+    }
 }

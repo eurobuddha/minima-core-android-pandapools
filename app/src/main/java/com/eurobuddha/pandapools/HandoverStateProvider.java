@@ -18,8 +18,8 @@ import java.util.Set;
 
 /**
  * The custody signal for Dexicon: which live pools PandaPools keeps right now, positively, per pool.
- * {@code content://com.eurobuddha.pandapools.handover/state} → columns {@code address, state}: one row per ACTIVE pool
- * recipe, {@code kept_here} (PandaPools keeps it) or {@code handed_over} (Dexicon keeps it). Addresses lower-case, in
+ * {@code content://com.eurobuddha.pandapools.handover/state} → columns {@code address, state}: one row per pool
+ * recipe (retired ones too), {@code kept_here} (PandaPools keeps it) or {@code handed_over} (Dexicon keeps it). Addresses lower-case, in
  * full. Read-only, and only Dexicon signed with our key may read it; anyone else gets null.
  */
 public class HandoverStateProvider extends ContentProvider {
@@ -38,7 +38,7 @@ public class HandoverStateProvider extends ContentProvider {
         try { callers = pm.getPackagesForUid(Binder.getCallingUid()); } catch (RuntimeException unknown) { return null; }
         if (!allowed(callers, pm, c.getPackageName())) return null;
         MatrixCursor out = new MatrixCursor(COLUMNS);
-        for (String[] row : rows(OwnPoolStore.active(c), Handover.handedOverPools(c))) out.addRow(row);
+        for (String[] row : rows(c)) out.addRow(row);
         return out;
     }
 
@@ -49,7 +49,13 @@ public class HandoverStateProvider extends ContentProvider {
         return false;
     }
 
-    /** One row per active pool (deduplicated, lower-case, full address). */
+    /**
+     * Every recipe here, retired included: a retire only means a close/migrate was POSTED (or the user put the card
+     * away), and our keeper keeps retired recipes too, so a dropped close leaves a funded pool PandaPools keeps.
+     */
+    static List<String[]> rows(Context c) { return rows(OwnPoolStore.all(c), Handover.handedOverPools(c)); }
+
+    /** One row per pool recipe (deduplicated, lower-case, full address). */
     static List<String[]> rows(List<Pool> active, Set<String> handedOver) {
         Map<String, String> m = new LinkedHashMap<>();
         for (Pool p : active) {
