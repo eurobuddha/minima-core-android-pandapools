@@ -95,7 +95,8 @@ public class PoolRefresher {
         node.cmd("block", new NodeApi.Cb() {
             @Override public void onResult(JSONObject bj) {
                 final int tip = parseBlock(bj);
-                final List<Pool> recipes = OwnPoolStore.all(ctx);
+                // Pools Dexicon keeps are skipped entirely: no refresh and no stranding alarm from here.
+                final List<Pool> recipes = Handover.keepable(ctx, OwnPoolStore.all(ctx));
                 if (tip <= 0 || recipes.isEmpty()) { cb.onRefreshed(0); return; }
                 final List<Pool> mine = Collections.synchronizedList(new ArrayList<>());
                 final AtomicInteger pending = new AtomicInteger(recipes.size());

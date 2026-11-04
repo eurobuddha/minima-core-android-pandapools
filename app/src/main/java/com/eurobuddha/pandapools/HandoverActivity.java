@@ -30,6 +30,7 @@ public class HandoverActivity extends AppCompatActivity {
     private Button confirm;
     private int run;               // newest check run; results of older runs are dropped
     private boolean confirming;    // a confirm run owns the screen until it answers
+    private String[] dexiconPools; // covenant addresses whose recipes Dexicon already holds (null: none sent)
 
     @Override protected void onCreate(Bundle b) {
         super.onCreate(b);
@@ -37,6 +38,7 @@ public class HandoverActivity extends AppCompatActivity {
             setResult(RESULT_CANCELED); finish(); return;
         }
         refuse("Hand-over not confirmed.");            // back / dismiss
+        dexiconPools = getIntent().getStringArrayExtra(Handover.EXTRA_DEXICON_POOLS);
         Design.load(this);
         getDelegate().setLocalNightMode(Design.isDark() ? AppCompatDelegate.MODE_NIGHT_YES : AppCompatDelegate.MODE_NIGHT_NO);
 
@@ -47,8 +49,10 @@ public class HandoverActivity extends AppCompatActivity {
         col.addView(text("Hand over to Dexicon", Design.accent(), 22, true));
         col.addView(text("Dexicon contains PandaPools. Two apps keeping the same pool would rebuild its reserves "
                 + "against each other, so only one of them may be installed.\n\n"
-                + "This step confirms that nothing of yours lives only in PandaPools — no pool, no withdrawal, no "
-                + "payout and no swap. Then Dexicon lets you uninstall PandaPools.", Design.text(), 15, false));
+                + "This step confirms that nothing of yours lives only in PandaPools: every live pool is restored "
+                + "in Dexicon from your verified backup, and no withdrawal, payout or swap is open. PandaPools then "
+                + "stops keeping those pools, Dexicon keeps them, and Dexicon lets you uninstall PandaPools.",
+                Design.text(), 15, false));
         checksBox = new LinearLayout(this);
         checksBox.setOrientation(LinearLayout.VERTICAL);
         checksBox.setPadding(pad / 2, pad / 2, pad / 2, pad / 2);
@@ -92,7 +96,7 @@ public class HandoverActivity extends AppCompatActivity {
         final int my = ++run;
         final boolean handedOver = Handover.active(this);
         List<Handover.Check> checks = new ArrayList<>();
-        checks.add(Handover.pools(OwnPoolStore.active(this)));
+        checks.add(Handover.pools(OwnPoolStore.active(this), dexiconPools, BackupState.combinedUpToDate(this)));
         checks.add(Handover.withdrawals(ExitStore.all(this)));
         checks.add(Handover.payouts(PendingCollect.all(this)));
         checks.add(Handover.swaps(SwapView.posting, ActivityLog.hasPending(this, 0, ActivityLog.SWAP)));
@@ -115,7 +119,14 @@ public class HandoverActivity extends AppCompatActivity {
         switch (Handover.outcome(confirm, handedOver, allOk(checks))) {
             case OK:
                 confirming = false;
-                ok(Handover.ts(this));
+                // Stop our own keeper for these pools on disk BEFORE Dexicon hears OK: two keepers never run.
+                String[] pools = Handover.stopKeeping(this, OwnPoolStore.active(this));
+                if (pools == null) {
+                    if (!wasHandedOver && confirm) Handover.set(this, false, 0);
+                    refuse("PandaPools could not save which pools Dexicon now keeps. Nothing changed.");
+                    finish(); return;
+                }
+                ok(Handover.ts(this), pools);
                 return;
             case REFUSE:
                 confirming = false;
@@ -151,9 +162,9 @@ public class HandoverActivity extends AppCompatActivity {
                 ReserveRecovery.readCoins(node::cmd, p.address, false, FundingCoins.SAFE_COINS, null, null, new NodeApi.Cb() {
                     @Override public void onResult(JSONObject j) {
                         JSONArray rows = FundingCoins.rows(j);
-                        if (rows == null) checks.add(new Handover.Check(label, false, unverified("unreadable reply"), detail));
-                        else if (rows.length() > 0) checks.add(new Handover.Check(label, false, Handover.LIVE_POOL, detail));
-                        next.run();
+                        if (rows == null) { checks.add(new Handover.Check(label, false, unverified("unreadable reply"), detail)); next.run(); }
+                        else if (rows.length() > 0) { checks.add(new Handover.Check(label, false, Handover.CLOSED_HOLDS_FUNDS, detail)); next.run(); }
+                        else megaEmpty(p, label, detail, checks, next);   // empty here: the unpruned MegaMMR must agree
                     }
                     @Override public void onError(String m) {
                         checks.add(new Handover.Check(label, false, unverified(m), detail));
@@ -166,6 +177,37 @@ public class HandoverActivity extends AppCompatActivity {
                 next.run();
             }
         });
+    }
+
+    /**
+     * Second opinion on a closed pool the local node reads empty: the unpruned MegaMMR (eurobuddha.com:9001,
+     * the only unpruned one), through ReserveRecovery's existing mega path. A failed read or any unspent coin
+     * there = "couldn't confirm" (blocks).
+     */
+    private void megaEmpty(Pool p, String label, String detail, List<Handover.Check> checks, Runnable next) {
+        ReserveRecovery.readCoins(ArchiveNode.configured(this), p.address, true, 512, null, null, new NodeApi.Cb() {
+            @Override public void onResult(JSONObject j) {
+                JSONArray rows = FundingCoins.rows(j);
+                int unspent = 0;
+                if (rows != null) for (int k = 0; k < rows.length(); k++) {
+                    JSONObject c = rows.optJSONObject(k);
+                    if (c == null || !c.optBoolean("spent", false)) unspent++;
+                }
+                if (rows == null) checks.add(new Handover.Check(label, false, unverifiedMega("unreadable reply"), detail));
+                else if (unspent > 0) checks.add(new Handover.Check(label, false,
+                        unverifiedMega("it lists " + unspent + " coin(s) there while your node reads none"), detail));
+                next.run();
+            }
+            @Override public void onError(String m) {
+                checks.add(new Handover.Check(label, false, unverifiedMega(m), detail));
+                next.run();
+            }
+        });
+    }
+
+    private static String unverifiedMega(String why) {
+        return "Couldn't confirm on the unpruned MegaMMR (" + MegaArchive.ENDPOINT + ") that a closed pool is empty ("
+                + why + "). Check your internet connection, then try again.";
     }
 
     private static String unverified(String why) {
@@ -212,9 +254,10 @@ public class HandoverActivity extends AppCompatActivity {
         runChecks(true);
     }
 
-    private void ok(long ts) {
+    private void ok(long ts, String[] pools) {
         setResult(RESULT_OK, new Intent()
                 .putExtra("handover", true)
+                .putExtra(Handover.EXTRA_POOLS, pools)
                 .putExtra("app", BuildConfig.APPLICATION_ID)
                 .putExtra("version", BuildConfig.VERSION_CODE)
                 .putExtra("ts", ts));

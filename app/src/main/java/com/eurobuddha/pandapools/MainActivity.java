@@ -123,10 +123,7 @@ public class MainActivity extends AppCompatActivity {
         });
         Button openNode = findViewById(R.id.openNodeBtn);
         if (openNode != null) openNode.setOnClickListener(v -> openMinimaCore());
-        findViewById(R.id.handoverTakeBack).setOnClickListener(v -> {
-            Handover.set(this, false, 0);
-            showHandover();
-        });
+        findViewById(R.id.handoverTakeBack).setOnClickListener(v -> takeBack(0));
 
         applyChrome();
         applyInsets();
@@ -543,6 +540,28 @@ public class MainActivity extends AppCompatActivity {
         startPolling();
         showHandover();
         if (views != null && currentTab >= 0 && currentTab < views.length) views[currentTab].onShown();
+    }
+
+    /**
+     * Take back. Once Dexicon keeps pools, two keepers would fight over the reserves, so it takes a plain warning
+     * and then an explicit second confirmation; on confirm PandaPools resumes keeping them and clears the set.
+     */
+    private void takeBack(int confirms) {
+        if (Handover.takeBack(this, confirms)) { showHandover(); return; }
+        StringBuilder ids = new StringBuilder();
+        for (String a : Handover.handedOverPools(this)) ids.append("\nPool: ").append(a);
+        String msg = confirms == 0
+                ? "Dexicon is keeping these pools now:" + ids + "\n\nTaking back makes PandaPools keep them too. Two "
+                        + "keepers fight over the same reserves. Only take back if you have stopped using these pools "
+                        + "in Dexicon."
+                : "Are you sure? PandaPools will start keeping these pools again while Dexicon may still keep them:"
+                        + ids;
+        new android.app.AlertDialog.Builder(this)
+                .setTitle(confirms == 0 ? "Dexicon keeps your pools" : "Take back from Dexicon")
+                .setMessage(msg)
+                .setPositiveButton(confirms == 0 ? "Continue" : "Take back", (d, w) -> takeBack(confirms + 1))
+                .setNegativeButton("Cancel", null)
+                .show();
     }
 
     private void showHandover() {

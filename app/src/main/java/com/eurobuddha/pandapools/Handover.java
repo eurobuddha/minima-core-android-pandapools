@@ -5,14 +5,18 @@ import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Hand-over to Dexicon. Dexicon embeds PandaPools, and two apps keeping the same pool would rebuild its
  * reserves against each other — so the two must never both be installed. Dexicon only unlocks its uninstall
  * button after THIS app confirms that nothing lives only here: uninstalling deletes the pool recipes and
- * recovery state below.
+ * recovery state below. A live pool may go only once Dexicon holds its recipe (restored from the verified
+ * backup) — and PandaPools then stops keeping it ({@link #KEY_POOLS}) before it answers OK.
  *
  * Every check reads an existing store; none invents a rule. The flag only blocks NEW pools and NEW swaps —
  * everything that protects funds keeps running.
@@ -22,15 +26,21 @@ final class Handover {
     static final String DEXICON = "com.eurobuddha.dexicon";
     static final String ACTION = "com.eurobuddha.dexicon.action.HANDOVER";
 
-    /** Exact wording agreed with Dexicon. Dexicon cannot host pools until a later update. */
-    static final String LIVE_POOL =
-            "Dexicon can't take over a live pool yet. Keep PandaPools until the Dexicon update that brings pools; "
-                    + "your pool keeps running here.";
+    /** Exact wording agreed with Dexicon: it restores the PandaPools backup, then asks again with "dexicon_pools". */
+    static final String RESTORE_FIRST = "Restore your PandaPools backup in Dexicon first";
+    static final String LIVE_POOL = RESTORE_FIRST + ", then hand over again.";
+    static final String NO_BACKUP = "No verified PandaPools backup covers every pool on this install. Save and verify "
+            + "a backup on the My Pools tab, restore it in Dexicon, then hand over again.";
+    static final String CLOSED_HOLDS_FUNDS = "A closed pool still holds funds. Withdraw it on the My Pools tab first.";
+    /** Extras: Dexicon's covenant addresses in, the handed-over addresses out. */
+    static final String EXTRA_DEXICON_POOLS = "dexicon_pools", EXTRA_POOLS = "pools";
     static final String BLOCKED =
             "PandaPools has been handed over to Dexicon. Tap \"Take back\" on the main screen to use it here again.";
 
     private static final String PREFS = "pandapools_handover";
     static final String KEY = "handed_over_to_dexicon", KEY_TS = "handed_over_to_dexicon_ts";
+    /** Pools Dexicon keeps now. PandaPools' keeper (keep-fresh, re-announce, stranding) leaves them alone. */
+    static final String KEY_POOLS = "handed_over_pools";
 
     private Handover() {}
 
@@ -88,11 +98,53 @@ final class Handover {
         return confirming || handedOver ? Outcome.OK : Outcome.SHOW;
     }
 
-    /** commit(): Dexicon is told OK only once the flag is on disk. */
+    /** commit(): Dexicon is told OK only once the flag is on disk. Off also resumes keeping every pool. */
     static boolean set(Context c, boolean on, long ts) {
         SharedPreferences.Editor e = prefs(c).edit().putBoolean(KEY, on);
-        if (on) e.putLong(KEY_TS, ts); else e.remove(KEY_TS);
+        if (on) e.putLong(KEY_TS, ts); else e.remove(KEY_TS).remove(KEY_POOLS);
         return e.commit();
+    }
+
+    /** Lower-cased addresses Dexicon keeps now (empty if none or unreadable). */
+    static Set<String> handedOverPools(Context c) {
+        try {
+            Set<String> s = c == null ? null : prefs(c).getStringSet(KEY_POOLS, null);
+            return s == null ? new HashSet<>() : new HashSet<>(s);
+        } catch (RuntimeException unreadable) { return new HashSet<>(); }
+    }
+
+    /** True when Dexicon keeps this pool: PandaPools must not refresh or re-announce it. */
+    static boolean keptByDexicon(Context c, String address) {
+        return address != null && handedOverPools(c).contains(address.toLowerCase(Locale.ROOT));
+    }
+
+    /** {@code pools} minus the ones Dexicon keeps. */
+    static List<Pool> keepable(Context c, List<Pool> pools) {
+        Set<String> gone = handedOverPools(c);
+        List<Pool> out = new ArrayList<>();
+        for (Pool p : pools) if (p != null && (p.address == null || !gone.contains(p.address.toLowerCase(Locale.ROOT)))) out.add(p);
+        return out;
+    }
+
+    /**
+     * Stop keeping {@code active} (added to any pools already handed over) — durably, BEFORE Dexicon hears OK.
+     * Returns the full handed-over set, or null if it could not be saved.
+     */
+    static String[] stopKeeping(Context c, List<Pool> active) {
+        Set<String> s = handedOverPools(c);
+        for (Pool p : active) if (p.address != null) s.add(p.address.toLowerCase(Locale.ROOT));
+        if (s.isEmpty()) return new String[0];
+        try { if (!prefs(c).edit().putStringSet(KEY_POOLS, s).commit()) return null; }
+        catch (RuntimeException unwritable) { return null; }
+        return s.toArray(new String[0]);
+    }
+
+    /** Confirmations "Take back" needs: two once Dexicon keeps pools (two keepers fight over the reserves). */
+    static int takeBackConfirms(Context c) { return handedOverPools(c).isEmpty() ? 0 : 2; }
+
+    /** Take back after {@code confirms} explicit confirmations; false (nothing changed) if that is too few. */
+    static boolean takeBack(Context c, int confirms) {
+        return confirms >= takeBackConfirms(c) && set(c, false, 0);
     }
 
     /** One line on the hand-over screen. {@code detail} carries full identifiers, never abbreviated. */
@@ -104,12 +156,25 @@ final class Handover {
         }
     }
 
-    /** (1) No pool still running here. Retired pools are checked on-chain separately (they must be empty). */
-    static Check pools(List<Pool> active) {
-        StringBuilder d = new StringBuilder();
-        for (Pool p : active) d.append("Pool: ").append(p.address).append('\n');
-        return new Check("No live pool on this install", active.isEmpty(), active.isEmpty() ? "" : LIVE_POOL,
-                d.toString().trim());
+    /**
+     * (1) Every live pool is already held by Dexicon ({@code dexiconPools}, null when Dexicon sent none) AND a
+     * verified backup covers every pool here. Retired pools are checked on-chain separately (they must be empty).
+     */
+    static Check pools(List<Pool> active, String[] dexiconPools, boolean backupCovers) {
+        String label = "Every live pool is restored in Dexicon";
+        if (active.isEmpty()) return new Check(label, true, "", "");
+        Set<String> held = new HashSet<>();
+        if (dexiconPools != null) for (String a : dexiconPools) if (a != null) held.add(a.trim().toLowerCase(Locale.ROOT));
+        StringBuilder missing = new StringBuilder();
+        for (Pool p : active)
+            if (p.address == null || !held.contains(p.address.toLowerCase(Locale.ROOT)))
+                missing.append("Pool: ").append(p.address).append('\n');
+        String m = missing.toString().trim();
+        if (dexiconPools == null) return new Check(label, false, LIVE_POOL, m);
+        if (!m.isEmpty()) return new Check(label, false,
+                RESTORE_FIRST + ". Dexicon does not hold these pools yet:\n" + m, m);
+        if (!backupCovers) return new Check(label, false, NO_BACKUP, "");
+        return new Check(label, true, "", "");
     }
 
     /** Terminal exit states. Everything else is interrupted or still moving funds. */

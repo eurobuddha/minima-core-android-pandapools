@@ -38,6 +38,9 @@ public class PoolManager {
      *  force a MIGRATE (which resets KMIN to the new product) instead. */
     private static final BigDecimal GROW_CAP_MULT = new BigDecimal("2");
 
+    /** Keep-fresh and re-announce both route through here: a pool Dexicon keeps is never touched again. */
+    static final String KEPT_BY_DEXICON = "Dexicon keeps this pool now.";
+
     private final NodeApi node;
 
     public PoolManager(NodeApi node) { this.node = node; }
@@ -519,6 +522,7 @@ public class PoolManager {
      * actually FADED from the recent sentinel window, so beacons don't pile up.
      */
     public void reannounce(final Pool p, final Result cb) {
+        if (p != null && Handover.keptByDexicon(node.context(), p.address)) { cb.onFailed(KEPT_BY_DEXICON); return; }
         if (p == null || p.address == null || isEmpty(p.opk) || isEmpty(p.tok) || isEmpty(p.oadr) || isEmpty(p.kmin)) {
             cb.onFailed("incomplete pool record"); return;
         }
@@ -564,6 +568,7 @@ public class PoolManager {
      * does not touch LpStore — so the displayed age keeps counting from the original create block.
      */
     public void refresh(final Pool p, final Result cb) {
+        if (p != null && Handover.keptByDexicon(node.context(), p.address)) { cb.onFailed(KEPT_BY_DEXICON); return; }
         if (p == null || !p.funded() || isEmpty(p.opk) || isEmpty(p.address) || isEmpty(p.tok) || isEmpty(p.oadr)
                 || isEmpty(p.coinidM) || isEmpty(p.coinidT)) { cb.onFailed("incomplete pool record"); return; }
         final String tokArg = " tokenid:" + p.tok;
