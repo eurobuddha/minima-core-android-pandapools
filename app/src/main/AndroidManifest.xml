@@ -77,6 +77,13 @@
 
         <!-- Hands the staged accounting-export ZIP to whichever app the user picks in the share sheet
              (mail, Drive, …). Grants are per-Intent and read-only; see res/xml/file_paths.xml. -->
+        <!-- Dexicon's custody signal: which live pools PandaPools keeps. Exported, but query() answers only
+             com.eurobuddha.dexicon signed with our key (calling uid + checkSignatures); read-only. -->
+        <provider
+            android:name=".HandoverStateProvider"
+            android:authorities="com.eurobuddha.pandapools.handover"
+            android:exported="true" />
+
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.fileprovider"

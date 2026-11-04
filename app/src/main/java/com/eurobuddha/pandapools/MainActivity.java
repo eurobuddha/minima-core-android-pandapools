@@ -551,11 +551,12 @@ public class MainActivity extends AppCompatActivity {
         StringBuilder ids = new StringBuilder();
         for (String a : Handover.handedOverPools(this)) ids.append("\nPool: ").append(a);
         String msg = confirms == 0
-                ? "Dexicon is keeping these pools now:" + ids + "\n\nTaking back makes PandaPools keep them too. Two "
-                        + "keepers fight over the same reserves. Only take back if you have stopped using these pools "
-                        + "in Dexicon."
-                : "Are you sure? PandaPools will start keeping these pools again while Dexicon may still keep them:"
-                        + ids;
+                ? "Dexicon is keeping these pools now:" + ids + "\n\nTaking back makes PandaPools keep them again. "
+                        + "Dexicon stops keeping them at its next check (within about 5 minutes); until then two "
+                        + "keepers may fight over the same reserves. Only take back if you have stopped using these "
+                        + "pools in Dexicon."
+                : "Are you sure? PandaPools will start keeping these pools again. Dexicon stops keeping them at its "
+                        + "next check (within about 5 minutes); until then both apps may keep them:" + ids;
         new android.app.AlertDialog.Builder(this)
                 .setTitle(confirms == 0 ? "Dexicon keeps your pools" : "Take back from Dexicon")
                 .setMessage(msg)

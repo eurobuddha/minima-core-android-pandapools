@@ -12,6 +12,7 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -232,5 +233,110 @@ public class HandoverTest {
     @Test public void alreadyHandedOverReAnswersOkOnlyIfChecksStillPass() {
         assertEquals(Handover.Outcome.OK, Handover.outcome(false, true, true));
         assertEquals(Handover.Outcome.SHOW, Handover.outcome(false, true, false));
+    }
+
+    /** Fix 4: only a raw stored DONE / SKIPPED / FAILED is settled; missing, unknown or unreadable rows block, address in full. */
+    @Test public void anUnknownOrMissingExitStateBlocksTheHandOver() {
+        for (String raw : new String[]{ null, "", "BOGUS", "done", " DONE" }) {
+            ExitStore.Record r = new ExitStore.Record(); r.address = h("5"); r.state = raw;
+            Handover.Check c = Handover.withdrawals(Collections.singletonList(r));
+            assertFalse(String.valueOf(raw), c.ok);
+            assertTrue(c.detail.contains(h("5")));
+        }
+        // An unreadable stored row is listed (never dropped) and blocks; a row without a state stays stateless.
+        Map<String, Object> rows = new HashMap<>();
+        rows.put(h("5"), "not json");
+        rows.put(h("6"), "{\"addr\":\"" + h("6") + "\"}");
+        Context c = mock(Context.class);
+        SharedPreferences sp = mock(SharedPreferences.class);
+        when(c.getSharedPreferences(anyString(), anyInt())).thenReturn(sp);
+        when(sp.getAll()).thenAnswer(i -> rows);
+        when(sp.getString(anyString(), any())).thenAnswer(i -> (String) rows.get(i.getArgument(0)));
+        List<ExitStore.Record> all = ExitStore.all(c);
+        assertEquals(2, all.size());
+        Handover.Check chk = Handover.withdrawals(all);
+        assertFalse(chk.ok);
+        assertTrue(chk.detail.contains(h("5")));
+        assertTrue(chk.detail.contains(h("6")));
+        assertEquals(ExitStore.State.FAILED, ExitStore.get(c, h("6")).stateOf());   // display mapping unchanged
+    }
+
+    /** Fix 2: a pool Dexicon holds that has no recipe here is kept by Dexicon; recipes here are not. */
+    @Test public void keptByDexiconIsHandedOverPlusPoolsWithNoRecipeHere() {
+        Set<String> handed = new HashSet<>(Collections.singletonList(h("4")));
+        String[] dex = { h("4"), h("7").toUpperCase().replace("0X", "0x"), h("9"), null, "  " };
+        String[] out = Handover.keptByDexicon(handed, dex, Arrays.asList(pool("4"), pool("9")));
+        assertEquals(new HashSet<>(Arrays.asList(h("4"), h("7"))), new HashSet<>(Arrays.asList(out)));
+        assertEquals(0, Handover.keptByDexicon(new HashSet<>(), null, Collections.emptyList()).length);
+    }
+
+    @Test public void stateProviderAnswersOnlyDexiconWithOurSigner() {
+        PackageManager pm = mock(PackageManager.class);
+        String self = "com.eurobuddha.pandapools";
+        when(pm.checkSignatures("com.eurobuddha.dexicon", self)).thenReturn(PackageManager.SIGNATURE_MATCH);
+        assertTrue(HandoverStateProvider.allowed(new String[]{ "com.eurobuddha.dexicon" }, pm, self));
+        assertTrue(HandoverStateProvider.allowed(new String[]{ "x.shared", "com.eurobuddha.dexicon" }, pm, self));
+        assertFalse(HandoverStateProvider.allowed(null, pm, self));
+        assertFalse(HandoverStateProvider.allowed(new String[]{ "com.eurobuddha.evil" }, pm, self));
+        assertFalse(HandoverStateProvider.allowed(new String[]{ self }, pm, self));
+        when(pm.checkSignatures("com.eurobuddha.dexicon", self)).thenReturn(PackageManager.SIGNATURE_NO_MATCH);
+        assertFalse(HandoverStateProvider.allowed(new String[]{ "com.eurobuddha.dexicon" }, pm, self));
+        assertFalse(HandoverStateProvider.allowed(new String[]{ "com.eurobuddha.dexicon" }, null, self));
+    }
+
+    @Test public void stateProviderRowsNameEveryActivePoolInFull() {
+        Pool upper = pool("a"); upper.address = h("a").toUpperCase().replace("0X", "0x");
+        List<String[]> rows = HandoverStateProvider.rows(Arrays.asList(pool("4"), upper, pool("4"), new Pool()),
+                new HashSet<>(Collections.singletonList(h("a"))));
+        assertEquals(2, rows.size());
+        assertEquals(h("4"), rows.get(0)[0]);
+        assertEquals("kept_here", rows.get(0)[1]);
+        assertEquals(h("a"), rows.get(1)[0]);                 // lower-case, all 66 characters
+        assertEquals(66, rows.get(1)[0].length());
+        assertEquals("handed_over", rows.get(1)[1]);
+        assertEquals("com.eurobuddha.pandapools.handover", HandoverStateProvider.AUTHORITY);
+        assertEquals(Arrays.asList("address", "state"), Arrays.asList(HandoverStateProvider.COLUMNS));
+    }
+
+    /** Fix 1: migrate creates a new pool, so it is refused once handed over; close/deposit are marked, never refused. */
+    @Test public void migrateIsRefusedHandedOverAndOwnerMovesAreMarkedUntilTheyAnswer() {
+        Context c = store();
+        Handover.set(c, true, 1L);
+        NodeApi node = mock(NodeApi.class);
+        when(node.context()).thenReturn(c);
+        PoolManager mgr = new PoolManager(node);
+        String[] got = new String[3];
+        mgr.migrate(pool("4"), java.math.BigDecimal.ONE, java.math.BigDecimal.ONE, new PoolManager.CreateResult() {
+            @Override public void onCreated(Pool pool, String txpowid) { throw new AssertionError("migrated while handed over"); }
+            @Override public void onFailed(String message) { got[0] = message; }
+        });
+        assertEquals(Handover.BLOCKED, got[0]);
+        // close / deposit still run handed over (own funds): an unfunded pool fails on its own terms, and the mark ends
+        mgr.close(pool("4"), new PoolManager.Result() {
+            @Override public void onPosted(String txpowid) { throw new AssertionError(); }
+            @Override public void onFailed(String message) { got[1] = message; }
+        });
+        mgr.deposit(pool("4"), java.math.BigDecimal.ONE, java.math.BigDecimal.ONE, new PoolManager.Result() {
+            @Override public void onPosted(String txpowid) { throw new AssertionError(); }
+            @Override public void onFailed(String message) { got[2] = message; }
+        });
+        assertFalse(Handover.BLOCKED.equals(got[1]));
+        assertFalse(Handover.BLOCKED.equals(got[2]));
+        verify(node, never()).cmd(anyString(), any());
+        // a marked move holds the hand-over off until its result, and ends exactly once
+        Handover.mark();
+        boolean[] before = { Handover.busy() };
+        PoolManager.Result r = PoolManager.ending(new PoolManager.Result() {
+            @Override public void onPosted(String txpowid) {}
+            @Override public void onFailed(String message) {}
+        });
+        assertTrue(before[0]);
+        assertFalse(Handover.running(Handover.busy()).ok);
+        r.onFailed("x");
+        r.onFailed("again");                                  // a second answer must not end someone else's mark
+        assertTrue(Handover.begin(ctx(false)));
+        assertTrue(Handover.busy());
+        Handover.end();
+        assertFalse(Handover.busy());
     }
 }

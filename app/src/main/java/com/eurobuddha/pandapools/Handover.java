@@ -84,6 +84,13 @@ final class Handover {
         return true;
     }
 
+    /**
+     * Mark the owner's own fund move (close, deposit) running WITHOUT the flag refusal: those are the owner's own
+     * funds and must work handed over or not, but a hand-over must still wait for one in flight. Pair with exactly
+     * one {@link #end}.
+     */
+    static void mark() { RUNNING.incrementAndGet(); }
+
     static void end() { RUNNING.decrementAndGet(); }
 
     static boolean busy() { return RUNNING.get() > 0; }
@@ -141,6 +148,21 @@ final class Handover {
         return s.toArray(new String[0]);
     }
 
+    /**
+     * The {@link #EXTRA_KEPT_BY_DEXICON} list: the pools handed over, plus every pool Dexicon says it holds that has
+     * no recipe here at all — PandaPools cannot keep a pool it holds no recipe for, so Dexicon keeps it. Lower-case.
+     */
+    static String[] keptByDexicon(Set<String> handedOver, String[] dexiconPools, List<Pool> recipes) {
+        Set<String> out = new java.util.TreeSet<>(handedOver);
+        Set<String> here = new HashSet<>();
+        for (Pool p : recipes) if (p != null && p.address != null) here.add(p.address.toLowerCase(Locale.ROOT));
+        if (dexiconPools != null) for (String a : dexiconPools) {
+            String k = a == null ? "" : a.trim().toLowerCase(Locale.ROOT);
+            if (!k.isEmpty() && !here.contains(k)) out.add(k);
+        }
+        return out.toArray(new String[0]);
+    }
+
     /** Confirmations "Take back" needs: two once Dexicon keeps pools (two keepers fight over the reserves). */
     static int takeBackConfirms(Context c) { return handedOverPools(c).isEmpty() ? 0 : 2; }
 
@@ -179,16 +201,21 @@ final class Handover {
         return new Check(label, true, "", "");
     }
 
-    /** Terminal exit states. Everything else is interrupted or still moving funds. */
-    static boolean exitSettled(ExitStore.State s) {
-        return s == ExitStore.State.DONE || s == ExitStore.State.SKIPPED || s == ExitStore.State.FAILED;
+    /**
+     * Terminal exit states, read from the RAW stored string: a missing, unreadable or unknown state is NOT settled
+     * (ExitStore maps those to FAILED for display; the hand-over must not treat them as finished).
+     */
+    static boolean exitSettled(String rawState) {
+        return ExitStore.State.DONE.name().equals(rawState) || ExitStore.State.SKIPPED.name().equals(rawState)
+                || ExitStore.State.FAILED.name().equals(rawState);
     }
 
     /** (2) No interrupted or in-progress withdrawal. */
     static Check withdrawals(List<ExitStore.Record> records) {
         StringBuilder d = new StringBuilder();
-        for (ExitStore.Record r : records) if (!exitSettled(r.stateOf()))
-            d.append("Pool: ").append(r.address).append(" — ").append(r.stateOf().name()).append('\n');
+        for (ExitStore.Record r : records) if (!exitSettled(r.state))
+            d.append("Pool: ").append(r.address).append(" — ")
+                    .append(r.state == null || r.state.isEmpty() ? "unreadable record" : r.state).append('\n');
         boolean ok = d.length() == 0;
         return new Check("No withdrawal interrupted or in progress", ok,
                 ok ? "" : "A pool withdrawal is interrupted or still in progress. Resolve it on the My Pools tab first; "

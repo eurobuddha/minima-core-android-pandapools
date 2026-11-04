@@ -37,8 +37,8 @@ public class HandoverActivity extends AppCompatActivity {
         if (!Handover.callerAllowed(getCallingPackage(), getPackageManager(), getPackageName())) {
             setResult(RESULT_CANCELED); finish(); return;
         }
+        dexiconPools = getIntent().getStringArrayExtra(Handover.EXTRA_DEXICON_POOLS);   // before refuse(): kept_by_dexicon reads it
         refuse("Hand-over not confirmed.");            // back / dismiss
-        dexiconPools = getIntent().getStringArrayExtra(Handover.EXTRA_DEXICON_POOLS);
         Design.load(this);
         getDelegate().setLocalNightMode(Design.isDark() ? AppCompatDelegate.MODE_NIGHT_YES : AppCompatDelegate.MODE_NIGHT_NO);
 
@@ -95,18 +95,25 @@ public class HandoverActivity extends AppCompatActivity {
     private void runChecks(boolean confirm) {
         final int my = ++run;
         final boolean handedOver = Handover.active(this);
-        List<Handover.Check> checks = new ArrayList<>();
-        checks.add(Handover.pools(OwnPoolStore.active(this), dexiconPools, BackupState.combinedUpToDate(this)));
-        checks.add(Handover.withdrawals(ExitStore.all(this)));
-        checks.add(Handover.payouts(PendingCollect.all(this)));
-        checks.add(Handover.swaps(SwapView.posting, ActivityLog.hasPending(this, 0, ActivityLog.SWAP)));
-        checks.add(Handover.running(Handover.busy()));
-        Runnable done = () -> runOnUiThread(() -> answer(my, confirm, handedOver, checks));
+        List<Handover.Check> checks = syncChecks(OwnPoolStore.active(this));
+        final List<Pool> retired = OwnPoolStore.retired(this);
+        Runnable done = () -> runOnUiThread(() -> answer(my, confirm, handedOver, checks, retired));
         // A confirm that already fails answers at once: the flag must not hold back a running create longer than needed.
         if (confirm && !allOk(checks)) { done.run(); return; }
         // Retired ("closed") pools keep their recipe here. A close can be posted and never land, so each one
         // must be seen EMPTY on the node before its recipe may be deleted with the app.
-        retiredEmpty(OwnPoolStore.retired(this), 0, checks, done);
+        retiredEmpty(retired, 0, checks, done);
+    }
+
+    /** Every check that reads a local store (no node, no network): run at the start AND again just before OK. */
+    private List<Handover.Check> syncChecks(List<Pool> active) {
+        List<Handover.Check> checks = new ArrayList<>();
+        checks.add(Handover.pools(active, dexiconPools, BackupState.combinedUpToDate(this)));
+        checks.add(Handover.withdrawals(ExitStore.all(this)));
+        checks.add(Handover.payouts(PendingCollect.all(this)));
+        checks.add(Handover.swaps(SwapView.posting, ActivityLog.hasPending(this, 0, ActivityLog.SWAP)));
+        checks.add(Handover.running(Handover.busy()));
+        return checks;
     }
 
     private static boolean allOk(List<Handover.Check> checks) {
@@ -114,13 +121,32 @@ public class HandoverActivity extends AppCompatActivity {
         return true;
     }
 
-    private void answer(int my, boolean confirm, boolean handedOver, List<Handover.Check> checks) {
+    private void answer(int my, boolean confirm, boolean handedOver, List<Handover.Check> checks, List<Pool> retiredChecked) {
         if (my != run || isFinishing() || isDestroyed()) return;
         switch (Handover.outcome(confirm, handedOver, allOk(checks))) {
-            case OK:
+            case OK: {
+                // The run above waited on the node and the MegaMMR: a pool, withdrawal, payout or swap may have
+                // appeared meanwhile, or the hand-over been taken back. Re-read every local store now, and hand
+                // over exactly the pool list that was just checked.
+                List<Pool> active = OwnPoolStore.active(this);
+                List<Handover.Check> again = syncChecks(active);
+                java.util.Set<String> seen = new java.util.HashSet<>();
+                for (Pool p : retiredChecked) if (p.address != null) seen.add(p.address.toLowerCase(java.util.Locale.ROOT));
+                for (Pool p : OwnPoolStore.retired(this))
+                    if (p.address == null || !seen.contains(p.address.toLowerCase(java.util.Locale.ROOT)))
+                        again.add(new Handover.Check("Closed pool is empty", false,
+                                "A pool was closed while checking, so it was not checked on-chain. Try again.", "Pool: " + p.address));
+                if (!Handover.active(this)) again.add(new Handover.Check("PandaPools is handed over", false,
+                        "The hand-over was taken back while checking. Hand over again.", ""));
+                if (!allOk(again)) {
+                    confirming = false;
+                    if (confirm && !wasHandedOver) Handover.set(this, false, 0);   // only undo what this tap set
+                    show(again);
+                    return;
+                }
                 confirming = false;
                 // Stop our own keeper for these pools on disk BEFORE Dexicon hears OK: two keepers never run.
-                String[] pools = Handover.stopKeeping(this, OwnPoolStore.active(this));
+                String[] pools = Handover.stopKeeping(this, active);
                 if (pools == null) {
                     if (!wasHandedOver && confirm) Handover.set(this, false, 0);
                     refuse("PandaPools could not save which pools Dexicon now keeps. Nothing changed.");
@@ -128,6 +154,7 @@ public class HandoverActivity extends AppCompatActivity {
                 }
                 ok(Handover.ts(this), pools);
                 return;
+            }
             case REFUSE:
                 confirming = false;
                 if (!wasHandedOver) Handover.set(this, false, 0);   // only undo what this tap set
@@ -264,12 +291,14 @@ public class HandoverActivity extends AppCompatActivity {
         finish();
     }
 
-    /** Every refusal also says which pools PandaPools has STOPPED keeping (Dexicon keeps them): Dexicon may stop keeping a
-     *  pool only once it is absent from this list, i.e. PandaPools really took it back — never on a mere refusal
-     *  (a failed MegaMMR read, a swap in progress), or nobody would keep it. */
+    /** Every refusal also says which pools PandaPools does NOT keep (Dexicon keeps them): the handed-over pools plus any
+     *  pool Dexicon holds that has no recipe here. Dexicon may stop keeping a pool only once it is absent from this
+     *  list, i.e. PandaPools really keeps it — never on a mere refusal (a failed MegaMMR read, a swap in progress),
+     *  or nobody would keep it. */
     private void refuse(String reason) {
         setResult(RESULT_CANCELED, new Intent().putExtra("reason", reason)
-                .putExtra(Handover.EXTRA_KEPT_BY_DEXICON, Handover.handedOverPools(this).toArray(new String[0])));
+                .putExtra(Handover.EXTRA_KEPT_BY_DEXICON,
+                        Handover.keptByDexicon(Handover.handedOverPools(this), dexiconPools, OwnPoolStore.all(this))));
     }
 
     private TextView text(String s, int color, int sp, boolean bold) {
