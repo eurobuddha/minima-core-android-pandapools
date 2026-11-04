@@ -34,6 +34,8 @@ final class Handover {
     static final String CLOSED_HOLDS_FUNDS = "A closed pool still holds funds. Withdraw it on the My Pools tab first.";
     /** Extras: Dexicon's covenant addresses in, the handed-over addresses out. */
     static final String EXTRA_DEXICON_POOLS = "dexicon_pools", EXTRA_POOLS = "pools";
+    /** On every refusal: the pools PandaPools has stopped keeping because Dexicon keeps them (lower-case covenant addresses). */
+    static final String EXTRA_KEPT_BY_DEXICON = "kept_by_dexicon";
     static final String BLOCKED =
             "PandaPools has been handed over to Dexicon. Tap \"Take back\" on the main screen to use it here again.";
 

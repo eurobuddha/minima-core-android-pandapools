@@ -264,7 +264,13 @@ public class HandoverActivity extends AppCompatActivity {
         finish();
     }
 
-    private void refuse(String reason) { setResult(RESULT_CANCELED, new Intent().putExtra("reason", reason)); }
+    /** Every refusal also says which pools PandaPools has STOPPED keeping (Dexicon keeps them): Dexicon may stop keeping a
+     *  pool only once it is absent from this list, i.e. PandaPools really took it back — never on a mere refusal
+     *  (a failed MegaMMR read, a swap in progress), or nobody would keep it. */
+    private void refuse(String reason) {
+        setResult(RESULT_CANCELED, new Intent().putExtra("reason", reason)
+                .putExtra(Handover.EXTRA_KEPT_BY_DEXICON, Handover.handedOverPools(this).toArray(new String[0])));
+    }
 
     private TextView text(String s, int color, int sp, boolean bold) {
         TextView t = new TextView(this);
