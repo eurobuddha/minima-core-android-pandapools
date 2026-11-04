@@ -44,9 +44,25 @@ public class PoolManager {
 
     // ===================================================================== CREATE
 
+    /** (Re-)register an own pool's covenant so the node tracks its coins. Idempotent. */
+    static void retrack(NodeApi node, Pool p, NodeApi.Cb cb) {
+        node.cmd("newscript trackall:true script:" + Util.scriptArg(p.covenantScript), cb);
+    }
+
     /** Create a MINIMA/token pool seeded with x0 MINIMA and y0 token. Mints a fresh owner key+address. */
-    public void createPool(String tokenid, int tokDecimals, BigDecimal x0, BigDecimal y0, CreateResult cb) {
-        if (Handover.active(node.context())) { cb.onFailed(Handover.BLOCKED); return; }
+    public void createPool(String tokenid, int tokDecimals, BigDecimal x0, BigDecimal y0, CreateResult done) {
+        if (!Handover.begin(node.context())) { done.onFailed(Handover.BLOCKED); return; }
+        // Marked running until the result is delivered, so a hand-over refuses while this create can still
+        // record a recipe or post.
+        final java.util.concurrent.atomic.AtomicBoolean ended = new java.util.concurrent.atomic.AtomicBoolean();
+        final CreateResult cb = new CreateResult() {
+            @Override public void onCreated(Pool pool, String txpowid) {
+                try { done.onCreated(pool, txpowid); } finally { if (!ended.getAndSet(true)) Handover.end(); }
+            }
+            @Override public void onFailed(String message) {
+                try { done.onFailed(message); } finally { if (!ended.getAndSet(true)) Handover.end(); }
+            }
+        };
         if (!BackupState.combinedUpToDate(node.context())) {
             cb.onFailed("BACKUP_REQUIRED: save and verify a password-encrypted pool + node backup before creating another pool. Recovery and withdrawal remain available."); return;
         }
@@ -112,6 +128,12 @@ public class PoolManager {
             @Override public void ok(List<Coin> mfunds, BigDecimal msum) {
                 selectCoins(tokenid, y0, p.address, p.oadr, new SelCb() {
                     @Override public void ok(List<Coin> tfunds, BigDecimal tsum) {
+                        // Last moment to stop: nothing is posted yet (the recipe is always recorded BEFORE the
+                        // post, so a pool can never exist without its recipe).
+                        if (Handover.active(node.context())) {
+                            CoinLock.release(mfunds); CoinLock.release(tfunds);
+                            cb.onFailed(Handover.BLOCKED + " Nothing was posted."); return;
+                        }
                         if (!OwnPoolStore.recordDurably(node.context(), p)) {
                             CoinLock.release(mfunds); CoinLock.release(tfunds);
                             cb.onFailed("Could not save the pool recovery recipe. Nothing was posted."); return;

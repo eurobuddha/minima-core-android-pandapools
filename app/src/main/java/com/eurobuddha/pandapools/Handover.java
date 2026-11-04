@@ -2,9 +2,11 @@ package com.eurobuddha.pandapools;
 
 import android.content.Context;
 import android.content.SharedPreferences;
+import android.content.pm.PackageManager;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Hand-over to Dexicon. Dexicon embeds PandaPools, and two apps keeping the same pool would rebuild its
@@ -34,11 +36,56 @@ final class Handover {
 
     static boolean callerAllowed(String callingPackage) { return DEXICON.equals(callingPackage); }
 
+    /**
+     * Dexicon by name AND by signer: both apps release-sign with the Minima family key
+     * (MINIMA_FAMILY_RELEASE_* in both app/build.gradle files; debug builds share the machine's debug key),
+     * so a look-alike package with another key is refused.
+     */
+    static boolean callerAllowed(String callingPackage, PackageManager pm, String self) {
+        if (!callerAllowed(callingPackage) || pm == null) return false;
+        try { return pm.checkSignatures(callingPackage, self) == PackageManager.SIGNATURE_MATCH; }
+        catch (RuntimeException unknown) { return false; }
+    }
+
     private static SharedPreferences prefs(Context c) { return c.getSharedPreferences(PREFS, Context.MODE_PRIVATE); }
 
     static boolean active(Context c) {
         try { return c != null && prefs(c).getBoolean(KEY, false); }
         catch (RuntimeException unreadable) { return false; }
+    }
+
+    static long ts(Context c) {
+        try { return prefs(c).getLong(KEY_TS, 0); } catch (RuntimeException unreadable) { return 0; }
+    }
+
+    /** Pool creates and swaps running right now (process-wide). The hand-over refuses while any runs. */
+    private static final AtomicInteger RUNNING = new AtomicInteger();
+
+    /**
+     * Start a pool create or swap. Marks it running BEFORE reading the flag, and the hand-over sets the flag
+     * BEFORE reading {@link #busy}, so one of the two always sees the other. False (nothing marked) once
+     * handed over. A true return must be paired with exactly one {@link #end}.
+     */
+    static boolean begin(Context c) {
+        RUNNING.incrementAndGet();
+        if (active(c)) { RUNNING.decrementAndGet(); return false; }
+        return true;
+    }
+
+    static void end() { RUNNING.decrementAndGet(); }
+
+    static boolean busy() { return RUNNING.get() > 0; }
+
+    /** What a finished check run does. */
+    enum Outcome { OK, REFUSE, SHOW }
+
+    /**
+     * {@code confirming}: the user tapped Hand over (the flag was set first). {@code handedOver}: the flag was on
+     * when the run began. OK only on a fresh, fully passing run; a failed confirm refuses (and drops the flag).
+     */
+    static Outcome outcome(boolean confirming, boolean handedOver, boolean allPass) {
+        if (!allPass) return confirming ? Outcome.REFUSE : Outcome.SHOW;
+        return confirming || handedOver ? Outcome.OK : Outcome.SHOW;
     }
 
     /** commit(): Dexicon is told OK only once the flag is on disk. */
@@ -97,6 +144,12 @@ final class Handover {
         boolean ok = !inFlight && !pendingInActivity;
         return new Check("No swap in progress", ok,
                 ok ? "" : "A swap is still in progress. Wait until it confirms on the Activity tab, then try again.", "");
+    }
+
+    /** (5) No pool create or swap running right now (it may be about to record a recipe or post). */
+    static Check running(boolean busy) {
+        return new Check("No pool creation or swap running", !busy,
+                busy ? "A pool is being created or a swap is being sent. Wait until it finishes, then try again." : "", "");
     }
 
     /** The {@code reason} extra for Dexicon: every failing check's reason, live-pool first. */

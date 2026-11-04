@@ -21,6 +21,8 @@
          our targeted (setPackage) IPC broadcasts to it -->
     <queries>
         <package android:name="com.eurobuddha.minimacore" />
+        <!-- HandoverActivity compares Dexicon's signer with ours (PackageManager.checkSignatures). -->
+        <package android:name="com.eurobuddha.dexicon" />
     </queries>
 
     <!-- allowBackup stays TRUE here on purpose — see res/xml/data_extraction_rules.xml. The pool recovery
@@ -49,7 +51,7 @@
         </activity>
 
         <!-- Dexicon's hand-over request. Exported for Dexicon only: HandoverActivity refuses any other caller
-             (getCallingPackage), and only RESULT_OK after every fund check passes. -->
+             (getCallingPackage + same signing certificate), and only RESULT_OK after every fund check passes. -->
         <activity
             android:name=".HandoverActivity"
             android:exported="true">

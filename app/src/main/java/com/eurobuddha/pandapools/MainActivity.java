@@ -317,7 +317,7 @@ public class MainActivity extends AppCompatActivity {
 
         for (Pool p : own) {
             if (p.covenantScript == null || p.covenantScript.isEmpty()) continue;
-            node.cmd("newscript trackall:true script:" + Util.scriptArg(p.covenantScript), new NodeApi.Cb() {
+            PoolManager.retrack(node, p, new NodeApi.Cb() {
                 @Override public void onResult(JSONObject j) { if (poolRepo != null) poolRepo.refresh(); }
                 @Override public void onError(String m) {}
             });

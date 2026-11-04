@@ -51,9 +51,19 @@ public class PoolTxn {
      * pool by @INPUT arithmetic, so N pools coexist in one tx; proven in the phase-B 3-pool routed swap),
      * funded from the wallet, with the aggregate proceeds paid to the taker and change returned.
      */
-    public void swap(final PoolRouter.Route route, final boolean minimaToToken, final Result cb) {
-        if (route == null || !route.ok || route.allocs.isEmpty()) { cb.onFailed("no route — trade too small for the pools"); return; }
-        if (Handover.active(node.context())) { cb.onFailed(Handover.BLOCKED); return; }
+    public void swap(final PoolRouter.Route route, final boolean minimaToToken, final Result done) {
+        if (route == null || !route.ok || route.allocs.isEmpty()) { done.onFailed("no route — trade too small for the pools"); return; }
+        if (!Handover.begin(node.context())) { done.onFailed(Handover.BLOCKED); return; }
+        // Marked running until the result is delivered (a hand-over refuses meanwhile).
+        final java.util.concurrent.atomic.AtomicBoolean ended = new java.util.concurrent.atomic.AtomicBoolean();
+        final Result cb = new Result() {
+            @Override public void onPosted(String txpowid) {
+                try { done.onPosted(txpowid); } finally { if (!ended.getAndSet(true)) Handover.end(); }
+            }
+            @Override public void onFailed(String message) {
+                try { done.onFailed(message); } finally { if (!ended.getAndSet(true)) Handover.end(); }
+            }
+        };
         final String tok = route.allocs.get(0).pool.tok;
         final String fundTok = minimaToToken ? Util.MINIMA_TOKENID : tok;
 
