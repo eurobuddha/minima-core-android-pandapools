@@ -46,6 +46,7 @@ public class PoolManager {
 
     /** Create a MINIMA/token pool seeded with x0 MINIMA and y0 token. Mints a fresh owner key+address. */
     public void createPool(String tokenid, int tokDecimals, BigDecimal x0, BigDecimal y0, CreateResult cb) {
+        if (Handover.active(node.context())) { cb.onFailed(Handover.BLOCKED); return; }
         if (!BackupState.combinedUpToDate(node.context())) {
             cb.onFailed("BACKUP_REQUIRED: save and verify a password-encrypted pool + node backup before creating another pool. Recovery and withdrawal remain available."); return;
         }

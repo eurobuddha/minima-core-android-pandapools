@@ -53,6 +53,7 @@ public class PoolTxn {
      */
     public void swap(final PoolRouter.Route route, final boolean minimaToToken, final Result cb) {
         if (route == null || !route.ok || route.allocs.isEmpty()) { cb.onFailed("no route — trade too small for the pools"); return; }
+        if (Handover.active(node.context())) { cb.onFailed(Handover.BLOCKED); return; }
         final String tok = route.allocs.get(0).pool.tok;
         final String fundTok = minimaToToken ? Util.MINIMA_TOKENID : tok;
 

@@ -33,7 +33,8 @@ public class SwapView extends BaseView {
     private final List<Pool> pairPools = new ArrayList<>();
     private String pairLabel = "token";
     private boolean minimaToToken = true;
-    private boolean posting = false;
+    // Static: the Dexicon hand-over screen (another Activity, same process) must see a swap mid-flight.
+    static volatile boolean posting = false;
 
     // Receives the shared PoolRepository's scan result. Skip repaints WHILE POSTING so an in-flight swap's
     // quote/inputs aren't reset under the user; doSwap re-scans via pools().refresh() when the post lands.

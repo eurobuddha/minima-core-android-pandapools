@@ -101,6 +101,31 @@
             android:text="Open Minima Core" />
     </LinearLayout>
 
+    <!-- Shown while PandaPools is handed over to Dexicon (no new pools, no new swaps) -->
+    <LinearLayout
+        android:id="@+id/handoverBanner"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="16dp"
+        android:visibility="gone">
+
+        <TextView
+            android:id="@+id/handoverText"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Handed over to Dexicon. Uninstall PandaPools from Dexicon's screen."
+            android:textStyle="bold"
+            android:textSize="15sp" />
+
+        <Button
+            android:id="@+id/handoverTakeBack"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:text="Take back" />
+    </LinearLayout>
+
     <com.google.android.material.tabs.TabLayout
         android:id="@+id/tabs"
         android:layout_width="match_parent"

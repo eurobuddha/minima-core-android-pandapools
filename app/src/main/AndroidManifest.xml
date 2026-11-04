@@ -48,6 +48,17 @@
             </intent-filter>
         </activity>
 
+        <!-- Dexicon's hand-over request. Exported for Dexicon only: HandoverActivity refuses any other caller
+             (getCallingPackage), and only RESULT_OK after every fund check passes. -->
+        <activity
+            android:name=".HandoverActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="com.eurobuddha.dexicon.action.HANDOVER" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
+
         <service android:name=".NodeTransportService" android:exported="false" android:process=":nodeipc" />
 
         <!-- Resident host for the pool keep-alive. specialUse on API 34+ (uncapped, unlike dataSync's ~6h/day

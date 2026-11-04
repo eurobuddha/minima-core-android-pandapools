@@ -123,6 +123,10 @@ public class MainActivity extends AppCompatActivity {
         });
         Button openNode = findViewById(R.id.openNodeBtn);
         if (openNode != null) openNode.setOnClickListener(v -> openMinimaCore());
+        findViewById(R.id.handoverTakeBack).setOnClickListener(v -> {
+            Handover.set(this, false, 0);
+            showHandover();
+        });
 
         applyChrome();
         applyInsets();
@@ -254,6 +258,8 @@ public class MainActivity extends AppCompatActivity {
     private void applyChrome() {
         findViewById(R.id.main).setBackgroundColor(Design.bg());
         pairingBanner.setBackgroundColor(Design.surface2());
+        Ui.banner(findViewById(R.id.handoverBanner), Design.amberSoft(), Design.amber());
+        ((TextView) findViewById(R.id.handoverText)).setTextColor(Design.amber());
         blockNo.setTextColor(Design.dim());
         ((TextView) findViewById(R.id.brandTitle)).setTextColor(Design.accent());
         ((TextView) findViewById(R.id.brandSub)).setTextColor(Design.dim());
@@ -535,7 +541,12 @@ public class MainActivity extends AppCompatActivity {
         super.onResume();
         // Foregrounded: (re)start the block poll and re-activate the visible tab (restarts its poll + refreshes).
         startPolling();
+        showHandover();
         if (views != null && currentTab >= 0 && currentTab < views.length) views[currentTab].onShown();
+    }
+
+    private void showHandover() {
+        findViewById(R.id.handoverBanner).setVisibility(Handover.active(this) ? View.VISIBLE : View.GONE);
     }
 
     @Override protected void onDestroy() {

@@ -101,8 +101,11 @@ public final class ActivityLog {
     }
 
     /** True if any non-failed entry has not yet reached CONFIRM_BLOCKS — drives the fast self-poll. */
-    public static boolean hasPending(Context c, int chainBlock) {
-        for (Entry e : list(c)) if (!e.failed && !e.confirmed(chainBlock)
+    public static boolean hasPending(Context c, int chainBlock) { return hasPending(c, chainBlock, null); }
+
+    /** The same rule restricted to one entry type ({@code null} = any). */
+    static boolean hasPending(Context c, int chainBlock, String type) {
+        for (Entry e : list(c)) if ((type == null || type.equals(e.type)) && !e.failed && !e.confirmed(chainBlock)
                 && System.currentTimeMillis() - e.ts < 10 * 60_000L) return true;
         return false;
     }
