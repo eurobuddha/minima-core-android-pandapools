@@ -395,7 +395,7 @@ public class PoolManager {
      */
     public void forwardOwnerFunds(final String oadr, final ForwardResult cb) {
         if (!FundingCoins.hex(oadr)) { cb.onFailed("Invalid owner address."); return; }
-        Pool recovery = ExitStore.recoveryPool(node.context(), oadr);
+        Pool recovery = ExitStore.outstandingRecovery(node.context(), oadr);   // review 7 Nov (R2-2)
         if (recovery != null) { forwardRecovery(recovery, cb); return; }
         List<String> owners = new ArrayList<>();
         for (Pool p : OwnPoolStore.all(node.context())) if (oadr.equalsIgnoreCase(p.oadr)) owners.add(p.opk);

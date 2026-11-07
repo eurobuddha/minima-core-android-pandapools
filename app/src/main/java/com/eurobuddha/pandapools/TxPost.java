@@ -150,6 +150,7 @@ public final class TxPost {
                             node.cmd("txndelete id:" + txid, NOOP);
                             String postedId = Util.extractTxpowid(j, txid);
                             ActivityLog.rememberSubmission(node.context(), j, postedId);
+                            OwnPoolStore.rememberPosted(node.context(), j);   // review 7 Nov (D-1): hints follow the reserves I just created
                             done.ok(postedId);
                         }
                         else {

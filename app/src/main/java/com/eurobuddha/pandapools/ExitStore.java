@@ -136,6 +136,18 @@ final class ExitStore {
         return null;
     }
 
+    /** Review 7 Nov (R2-2): the recovery whose collection is still OUTSTANDING (POSTED) — the only one that may route a
+     *  new collection through the bounded recovery path. Any other state (failed, interrupted, uncertain, forwarded,
+     *  done) never returns to POSTED, so routing on {@link #recoveryPool} refused every later collection from this
+     *  payout address forever — including the manual Collect the interrupted-exit card tells the user to press. */
+    static Pool outstandingRecovery(Context c, String payout) {
+        for (Pool p : OwnPoolStore.all(c)) if (payout.equalsIgnoreCase(p.oadr)) {   // migrated pools share a payout address
+            Record r = get(c, p.address);
+            if (r != null && r.signatures > 0 && r.stateOf() == State.POSTED) return p;
+        }
+        return null;
+    }
+
     /** Signatures already spent on this address's automatic withdrawals, across every attempt ever. */
     static int signaturesUsed(Context c, String address) {
         Record r = get(c, address);
