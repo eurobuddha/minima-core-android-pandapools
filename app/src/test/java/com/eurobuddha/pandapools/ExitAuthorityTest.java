@@ -57,6 +57,21 @@ public class ExitAuthorityTest {
     @Before public void clean() { ExitAuthority.revoke(); }
     @After public void cleanAfter() { ExitAuthority.revoke(); }
 
+    /** Review 7 Nov (R2-1): a migrated lineage shares one owner key. The live pool's close ticket exempts the KEY, so
+     *  the retired sibling (same $OPK, another address, still quarantined) no longer vetoes the one bounded close. */
+    @Test public void theExemptionCoversTheOwnerKeyOfAMigratedLineage() {
+        Pool live = pool();
+        Pool retired = pool(); retired.address = h("5"); retired.coinidM = h("c"); retired.coinidT = h("d");
+        Pool stranger = pool(); stranger.opk = h("9"); stranger.address = h("6");
+        java.util.Set<String> keys = OwnerKeyRecovery.exitKeys(ticket(ExitTicket.Stage.CLOSE), close(), Arrays.asList(retired, live, stranger));
+        assertTrue("the live pool's key is exempt for its own close", keys.contains(OPK.toLowerCase()));
+        assertFalse("another owner's key is never exempt", keys.contains(h("9").toLowerCase()));
+        List<String> other = close(); other.set(3, "txnoutput id:" + TXID + " amount:" + AMT_M + " address:" + h("7") + " storestate:false");
+        assertTrue("a command list the ticket does not permit exempts nothing",
+                OwnerKeyRecovery.exitKeys(ticket(ExitTicket.Stage.CLOSE), other, Arrays.asList(retired, live)).isEmpty());
+        assertTrue("no ticket, no exemption", OwnerKeyRecovery.exitKeys(null, close(), Arrays.asList(live)).isEmpty());
+    }
+
     @Test public void withNoGrantEverythingIsRefused() {
         assertNull(ExitAuthority.current());
         assertFalse(ExitAuthority.permits(close(), pool()));
