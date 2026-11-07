@@ -196,6 +196,7 @@ public class Recovery {
             e.put("script", nz(r.covenantScript));
             if (r.kidx >= 0) e.put("kidx", r.kidx);   // recipe's copy; recordUses overwrites with the node's
             if (r.minimumOwnerUses >= 0) e.put("opkuses", r.minimumOwnerUses);
+            if (r.retired) e.put("retired", true);   // review 7 Nov (R2-4): lets the owner-key check tell closed pools apart
         } catch (Exception ignore) {}
         return e;
     }
