@@ -60,6 +60,11 @@ final class PandaPoolsAccount {
         } catch (RuntimeException unreadable) { return new java.util.ArrayList<>(); }
     }
 
+    /** Pool work other than the recipes (for a lost account's restore: never "Start new" over it). */
+    static boolean otherWork(Context c) {
+        try { return scanWithout(c); } catch (RuntimeException unreadable) { return true; }
+    }
+
     /** Everything except the recipes: a close / migrate just posted, a payout the node can settle, a running withdrawal. */
     private static boolean scanWithout(Context c) {
         boolean exits = false;

@@ -1,4 +1,4 @@
-// VENDORED VERBATIM from apks/dexicon 0.3.23 (5277bdc) com/eurobuddha/account/AccountSetup.java by scripts/vendor-account.sh — do not edit here; change Dexicon and re-vendor.
+// VENDORED VERBATIM from apks/dexicon 0.3.24 (ad38ea5) com/eurobuddha/account/AccountSetup.java by scripts/vendor-account.sh — do not edit here; change Dexicon and re-vendor.
 package com.eurobuddha.account;
 
 import android.app.Activity;
@@ -143,7 +143,11 @@ public final class AccountSetup {
                 .setView(pad(a, text(a, (open == null ? "These pools" : "These " + open) + " were made with a Trading Account "
                         + "that is not on this phone. Only THAT account can close them or collect from them: restore it "
                         + (node ? "from your node's seed (Use node seed)." : phrase ? "from its 24 words." : "from its 24 words, or with "
-                        + "Use node seed if it came from your node.") + " A different account is refused.", false)))
+                        + "Use node seed if it came from your node.")
+                        + (owners.isEmpty() ? " These pools record no account fingerprint, so the restore cannot be checked: use "
+                                + "exactly the account that made them." : " A different account is refused.")
+                        + "\n\nFirst finish or close these pools in the app on your old phone, or uninstall it there: two phones "
+                        + "must never sign for one account.", false)))
                 .setNegativeButton("Later", null);
         if (!node) b.setPositiveButton("Restore 24 words", (d, w) -> restore(a, done));
         if (!phrase) b.setNeutralButton("Use node seed", (d, w) -> fromNode(a, n, done));

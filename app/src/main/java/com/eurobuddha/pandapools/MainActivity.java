@@ -609,7 +609,8 @@ public class MainActivity extends AppCompatActivity {
         try {   // every pool not proven empty, whoever owns it: a closed one whose close never landed still needs these words
             int n = 0;
             for (Pool p : OwnPoolStore.all(this)) if (!p.retired || !p.drained) n++;
-            return n == 0 ? "funds" : n + (n == 1 ? " pool" : " pools");
+            if (n == 0) return PandaPoolsAccount.otherWork(this) ? "a pool payout or withdrawal in progress" : "funds";
+            return n + (n == 1 ? " pool" : " pools");
         }
         catch (RuntimeException unreadable) { return "pools"; }
     }

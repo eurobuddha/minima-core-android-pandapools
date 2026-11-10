@@ -1,4 +1,4 @@
-// VENDORED VERBATIM from apks/dexicon 0.3.23 (5277bdc) com/eurobuddha/account/PrefsKeyUses.java by scripts/vendor-account.sh — do not edit here; change Dexicon and re-vendor.
+// VENDORED VERBATIM from apks/dexicon 0.3.24 (ad38ea5) com/eurobuddha/account/PrefsKeyUses.java by scripts/vendor-account.sh — do not edit here; change Dexicon and re-vendor.
 package com.eurobuddha.account;
 
 import android.content.Context;
