@@ -7,7 +7,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 DEX=${DEXICON:-../dexicon}
 P=com/eurobuddha/account
-MAIN="KeyUses PrefsKeyUses AccountKeys AccountVault VirtualWallet Account AccountSetup Transport Family"
+MAIN="KeyUses PrefsKeyUses AccountKeys AccountVault VirtualWallet Account AccountSetup Transport Family ArchiveProofs"
 TESTS="AccountKeysTest VirtualWalletTest KeyCountMigrationTest AccountTestAccess SameKeysEverywhereTest AccountRouteTest"
 VER=$(grep -E 'versionName' "$DEX/app/build.gradle" | head -1 | grep -oE '"[^"]+"' | tr -d '"')
 SHA=$(git -C "$DEX" rev-parse --short HEAD 2>/dev/null || echo unknown)

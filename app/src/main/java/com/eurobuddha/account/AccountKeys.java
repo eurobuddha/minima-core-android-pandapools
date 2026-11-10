@@ -1,4 +1,4 @@
-// VENDORED VERBATIM from apks/dexicon 0.3.31 (99b357b) com/eurobuddha/account/AccountKeys.java by scripts/vendor-account.sh — do not edit here; change Dexicon and re-vendor.
+// VENDORED VERBATIM from apks/dexicon 0.3.33 (7d4c9d7) com/eurobuddha/account/AccountKeys.java by scripts/vendor-account.sh — do not edit here; change Dexicon and re-vendor.
 package com.eurobuddha.account;
 
 import org.minima.objects.Address;
