@@ -1,4 +1,4 @@
-// VENDORED VERBATIM from apks/dexicon 0.3.28 (2806f78) com/eurobuddha/account/AccountRouteTest.java by scripts/vendor-account.sh — do not edit here; change Dexicon and re-vendor.
+// VENDORED VERBATIM from apks/dexicon 0.3.30 (65f24db) com/eurobuddha/account/AccountRouteTest.java by scripts/vendor-account.sh — do not edit here; change Dexicon and re-vendor.
 package com.eurobuddha.account;
 
 import static org.junit.Assert.assertEquals;
@@ -25,5 +25,10 @@ public class AccountRouteTest {
         assertEquals(Account.Route.NODE, Account.route(c, NODE, "block"));
         assertEquals(Account.Route.NODE, Account.route(c, NODE, "txpow onchain:0x" + "AB".repeat(32)));
         assertEquals(Account.Route.NODE, Account.route(c, NODE, "newscript trackall:true script:\"RETURN TRUE\""));
+        // 10 Nov, on the Fold: PandaPools before account setup — every pool's reserve read was refused ("No live pools")
+        assertEquals(Account.Route.NODE, Account.route(c, NODE, "coins relevant:true address:MxG080W7PA12FA51K4N18NJSZ0QNRZ56TH19H3E2348ZKUMGBZTPF7CBCN7AMAS"));
+        assertEquals(Account.Route.NODE, Account.route(c, NODE, "coins relevant:true coinid:0x" + "AB".repeat(32)));
+        assertEquals("the node's own wallet is never the app's", Account.Route.NO_ACCOUNT, Account.route(c, NODE, "coins relevant:true"));
+        assertEquals(Account.Route.NO_ACCOUNT, Account.route(c, NODE, "coins relevant:true sendable:true tokenid:0x00"));
     }
 }
