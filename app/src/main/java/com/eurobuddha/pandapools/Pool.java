@@ -37,6 +37,8 @@ public class Pool {
     public boolean drained = false;
     /** Recorded while a Trading Account existed on this phone: its owner key is an ACCOUNT key, never the node's. */
     public boolean accountOwned = false;
+    /** That account's fingerprint and mode (AccountVault marker) — a restore on another phone must be THIS account. */
+    public String accountFp = "", accountMode = "";
 
     /** Display symbol for the token side: its resolved name where we have one, otherwise the FULL tokenid.
      *  Never abbreviated — a shortened tokenid cannot be pasted into an explorer or a support request, and this

@@ -80,6 +80,26 @@ final class PandaPoolsAccount {
         return n;
     }
 
+    /** The fingerprints recorded on the account-owned pools not proven empty (empty = none recorded). */
+    static java.util.Set<String> accountPoolOwners(Context c) {
+        java.util.Set<String> out = new java.util.HashSet<>();
+        try { for (Pool p : OwnPoolStore.all(c)) if (p.accountOwned && (!p.retired || !p.drained) && !p.accountFp.isEmpty()) out.add(p.accountFp); }
+        catch (RuntimeException unreadable) { }
+        return out;
+    }
+
+    /** How that account was made (AccountVault.MODE_*), when every such pool records the same one; "" otherwise. */
+    static String accountPoolMode(Context c) {
+        String mode = null;
+        try {
+            for (Pool p : OwnPoolStore.all(c)) {
+                if (!p.accountOwned || (p.retired && p.drained)) continue;
+                if (mode == null) mode = p.accountMode; else if (!mode.equals(p.accountMode)) return "";
+            }
+        } catch (RuntimeException unreadable) { return ""; }
+        return mode == null ? "" : mode;
+    }
+
     /** Forget the cached answer (a closed pool was just proven empty). */
     static void invalidate() { cachedAt = 0; }
 }

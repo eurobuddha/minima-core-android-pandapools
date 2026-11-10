@@ -567,7 +567,8 @@ public class MainActivity extends AppCompatActivity {
         int acctPools = PandaPoolsAccount.accountPools(this);
         if (acctPools > 0) {   // pools made under a Trading Account (e.g. carried by a device transfer): only its words settle them
             offering = true;
-            com.eurobuddha.account.AccountSetup.show(this, node, this::onAccountReady, true, acctPools + (acctPools == 1 ? " pool" : " pools"));
+            com.eurobuddha.account.AccountSetup.showForPools(this, node, this::onAccountReady, acctPools + (acctPools == 1 ? " pool" : " pools"),
+                    PandaPoolsAccount.accountPoolOwners(this), PandaPoolsAccount.accountPoolMode(this));
             return;
         }
         if (PandaPoolsAccount.legacyPools(this)) { proveClosedPools(); return; }
@@ -577,6 +578,7 @@ public class MainActivity extends AppCompatActivity {
 
     private static boolean proving;   // process-wide: a recreated screen must not start a second proof
     private static long provedAt;
+    private static String lastProofSaid = "";
 
     /** Closed node-key pools are all that holds the account back: prove them empty on the node and the MegaMMR (the
      *  hand-over's own check), then offer. A pool still holding funds keeps the old path (and is never hidden). */
@@ -592,7 +594,9 @@ public class MainActivity extends AppCompatActivity {
             PandaPoolsAccount.invalidate();
             if (isFinishing() || isDestroyed()) return;
             if (!PandaPoolsAccount.legacyPools(this)) { offerAccount(); return; }
-            if (failed.isEmpty()) return;
+            String said = String.join("\n\n", failed);
+            if (failed.isEmpty() || said.equals(lastProofSaid)) return;   // the same answer is not shown again
+            lastProofSaid = said;
             android.widget.TextView t = new android.widget.TextView(this);   // full pool addresses, copyable
             t.setText(String.join("\n\n", failed)); t.setTextIsSelectable(true);
             int pp = (int) (20 * getResources().getDisplayMetrics().density); t.setPadding(pp, pp / 2, pp, 0);
@@ -602,7 +606,11 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private String openPools() {
-        try { int n = OwnPoolStore.active(this).size(); return n == 0 ? "funds" : n + (n == 1 ? " pool" : " pools"); }
+        try {   // every pool not proven empty, whoever owns it: a closed one whose close never landed still needs these words
+            int n = 0;
+            for (Pool p : OwnPoolStore.all(this)) if (!p.retired || !p.drained) n++;
+            return n == 0 ? "funds" : n + (n == 1 ? " pool" : " pools");
+        }
         catch (RuntimeException unreadable) { return "pools"; }
     }
 

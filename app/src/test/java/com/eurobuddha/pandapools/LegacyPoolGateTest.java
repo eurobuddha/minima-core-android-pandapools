@@ -91,4 +91,11 @@ public class LegacyPoolGateTest {
         Pool p = recipe(); p.drained = true;   // not retired
         assertFalse(OwnPoolStore.mergeRecord(p, "").optBoolean("drained"));
     }
+
+    @Test public void theOwningAccountIsCarriedAcrossARerecord() throws Exception {
+        String previous = new JSONObject().put("acct", true).put("acct_fp", "C3BA14CD8AF95045").put("acct_mode", "phrase").toString();
+        JSONObject o = OwnPoolStore.mergeRecord(recipe(), previous);
+        assertEquals("C3BA14CD8AF95045", o.optString("acct_fp"));
+        assertEquals("phrase", o.optString("acct_mode"));
+    }
 }

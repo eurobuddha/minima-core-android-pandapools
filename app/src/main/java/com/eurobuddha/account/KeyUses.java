@@ -1,4 +1,4 @@
-// VENDORED VERBATIM from apks/dexicon 0.3.22 (8fab503) com/eurobuddha/account/KeyUses.java by scripts/vendor-account.sh — do not edit here; change Dexicon and re-vendor.
+// VENDORED VERBATIM from apks/dexicon 0.3.23 (5277bdc) com/eurobuddha/account/KeyUses.java by scripts/vendor-account.sh — do not edit here; change Dexicon and re-vendor.
 package com.eurobuddha.account;
 
 /**
