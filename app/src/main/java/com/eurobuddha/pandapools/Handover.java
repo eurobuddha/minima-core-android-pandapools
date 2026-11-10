@@ -31,7 +31,7 @@ final class Handover {
     static final String LIVE_POOL = RESTORE_FIRST + ", then hand over again.";
     static final String NO_BACKUP = "No verified PandaPools backup covers every pool on this install. Save and verify "
             + "a backup on the My Pools tab, restore it in Dexicon, then hand over again.";
-    static final String CLOSED_HOLDS_FUNDS = "A closed pool still holds funds. Withdraw it on the My Pools tab first.";
+    static final String CLOSED_HOLDS_FUNDS = ClosedPoolCheck.HOLDS_FUNDS;
     /** Extras: Dexicon's covenant addresses in, the handed-over addresses out. */
     static final String EXTRA_DEXICON_POOLS = "dexicon_pools", EXTRA_POOLS = "pools";
     /** On every refusal: the pools PandaPools has stopped keeping because Dexicon keeps them (lower-case covenant addresses). */

@@ -169,7 +169,7 @@ public class HandoverActivity extends AppCompatActivity {
     }
 
     private void retiredEmpty(List<Pool> retired, int i, List<Handover.Check> checks, Runnable done) {
-        ClosedPoolCheck.run(this, node, retired, checks, done);
+        ClosedPoolCheck.run(this, node, retired, (l, r, d) -> checks.add(new Handover.Check(l, false, r, d)), done);
     }
 
     private void show(List<Handover.Check> checks) {

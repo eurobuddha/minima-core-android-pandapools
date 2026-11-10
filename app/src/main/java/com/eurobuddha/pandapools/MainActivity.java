@@ -580,7 +580,7 @@ public class MainActivity extends AppCompatActivity {
         java.util.List<Pool> closed = PandaPoolsAccount.closedToProve(this);
         if (closed.isEmpty()) return;
         proving = true; provedAt = now;
-        ClosedPoolCheck.run(this, node, closed, new java.util.ArrayList<>(), () -> ui.post(() -> {
+        ClosedPoolCheck.run(this, node, closed, (l, r, d) -> { }, () -> ui.post(() -> {
             proving = false;
             PandaPoolsAccount.invalidate();
             if (!isFinishing() && !isDestroyed()) offerAccount();

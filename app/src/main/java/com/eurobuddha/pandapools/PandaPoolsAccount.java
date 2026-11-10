@@ -47,11 +47,7 @@ final class PandaPoolsAccount {
     }
 
     /** Node-key recipes not proven empty: every live one, and every retired one not yet {@link Pool#drained}. */
-    static List<Pool> undrained(List<Pool> recipes) {
-        List<Pool> out = new java.util.ArrayList<>();
-        for (Pool p : recipes) if (!p.accountOwned && (!p.retired || !p.drained)) out.add(p);
-        return out;
-    }
+    static List<Pool> undrained(List<Pool> recipes) { return OwnPoolStore.undrained(recipes); }
 
     /** Retired node-key recipes still to prove empty, when they are the ONLY thing holding the account back (the offer
      *  then runs {@link ClosedPoolCheck} on them); empty otherwise. */

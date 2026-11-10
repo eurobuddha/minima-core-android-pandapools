@@ -138,6 +138,15 @@ public final class OwnPoolStore {
         } catch (Exception invalid) { return false; }
     }
 
+    /** Node-key recipes not proven empty: every live one, and every retired one not yet {@link Pool#drained} (its close
+     *  may never have landed). A recipe recorded under the Trading Account is never node-key. "Finish before upgrading"
+     *  holds the account back while any remains — here and in Dexicon. */
+    public static List<Pool> undrained(List<Pool> recipes) {
+        List<Pool> out = new ArrayList<>();
+        for (Pool p : recipes) if (!p.accountOwned && (!p.retired || !p.drained)) out.add(p);
+        return out;
+    }
+
     /** The recipes the pool lists should show: everything except pools closed or migrated away. */
     public static List<Pool> active(Context c) {
         List<Pool> out = new ArrayList<>();
