@@ -8,11 +8,11 @@ android {
     compileSdk 36
 
     defaultConfig {
-        applicationId "com.eurobuddha.pandapools"
+        applicationId "com.eurobuddha.pandapools" + (project.hasProperty('stockTest') ? '.stock' : '')
         minSdk 28
         targetSdk 35
-        versionCode 991
-        versionName "0.9.91"
+        versionCode 992
+        versionName "0.9.92"
 
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -82,4 +82,6 @@ dependencies {
     testImplementation 'org.mockito:mockito-core:5.12.0'
     // Real org.json on the unit-test classpath (android.jar ships stubs that throw "not mocked")
     testImplementation 'org.json:json:20231013'
+    // The vendored Trading Account's prefs-backed tests (KeyCountMigrationTest, AccountRouteTest) run on Robolectric
+    testImplementation 'org.robolectric:robolectric:4.14.1'
 }

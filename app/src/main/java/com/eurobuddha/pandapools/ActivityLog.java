@@ -13,7 +13,7 @@ import java.util.List;
  * neither elapsed blocks since submission nor wall-clock time establishes inclusion. */
 public final class ActivityLog {
 
-    public static final String CREATE="CREATE", SWAP="SWAP", DEPOSIT="DEPOSIT", MIGRATE="MIGRATE", CLOSE="CLOSE", CONSOLIDATE="CONSOLIDATE";
+    public static final String CREATE="CREATE", SWAP="SWAP", DEPOSIT="DEPOSIT", MIGRATE="MIGRATE", CLOSE="CLOSE", CONSOLIDATE="CONSOLIDATE", WITHDRAW="WITHDRAW";
     /** Node-reported confirmation depth required for a confirmed receipt. */
     public static final int CONFIRM_BLOCKS = 3;
 

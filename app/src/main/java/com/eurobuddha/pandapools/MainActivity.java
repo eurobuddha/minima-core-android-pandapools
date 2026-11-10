@@ -534,8 +534,50 @@ public class MainActivity extends AppCompatActivity {
         if (views != null) for (BaseView v : views) v.onStop();
     }
 
+    // ---- the Trading Account (shared com.eurobuddha.account, vendored from Dexicon) ----
+    private boolean offering;
+    private int lockedTries;
+    private final Runnable retryOffer = this::offerAccount;
+
+    /** First run (or a lost account): set up the Trading Account PandaPools signs with. Node-key pools from before the
+     *  account settle the old way until closed — the account is not offered while any remain ("finish before upgrading"). */
+    private void offerAccount() {
+        if (offering || node == null || com.eurobuddha.account.Account.get(this, node) != null) { lockedTries = 0; return; }
+        if (com.eurobuddha.account.Account.exists(this)) {   // vault present but the keystore is busy: retry, delete nothing
+            ui.removeCallbacks(retryOffer);
+            if (++lockedTries <= 6) { ui.postDelayed(retryOffer, 5_000); return; }
+            offering = true;
+            new androidx.appcompat.app.AlertDialog.Builder(this).setTitle("Trading Account locked")
+                    .setMessage("This phone's keystore will not unlock your Trading Account. You can restore it from its 24 words "
+                            + "(the locked copy is kept, never deleted).")
+                    .setPositiveButton("Restore", (d, w) -> {
+                        com.eurobuddha.account.Account.quarantineForRestore(this);
+                        com.eurobuddha.account.AccountSetup.show(this, node, this::onAccountReady, true, openPools());
+                    })
+                    .setNegativeButton("Later", (d, w) -> { offering = false; lockedTries = 0; }).show();
+            return;
+        }
+        if (com.eurobuddha.account.Account.everCreated(this)) {   // lost here: only the SAME words may settle its pools
+            offering = true;
+            com.eurobuddha.account.AccountSetup.show(this, node, this::onAccountReady, true, openPools());
+            return;
+        }
+        if (PandaPoolsAccount.legacyPools(this)) return;
+        offering = true;
+        com.eurobuddha.account.AccountSetup.show(this, node, this::onAccountReady, false, null);
+    }
+
+    private String openPools() {
+        try { int n = OwnPoolStore.active(this).size(); return n == 0 ? "funds" : n + (n == 1 ? " pool" : " pools"); }
+        catch (RuntimeException unreadable) { return "pools"; }
+    }
+
+    /** The account was just created or restored: restart once so every engine boots on it. */
+    private void onAccountReady() { offering = false; RestartActivity.restart(this); }
+
     @Override protected void onResume() {
         super.onResume();
+        offerAccount();
         // Foregrounded: (re)start the block poll and re-activate the visible tab (restarts its poll + refreshes).
         startPolling();
         showHandover();

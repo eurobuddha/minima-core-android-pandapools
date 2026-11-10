@@ -19,12 +19,16 @@ import com.eurobuddha.minimaapi.MinimaAPIListener;
  * - Detects the "app not enabled in Minima Core" reply and routes it to a pairing listener
  *   so the UI can show the approve-me banner.
  */
-public class NodeApi {
+public class NodeApi implements com.eurobuddha.account.Transport {
 
-    public interface Cb {
-        void onResult(JSONObject json);
-        void onError(String message);
-    }
+    /** The shared Trading Account takes PandaPools' settings before any Account.get (Account refuses until then). */
+    static { com.eurobuddha.account.Account.configure(PandaPoolsAccount.config()); }
+
+    /** A node reply; the same shape as the shared account's {@link com.eurobuddha.account.Transport.Reply}. */
+    public interface Cb extends com.eurobuddha.account.Transport.Reply {}
+
+    /** Wallet verb with no Trading Account (and no node-key pools to finish): nothing is sent. */
+    public static final String ERR_NO_ACCOUNT = "Set up your Trading Account first (PandaPools signs with its own keys, never your node's).";
 
     public interface PairingListener {
         void onEnabled(boolean enabled);
@@ -168,13 +172,96 @@ public class NodeApi {
         });
     }
 
+    /** One fund write's journal state when the Trading Account posts it (the shim Dexicon uses for this engine): the
+     *  signing-revision check and the pending-write marker run exactly ONCE, right before the post. */
+    private final class Write {
+        final String command, writeId = java.util.UUID.randomUUID().toString();
+        final boolean funds;
+        final long signingRevision;
+        boolean dispatched;
+        String refusal;
+        Write(String command) {
+            this.command = command;
+            this.funds = writesFunds(command) && !command.contains("dryrun:true");
+            this.signingRevision = OwnPoolStore.signingRevision();
+        }
+        boolean admit() {
+            if (!signingRevisionMatches(command, signingRevision)) { refusal = "Pool signing state changed while this command was queued. Nothing sent; review recovery state and retry."; return false; }
+            if (funds) {
+                if (hasPendingWrite()) { refusal = ERR_WRITE_UNCERTAIN; return false; }
+                // Persist BEFORE the post: process death must not silently permit a second signing request.
+                if (!writePrefs().edit().putString("pending", writeId).commit()) { refusal = "Could not save the transaction safety marker. Nothing was sent."; return false; }
+                activeWrite = writeId;
+            }
+            dispatched = true;
+            return true;
+        }
+        void settled(boolean complete) {
+            if (!funds || !dispatched) return;
+            if (writeId.equals(activeWrite)) activeWrite = "";
+            if (complete && writeId.equals(writePrefs().getString("pending", ""))) writePrefs().edit().remove("pending").commit();
+        }
+        void uncertain() { if (writeId.equals(activeWrite)) activeWrite = ""; }
+    }
+
+    /** Every command: the Trading Account answers wallet / txn verbs in-app (only a signed postfrom reaches the node);
+     *  routed BEFORE the IPC queue — the account's own node calls go through that queue. */
     public void cmd(String command, Cb cb) {
         if (Looper.myLooper() != Looper.getMainLooper()) { mMain.post(() -> cmd(command, cb)); return; }
         if (command == null || command.trim().isEmpty()) { if (cb != null) cb.onError("Empty node command."); return; }
         if (mReleased) { if (cb != null) cb.onError("Node connection closed."); return; }
+        switch (com.eurobuddha.account.Account.route(mContext, this, command)) {
+            case ACCOUNT: { viaAccount(command, cb); return; }
+            case NO_ACCOUNT:
+                if (!PandaPoolsAccount.legacyPools(mContext)) { if (cb != null) mMain.post(() -> cb.onError(ERR_NO_ACCOUNT)); return; }
+                break;   // node-key pools from before the account settle the old way until they are closed
+            default: break;
+        }
+        nodeCmd(command, null, cb);
+    }
+
+    private void viaAccount(String command, Cb cb) {
+        final Write w = new Write(command);
+        queuedCommands++;   // the account may still be posting: never release the transport underneath it
+        com.eurobuddha.account.Account.get(mContext, this).submit(this, command, w::admit, timeoutFor(command), new com.eurobuddha.account.Transport.Reply() {
+            public void onResult(JSONObject reply) {
+                try {
+                    w.settled(isCompleteReply(reply));
+                    if (cb == null) return;
+                    try { cb.onResult(reply); }
+                    catch (RuntimeException callbackFailure) {   // a posted write must never become a safe-to-retry failure
+                        if (w.funds) writePrefs().edit().putString("pending", java.util.UUID.randomUUID().toString()).commit();
+                        try { cb.onError(w.funds ? ERR_WRITE_UNCERTAIN : "Bad node reply"); } catch (RuntimeException ignored) { }
+                    }
+                } finally { queuedCommands--; finishDestroy(); }
+            }
+            public void onError(String message) {
+                try {
+                    String m = message;
+                    if (!w.dispatched) m = w.refusal != null ? w.refusal : message;                // never left the phone
+                    else if (ERR_NOT_ENABLED.equals(message)) w.settled(true);                   // the node answered: not run
+                    else if (w.funds) { w.uncertain(); m = ERR_WRITE_UNCERTAIN; }                 // may have run: keep the marker
+                    if (cb != null) try { cb.onError(m); } catch (RuntimeException ignored) { }
+                } finally { queuedCommands--; finishDestroy(); }
+            }
+        });
+    }
+
+    /** Straight to the node: the Trading Account reaches it only through this (reads, newscript, the signed postfrom). */
+    @Override public void cmdDirect(String command, java.util.function.BooleanSupplier guard, long timeoutMs, com.eurobuddha.account.Transport.Reply reply) {
+        if (Looper.myLooper() != Looper.getMainLooper()) { mMain.post(() -> cmdDirect(command, guard, timeoutMs, reply)); return; }
+        nodeCmd(command, guard, reply == null ? null : new Cb() {
+            public void onResult(JSONObject j) { reply.onResult(j); }
+            public void onError(String m) { reply.onError(m); }
+        });
+    }
+
+    /** {@code guard} (may be null) runs at the HEAD of the queue, right before the command is sent: false = not sent. */
+    private void nodeCmd(String command, java.util.function.BooleanSupplier guard, Cb cb) {
+        if (mReleased) { if (cb != null) cb.onError("Node connection closed."); return; }
         queuedCommands++;
         final long signingRevision = OwnPoolStore.signingRevision();
-        IPC_QUEUE.submit(finish -> dispatch(command, signingRevision, new Cb() {
+        IPC_QUEUE.submit(finish -> guarded(guard, command, signingRevision, new Cb() {
             private boolean delivered;
             public void onResult(JSONObject reply) { complete(reply, null); }
             public void onError(String message) { complete(null, message); }
@@ -203,6 +290,12 @@ public class NodeApi {
                 }
             }
         }));
+    }
+
+    private void guarded(java.util.function.BooleanSupplier guard, String command, long signingRevision, Cb cb) {
+        boolean go; try { go = guard == null || guard.getAsBoolean(); } catch (RuntimeException e) { go = false; }
+        if (!go) { cb.onError("Market changed; refresh and try again. No command was sent."); return; }
+        dispatch(command, signingRevision, cb);
     }
 
     private void dispatch(String command, long signingRevision, Cb cb) {

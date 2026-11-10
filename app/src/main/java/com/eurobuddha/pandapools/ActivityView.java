@@ -491,6 +491,7 @@ public class ActivityView extends BaseView {
     private static String prettyType(String type) {
         switch (type) {
             case ActivityLog.CONSOLIDATE: return "Consolidate coins";
+            case ActivityLog.WITHDRAW: return "Withdraw to your node";
             case ActivityLog.CREATE:  return "Create pool";
             case ActivityLog.SWAP:    return "Swap";
             case ActivityLog.DEPOSIT: return "Add liquidity";

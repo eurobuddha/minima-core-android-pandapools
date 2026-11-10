@@ -23,6 +23,12 @@
         <package android:name="com.eurobuddha.minimacore" />
         <!-- HandoverActivity compares Dexicon's signer with ours (PackageManager.checkSignatures). -->
         <package android:name="com.eurobuddha.dexicon" />
+        <!-- The shared Trading Account family (com.eurobuddha.account.Family): never two holders of one account -->
+        <package android:name="com.eurobuddha.dexicon.stock" />
+        <package android:name="com.eurobuddha.atomix" />
+        <package android:name="com.eurobuddha.atomix.stock" />
+        <package android:name="com.eurobuddha.pandapools" />
+        <package android:name="com.eurobuddha.pandapools.stock" />
     </queries>
 
     <!-- allowBackup stays TRUE here on purpose — see res/xml/data_extraction_rules.xml. The pool recovery
@@ -39,6 +45,12 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.PandaPools"
         tools:targetApi="31">
+        <!-- Restarts the app once after the Trading Account is created (its own process, so the relaunch survives). -->
+        <activity
+            android:name=".RestartActivity"
+            android:exported="false"
+            android:process=":phoenix"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
         <activity
             android:name=".MainActivity"
             android:exported="true"
