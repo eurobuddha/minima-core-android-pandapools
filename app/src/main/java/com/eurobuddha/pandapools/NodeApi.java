@@ -96,6 +96,7 @@ public class NodeApi {
     private final NodeTransport mApi;
     private final Handler mMain = new Handler(Looper.getMainLooper());
     private final PairingListener mPairing;
+    private Boolean pairingEnabled;
     private final Context mContext;
     // Pending timeout Runnables (main-thread only) so they can be cancelled on destroy.
     private final java.util.HashSet<Runnable> mPending = new java.util.HashSet<>();
@@ -108,18 +109,23 @@ public class NodeApi {
     public NodeApi(Context ctx, PairingListener pairing) {
         mContext = ctx;
         mPairing = pairing;
-        // Constructing MinimaAPI auto-sends the REGISTER broadcast; the reply tells us
-        // whether the user has enabled this app in Minima Core -> Apps yet.
+        // The transport registers with the node and probes access using status.
         mApi = new NodeTransport(ctx, new MinimaAPIListener() {
             @Override
             public void response(JSONObject zResponse) {
                 final boolean enabled = zResponse.optBoolean("enabled", false);
                 mMain.post(() -> {
-                    if (dead()) return;
-                    if (mPairing != null) mPairing.onEnabled(enabled);
+                    updatePairing(enabled);
                 });
             }
         });
+    }
+
+    /** Notify only on transitions: the UI refreshes pools when pairing becomes enabled. */
+    private void updatePairing(boolean enabled) {
+        if (dead() || mReleased || Boolean.valueOf(enabled).equals(pairingEnabled)) return;
+        pairingEnabled = enabled;
+        if (mPairing != null) mPairing.onEnabled(enabled);
     }
 
     /** True once the hosting Activity is gone — don't deliver callbacks into dead views. */
@@ -261,7 +267,7 @@ public class NodeApi {
                         // "enabled":false only appears on the gating reply; real command
                         // responses omit the key, so default true.
                         if (!zResponse.optBoolean("enabled", true)) {
-                            if (mPairing != null) mPairing.onEnabled(false);
+                            updatePairing(false);
                             if (cb != null) cb.onError(ERR_NOT_ENABLED);
                             return;
                         }
@@ -270,6 +276,9 @@ public class NodeApi {
                         // onError(ERR_TOO_LONG) so a reader can shrink/retry or message — instead of parsing the
                         // stub's String `response` as an empty array and silently showing nothing.
                         if (isTooLong(zResponse)) { if (cb != null) cb.onError(funds ? ERR_WRITE_UNCERTAIN : ERR_TOO_LONG); return; }
+                        // Users enable the app in Core while this Activity remains alive. Its next
+                        // successful read must clear the banner without needing a force-stop/reopen.
+                        if (Boolean.TRUE.equals(zResponse.opt("status"))) updatePairing(true);
                         if (cb != null) cb.onResult(zResponse);
                     } catch (Throwable t) {
                         if (cb != null) { try { cb.onError("Bad node reply"); } catch (Throwable ignore) {} }

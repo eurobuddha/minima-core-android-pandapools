@@ -53,7 +53,9 @@ final class NodeTransport {
     NodeTransport(Context ctx, MinimaAPIListener registration) {
         context = ctx.getApplicationContext();
         bound = context.bindService(new Intent(context, NodeTransportService.class), connection, Context.BIND_AUTO_CREATE);
-        Command("checkmode", reply -> {
+        // Official Minima Core supports status but does not expose the bears' checkmode command.
+        // Probe permission with a read available on every supported node.
+        Command("status", reply -> {
             JSONObject state = new JSONObject();
             try { state.put("enabled", reply.optBoolean("enabled", reply.optBoolean("status", false))); }
             catch (Exception ignored) { }
