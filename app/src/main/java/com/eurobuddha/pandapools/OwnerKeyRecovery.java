@@ -244,6 +244,9 @@ public final class OwnerKeyRecovery {
                 if (!readable) { cb.accept("Could not verify current wallet keys. Nothing consolidated."); return; }
                 Set<String> held = pubkeys(reply);
                 for (Pool p : recipes.get()) {
+                    // a key this wallet does not hold can never sign, so no consolidate / send can pick its coins (a
+                    // retired node-key recipe on a phone that moved to the Trading Account): nothing to protect
+                    if (p.opk == null || !held.contains(p.opk.toLowerCase(Locale.ROOT))) continue;
                     Integer uses = KeyUses.extractUses(reply, p.opk);
                     int cap = KeyUses.capacityOf(reply, p.opk);
                     if (signingAllowed(p, uses, cap)) continue;

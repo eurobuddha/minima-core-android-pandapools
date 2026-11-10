@@ -90,7 +90,8 @@ public class NodeApi implements com.eurobuddha.account.Transport {
     /** Transaction/PoW commands can take a long time on a phone; reads are quick. */
     private static long timeoutFor(String command) {
         String c = command == null ? "" : command.trim();
-        if (c.startsWith("backup ") || writesFunds(c) || c.equals("newaddress") || c.equals(BlockOwnerRecovery.MODE_COMMAND) || c.startsWith("txnsign")
+        // postfrom / txnimport: the Trading Account's ONE write (its signed transaction) takes the write timeout too
+        if (c.startsWith("backup ") || writesFunds(c) || c.startsWith("postfrom") || c.startsWith("txnimport") || c.equals("newaddress") || c.equals(BlockOwnerRecovery.MODE_COMMAND) || c.startsWith("txnsign")
                 || c.startsWith("txnpost") || c.startsWith("tokencreate") || c.startsWith("txnbasics")) {
             return WRITE_TIMEOUT_MS;
         }
@@ -240,7 +241,11 @@ public class NodeApi implements com.eurobuddha.account.Transport {
                     String m = message;
                     if (!w.dispatched) m = w.refusal != null ? w.refusal : message;                // never left the phone
                     else if (ERR_NOT_ENABLED.equals(message)) w.settled(true);                   // the node answered: not run
-                    else if (w.funds) { w.uncertain(); m = ERR_WRITE_UNCERTAIN; }                 // may have run: keep the marker
+                    else if (w.funds) {                                                           // may have run: keep the marker
+                        w.uncertain();
+                        // the account's UNCERTAIN names the transaction and every coin in full: keep them for the user
+                        m = ERR_WRITE_UNCERTAIN + (message != null && message.startsWith("UNCERTAIN") ? "\n\n" + message : "");
+                    }
                     if (cb != null) try { cb.onError(m); } catch (RuntimeException ignored) { }
                 } finally { queuedCommands--; finishDestroy(); }
             }

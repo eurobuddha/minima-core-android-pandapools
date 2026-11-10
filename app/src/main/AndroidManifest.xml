@@ -93,7 +93,7 @@
              com.eurobuddha.dexicon signed with our key (calling uid + checkSignatures); read-only. -->
         <provider
             android:name=".HandoverStateProvider"
-            android:authorities="com.eurobuddha.pandapools.handover"
+            android:authorities="${applicationId}.handover"
             android:exported="true" />
 
         <provider

@@ -108,7 +108,10 @@ public class HandoverActivity extends AppCompatActivity {
     /** Every check that reads a local store (no node, no network): run at the start AND again just before OK. */
     private List<Handover.Check> syncChecks(List<Pool> active) {
         List<Handover.Check> checks = new ArrayList<>();
-        checks.add(Handover.pools(active, dexiconPools, BackupState.combinedUpToDate(this)));
+        boolean account = com.eurobuddha.account.Account.everCreated(this);
+        boolean nodeSeed = com.eurobuddha.account.AccountVault.MODE_NODE.equals(new com.eurobuddha.account.AccountVault(this).mode());
+        checks.add(Handover.pools(active, dexiconPools, BackupState.combinedUpToDate(this), account));
+        checks.add(Handover.account(account, nodeSeed, wordsConfirmed));
         checks.add(Handover.withdrawals(ExitStore.all(this)));
         checks.add(Handover.payouts(PendingCollect.all(this)));
         checks.add(Handover.swaps(SwapView.posting, ActivityLog.hasPending(this, 0, ActivityLog.SWAP)));
@@ -256,9 +259,39 @@ public class HandoverActivity extends AppCompatActivity {
                 checksBox.addView(ids);
             }
         }
+        if (!wordsConfirmed && com.eurobuddha.account.Account.everCreated(this)
+                && !com.eurobuddha.account.AccountVault.MODE_NODE.equals(new com.eurobuddha.account.AccountVault(this).mode())) {
+            TextView words = text("Confirm words", Design.accent(), 15, true);
+            words.setPadding(0, 24, 0, 24);
+            words.setOnClickListener(v -> confirmWords());
+            checksBox.addView(words);
+        }
         if (!all) refuse(Handover.refusal(checks));
         confirm.setEnabled(all);
         Ui.primaryButton(confirm);
+    }
+
+    /** Process-wide: a re-run of the checks (or a rotated screen) keeps the confirmation. */
+    private static volatile boolean wordsConfirmed;
+
+    /** The 24 words, re-typed, must be THIS account's (fingerprint): proof the user can restore it in Dexicon. */
+    private void confirmWords() {
+        android.widget.EditText in = new android.widget.EditText(this);
+        in.setHint("24 words, separated by spaces");
+        in.setInputType(android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE | android.text.InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
+        in.setImeOptions(android.view.inputmethod.EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING);
+        androidx.appcompat.app.AlertDialog d = new androidx.appcompat.app.AlertDialog.Builder(this).setTitle("Confirm your 24 words")
+                .setView(in).setNegativeButton("Cancel", null).setPositiveButton("Confirm", null).create();
+        if (d.getWindow() != null) d.getWindow().setFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE, android.view.WindowManager.LayoutParams.FLAG_SECURE);
+        d.setOnShowListener(x -> d.getButton(androidx.appcompat.app.AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+            try {
+                String fp = com.eurobuddha.account.Account.fingerprintOfPhrase(com.eurobuddha.account.AccountVault.cleanPhrase(in.getText().toString()));
+                String mine = new com.eurobuddha.account.AccountVault(this).lostFingerprint();   // the recorded identity of this phone's account
+                if (mine.isEmpty() || !mine.equalsIgnoreCase(fp)) { android.widget.Toast.makeText(this, "Those are not this account's words.", android.widget.Toast.LENGTH_LONG).show(); return; }
+                wordsConfirmed = true; in.setText(""); d.dismiss(); runChecks(false);
+            } catch (Exception e) { android.widget.Toast.makeText(this, String.valueOf(e.getMessage()), android.widget.Toast.LENGTH_LONG).show(); }
+        }));
+        d.show();
     }
 
     private boolean wasHandedOver;

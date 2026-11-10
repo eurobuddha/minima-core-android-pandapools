@@ -85,7 +85,7 @@ final class WalletTools {
         for (TokenBalance b : balances) try { if (new java.math.BigDecimal(b.sendable).signum() > 0) some.add(b); } catch (Exception ignored) { }
         if (some.isEmpty()) { message("Nothing sendable to withdraw right now."); return; }
         String[] names = new String[some.size()];
-        for (int i = 0; i < names.length; i++) names[i] = some.get(i).name + "  (" + some.get(i).sendable + " sendable)";
+        for (int i = 0; i < names.length; i++) names[i] = label(some.get(i)) + "  (" + some.get(i).sendable + " sendable)";
         new androidx.appcompat.app.AlertDialog.Builder(act, theme()).setTitle("Withdraw which token?")
                 .setItems(names, (d, i) -> act.node().cmdDirect("getaddress", null, 0, new com.eurobuddha.account.Transport.Reply() {
                     public void onResult(JSONObject j) { JSONObject r = j.optJSONObject("response"); withdrawForm(some.get(i), r == null ? "" : r.optString("miniaddress", "")); }
@@ -108,18 +108,23 @@ final class WalletTools {
                 .setNegativeButton("Cancel", null)
                 .setPositiveButton("Review", (d, w) -> {
                     java.math.BigDecimal a, max;
-                    try { a = new java.math.BigDecimal(amt.getText().toString().trim()); max = new java.math.BigDecimal(b.sendable); }
+                    String typed = amt.getText().toString().trim();
+                    if (!typed.matches("[0-9]+(\\.[0-9]+)?")) { message("Enter the amount as plain digits, e.g. 10 or 0.5."); return; }
+                    try { a = new java.math.BigDecimal(typed); max = new java.math.BigDecimal(b.sendable); }
                     catch (Exception e) { message("Enter an amount."); return; }
                     String addr = to.getText().toString().trim();
                     if (a.signum() <= 0 || a.compareTo(max) > 0) { message("The amount must be above 0 and at most " + b.sendable + "."); return; }
                     if (!validMx(addr)) { message("That is not a valid Minima address (Mx…)."); return; }
                     String amount = a.stripTrailingZeros().toPlainString();
-                    new androidx.appcompat.app.AlertDialog.Builder(act, theme()).setTitle("Withdraw " + amount + " " + b.name + "?")
+                    new androidx.appcompat.app.AlertDialog.Builder(act, theme()).setTitle("Withdraw " + amount + " " + label(b) + "?")
                             .setMessage("To:\n" + addr + "\n\nSigned by your Trading Account and posted through your node.")
                             .setNegativeButton("Cancel", null)
-                            .setPositiveButton("Withdraw", (x, y) -> withdraw(b.tokenid, b.name, amount, addr)).show();
+                            .setPositiveButton("Withdraw", (x, y) -> withdraw(b.tokenid, label(b), amount, addr)).show();
                 }).show();
     }
+
+    /** MINIMA by name; any other token by name AND its full token id (two tokens can share a name). */
+    private static String label(TokenBalance b) { return b.isMinima() ? "MINIMA" : b.name + " (" + b.tokenid + ")"; }
 
     static boolean validMx(String a) {
         if (a == null || !a.startsWith("Mx")) return false;

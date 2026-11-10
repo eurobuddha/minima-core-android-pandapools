@@ -184,9 +184,15 @@ final class Handover {
      * (1) Every live pool is already held by Dexicon ({@code dexiconPools}, null when Dexicon sent none) AND a
      * verified backup covers every pool here. Retired pools are checked on-chain separately (they must be empty).
      */
-    static Check pools(List<Pool> active, String[] dexiconPools, boolean backupCovers) {
-        String label = "Every live pool is restored in Dexicon";
+    static Check pools(List<Pool> active, String[] dexiconPools, boolean backupCovers) { return pools(active, dexiconPools, backupCovers, false); }
+
+    /** {@code account}: PandaPools holds the shared Trading Account. Dexicon cannot open that account while PandaPools is
+     *  installed (one holder per phone), so a live pool moves with the 24 WORDS + the verified recipe backup instead of
+     *  being held by Dexicon first: restore the words in Dexicon, then open the backup file there (Recover pools). */
+    static Check pools(List<Pool> active, String[] dexiconPools, boolean backupCovers, boolean account) {
+        String label = account ? "A verified backup covers every live pool" : "Every live pool is restored in Dexicon";
         if (active.isEmpty()) return new Check(label, true, "", "");
+        if (account) return backupCovers ? new Check(label, true, "", "") : new Check(label, false, NO_BACKUP, "");
         Set<String> held = new HashSet<>();
         if (dexiconPools != null) for (String a : dexiconPools) if (a != null) held.add(a.trim().toLowerCase(Locale.ROOT));
         StringBuilder missing = new StringBuilder();
@@ -211,6 +217,15 @@ final class Handover {
     }
 
     /** (2) No interrupted or in-progress withdrawal. */
+    /** PandaPools holds the Trading Account: uninstalling it deletes this phone's copy of the keys. OK only once the user
+     *  has re-typed the 24 words and they match this account (a node-seed account is restored from the node instead). */
+    static Check account(boolean holds, boolean nodeSeed, boolean wordsConfirmed) {
+        String label = "Your Trading Account words are confirmed";
+        if (!holds || nodeSeed || wordsConfirmed) return new Check(label, true, "", "");
+        return new Check(label, false, "PandaPools holds your Trading Account. Removing PandaPools deletes this phone's copy of "
+                + "its keys: tap Confirm words and type your 24 words, then restore them in Dexicon.", "");
+    }
+
     static Check withdrawals(List<ExitStore.Record> records) {
         StringBuilder d = new StringBuilder();
         for (ExitStore.Record r : records) if (!exitSettled(r.state))

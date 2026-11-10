@@ -19,7 +19,25 @@ final class PandaPoolsAccount {
      *  path (and does not offer the Trading Account) — "finish before upgrading", as Dexicon does. Never once an
      *  account exists on this phone. */
     static boolean legacyPools(Context c) {
+        long now = System.currentTimeMillis();
+        if (now - cachedAt < 30_000L) return cached;
+        boolean v = scan(c.getApplicationContext());
+        cached = v; cachedAt = now;
+        return v;
+    }
+    private static volatile boolean cached;
+    private static volatile long cachedAt;
+
+    /** Anything still tied to the NODE's keys, as the hand-over judges it: a live pool, a close / migrate not yet
+     *  confirmed on chain (a retired recipe whose close may never land), a payout or withdrawal still running. */
+    private static boolean scan(Context c) {
         if (new AccountVault(c).everCreated()) return false;
-        try { return !OwnPoolStore.active(c).isEmpty(); } catch (RuntimeException unreadable) { return true; }
+        try {
+            if (!OwnPoolStore.active(c).isEmpty()) return true;
+            if (ActivityLog.hasPending(c, 0, ActivityLog.CLOSE) || ActivityLog.hasPending(c, 0, ActivityLog.MIGRATE)) return true;
+            if (!PendingCollect.all(c).isEmpty()) return true;
+            for (ExitStore.Record r : ExitStore.all(c)) if (!Handover.exitSettled(r.state)) return true;
+            return false;
+        } catch (RuntimeException unreadable) { return true; }
     }
 }
