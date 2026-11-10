@@ -42,6 +42,8 @@ public final class OwnPoolStore {
         if (isEmpty(p.opk) || isEmpty(p.oadr) || isEmpty(p.tok) || isEmpty(p.kmin)) return false;
         try {
             String previous = prefs(c).getString(key(p.address), "");
+            // a pool CREATED here (create / migrate) while the Trading Account exists is owned by an account key
+            if (previous.isEmpty() && p.newlyCreatedWithCurrentOwnerState && com.eurobuddha.account.Account.everCreated(c)) p.accountOwned = true;
             JSONObject o = mergeRecord(p, previous);
             if (signingMetadataChanged(previous, o)) signingStateChanged();
             return prefs(c).edit().putString(key(p.address), o.toString()).commit();
@@ -73,6 +75,9 @@ public final class OwnPoolStore {
         boolean retired = p.retired;
         if (!previous.isEmpty()) retired |= new JSONObject(previous).optBoolean("retired", false);
         if (retired) o.put("retired", true);
+        // drained (proven empty) only means anything while retired; the owner-signer mark never changes once set
+        if (retired && (p.drained || (!previous.isEmpty() && new JSONObject(previous).optBoolean("drained", false)))) o.put("drained", true);
+        if (p.accountOwned || (!previous.isEmpty() && new JSONObject(previous).optBoolean("acct", false))) o.put("acct", true);
         if (FundingCoins.hex(p.coinidM) && FundingCoins.hex(p.coinidT)) {
             o.put("last_coinid_m", p.coinidM).put("last_coinid_t", p.coinidT);
         } else if (!previous.isEmpty()) {
@@ -115,8 +120,21 @@ public final class OwnPoolStore {
         try {
             JSONObject o = new JSONObject(raw);
             if (o.optBoolean("retired", false) == retired) return true;
-            if (retired) o.put("retired", true); else o.remove("retired");
+            if (retired) o.put("retired", true); else { o.remove("retired"); o.remove("drained"); }
             return prefs(c).edit().putString(key(address), o.toString()).commit();
+        } catch (Exception invalid) { return false; }
+    }
+
+    /** A retired recipe was just seen EMPTY on the node and the MegaMMR. Only a retired recipe can be marked. */
+    public static synchronized boolean setDrained(Context c, String address) {
+        if (c == null || address == null) return false;
+        String raw = prefs(c).getString(key(address), null);
+        if (raw == null) return false;
+        try {
+            JSONObject o = new JSONObject(raw);
+            if (!o.optBoolean("retired", false)) return false;
+            if (o.optBoolean("drained", false)) return true;
+            return prefs(c).edit().putString(key(address), o.put("drained", true).toString()).commit();
         } catch (Exception invalid) { return false; }
     }
 
@@ -157,6 +175,8 @@ public final class OwnPoolStore {
                 p.minimumOwnerUses = o.optInt("opkuses", -1);
                 p.signingStateUnverified = o.optBoolean("signing_unverified", true);
                 p.retired = o.optBoolean("retired", false);
+                p.drained = p.retired && o.optBoolean("drained", false);
+                p.accountOwned = o.optBoolean("acct", false);
                 p.coinidM = o.optString("last_coinid_m", ""); p.coinidT = o.optString("last_coinid_t", "");
                 p.covenantScript = o.optString("script", "");
                 if (!isEmpty(p.address) && !isEmpty(p.covenantScript)) out.add(p);

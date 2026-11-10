@@ -1,4 +1,4 @@
-// VENDORED VERBATIM from apks/dexicon 0.3.18 (b0ad5e4) com/eurobuddha/account/VirtualWalletTest.java by scripts/vendor-account.sh — do not edit here; change Dexicon and re-vendor.
+// VENDORED VERBATIM from apks/dexicon 0.3.20 (aa9a82e) com/eurobuddha/account/VirtualWalletTest.java by scripts/vendor-account.sh — do not edit here; change Dexicon and re-vendor.
 package com.eurobuddha.account;
 
 import static org.junit.Assert.*;

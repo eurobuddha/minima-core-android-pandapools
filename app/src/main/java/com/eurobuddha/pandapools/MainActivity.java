@@ -564,9 +564,27 @@ public class MainActivity extends AppCompatActivity {
             com.eurobuddha.account.AccountSetup.show(this, node, this::onAccountReady, true, openPools());
             return;
         }
-        if (PandaPoolsAccount.legacyPools(this)) return;
+        if (PandaPoolsAccount.legacyPools(this)) { proveClosedPools(); return; }
         offering = true;
         com.eurobuddha.account.AccountSetup.show(this, node, this::onAccountReady, false, null);
+    }
+
+    private boolean proving;
+    private long provedAt;
+
+    /** Closed node-key pools are all that holds the account back: prove them empty on the node and the MegaMMR (the
+     *  hand-over's own check), then offer. A pool still holding funds keeps the old path (and is never hidden). */
+    private void proveClosedPools() {
+        long now = System.currentTimeMillis();
+        if (proving || now - provedAt < 10 * 60_000L) return;
+        java.util.List<Pool> closed = PandaPoolsAccount.closedToProve(this);
+        if (closed.isEmpty()) return;
+        proving = true; provedAt = now;
+        ClosedPoolCheck.run(this, node, closed, new java.util.ArrayList<>(), () -> ui.post(() -> {
+            proving = false;
+            PandaPoolsAccount.invalidate();
+            if (!isFinishing() && !isDestroyed()) offerAccount();
+        }));
     }
 
     private String openPools() {

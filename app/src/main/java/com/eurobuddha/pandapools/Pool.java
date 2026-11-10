@@ -32,6 +32,11 @@ public class Pool {
      *  A recipe is the only thing that can reclaim a pool, so retiring is reversible by design: if a scan
      *  ever finds the pool live again (a close that never landed), {@link MyLpView} un-retires it. */
     public boolean retired = false;
+    /** A retired pool PROVEN empty on the node and the unpruned MegaMMR ({@link ClosedPoolCheck}). Cleared if it is
+     *  ever un-retired. Until then a node-key recipe holds the account offer back (its close may never have landed). */
+    public boolean drained = false;
+    /** Recorded while a Trading Account existed on this phone: its owner key is an ACCOUNT key, never the node's. */
+    public boolean accountOwned = false;
 
     /** Display symbol for the token side: its resolved name where we have one, otherwise the FULL tokenid.
      *  Never abbreviated — a shortened tokenid cannot be pasted into an explorer or a support request, and this
