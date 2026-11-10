@@ -227,7 +227,7 @@ public class SwapView extends BaseView {
 
     /** True only when the current pair token is USDT (the MEXC feed is MINIMA/USDT — nothing else compares). */
     private boolean isUsdtPair() {
-        return !pairPools.isEmpty() && pairLabel != null && pairLabel.equalsIgnoreCase("USDT");
+        return !pairPools.isEmpty() && pairLabel != null && (pairLabel.equalsIgnoreCase("MxUSD") || pairLabel.equalsIgnoreCase("USDT"));
     }
 
     /** Round DOWN to ≤ 6 dp and strip trailing zeros for tidy display (locale-independent). */

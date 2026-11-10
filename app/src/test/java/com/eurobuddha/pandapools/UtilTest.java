@@ -80,7 +80,7 @@ public class UtilTest {
         // must fall back to the WHOLE tokenid: an abbreviated one cannot be pasted into an explorer or a
         // support request, which is the only thing an identifier is for.
         Pool p = new Pool();
-        p.tok = "0x7D39745FBD29049BE29850B55A18BF550E4D442F930F86266E34193D89042A90";
+        p.tok = "0x" + "AB12".repeat(16);                             // a token with no resolved name
         assertEquals(p.tok, p.tokenLabel());
 
         p.tokName = "MxUSD";                                          // a resolved name is preferred
@@ -88,6 +88,12 @@ public class UtilTest {
 
         p.tokName = p.tok;                                            // a "name" that is just the id is no name
         assertEquals(p.tok, p.tokenLabel());
+
+        Pool usd = new Pool();                                        // the Minima dollar token: always "MxUSD"
+        usd.tok = "0x7D39745FBD29049BE29850B55A18BF550E4D442F930F86266E34193D89042A90";
+        assertEquals("MxUSD", usd.tokenLabel());
+        assertEquals("its on-chain name is USDT; it is never shown that way", "MxUSD",
+                Util.tokenName(new org.json.JSONObject().toString(), usd.tok));
     }
 
     @Test public void tokenDecimalsFromMetadata() throws JSONException {
