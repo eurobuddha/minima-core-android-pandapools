@@ -1,4 +1,4 @@
-// VENDORED VERBATIM from apks/dexicon 0.3.24 (ad38ea5) com/eurobuddha/account/VirtualWalletTest.java by scripts/vendor-account.sh — do not edit here; change Dexicon and re-vendor.
+// VENDORED VERBATIM from apks/dexicon 0.3.26 (efe688e) com/eurobuddha/account/VirtualWalletTest.java by scripts/vendor-account.sh — do not edit here; change Dexicon and re-vendor.
 package com.eurobuddha.account;
 
 import static org.junit.Assert.*;
@@ -78,6 +78,32 @@ public class VirtualWalletTest {
         NodeWithOldCoins n = new NodeWithOldCoins(); n.coinsAt = VirtualWallet.MAX_COIN_ROWS + 1;
         wallet(n).ensureTracked();
         assertFalse("the row read is refused before it can reach the IPC limit", n.calls.stream().anyMatch(c -> c.startsWith("coins address:")));
+    }
+
+    /** 10 Nov, on the Fold: a lock to us, imported AFTER it was spent, stayed in Minima Core's balance as unspent for good
+     *  (3.08677 MxUSD, coin 0x698A7B79A4C4D86F02D41BCDF010B4BDDA7A2EC9B882375FFDFCDD45C478269D). A lock is imported only
+     *  while the node says it is unspent. */
+    @Test public void aSpentLockIsNeverImported() throws Exception {
+        final boolean[] spentOnNode = {false};
+        FakeNode n = new FakeNode() {
+            @Override public JSONObject call(String cmd) throws Exception {
+                if (cmd.startsWith("coins coinid:")) { calls.add(cmd); return new JSONObject().put("status", true).put("response", new JSONArray().put(new JSONObject().put("spent", spentOnNode[0]))); }
+                if (cmd.startsWith("coinexport")) { calls.add(cmd); return new JSONObject().put("status", true).put("response", new JSONObject().put("data", "0xDA7A")); }
+                if (cmd.startsWith("coinimport")) { calls.add(cmd); return new JSONObject().put("status", true); }
+                return super.call(cmd);
+            }
+        };
+        VirtualWallet w = wallet(n);
+        String myKey = w.handle("getaddress").getJSONObject("response").getString("publickey");
+        JSONObject lock = new JSONObject().put("coinid", "0x698A").put("state", new JSONArray().put(new JSONObject().put("port", 4).put("data", myKey)));
+        w.noticeLocksToUs(new JSONObject().put("response", new JSONArray().put(new JSONObject(lock.toString()).put("spent", true))));
+        assertFalse("a row already marked spent", n.calls.stream().anyMatch(c -> c.startsWith("coinimport")));
+        spentOnNode[0] = true;
+        w.noticeLocksToUs(new JSONObject().put("response", new JSONArray().put(new JSONObject(lock.toString()).put("spent", false))));
+        assertFalse("the node says it is spent now", n.calls.stream().anyMatch(c -> c.startsWith("coinimport")));
+        spentOnNode[0] = false;
+        w.noticeLocksToUs(new JSONObject().put("response", new JSONArray().put(new JSONObject(lock.toString()).put("spent", false))));
+        assertTrue("an unspent lock to us is tracked", n.calls.stream().anyMatch(c -> c.startsWith("coinimport")));
     }
 
     @Test public void chainReadsPassThroughUntouched() throws Exception {
