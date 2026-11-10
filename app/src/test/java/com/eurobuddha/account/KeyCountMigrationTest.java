@@ -1,4 +1,4 @@
-// VENDORED VERBATIM from apks/dexicon 0.3.27 (2c09da7) com/eurobuddha/account/KeyCountMigrationTest.java by scripts/vendor-account.sh — do not edit here; change Dexicon and re-vendor.
+// VENDORED VERBATIM from apks/dexicon 0.3.28 (2806f78) com/eurobuddha/account/KeyCountMigrationTest.java by scripts/vendor-account.sh — do not edit here; change Dexicon and re-vendor.
 package com.eurobuddha.account;
 
 import static org.junit.Assert.*;

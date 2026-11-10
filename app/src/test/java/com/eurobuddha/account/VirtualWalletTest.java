@@ -1,4 +1,4 @@
-// VENDORED VERBATIM from apks/dexicon 0.3.27 (2c09da7) com/eurobuddha/account/VirtualWalletTest.java by scripts/vendor-account.sh — do not edit here; change Dexicon and re-vendor.
+// VENDORED VERBATIM from apks/dexicon 0.3.28 (2806f78) com/eurobuddha/account/VirtualWalletTest.java by scripts/vendor-account.sh — do not edit here; change Dexicon and re-vendor.
 package com.eurobuddha.account;
 
 import static org.junit.Assert.*;
@@ -96,10 +96,6 @@ public class VirtualWalletTest {
         };
         VirtualWallet w = wallet(n);
         String myKey = w.handle("getaddress").getJSONObject("response").getString("publickey");
-        JSONObject young = new JSONObject().put("coinid", "0x698A").put("created", "4900").put("state", new JSONArray().put(new JSONObject().put("port", 4).put("data", myKey)));
-        w.noticeLocksToUs(new JSONObject().put("response", new JSONArray().put(new JSONObject(young.toString()).put("spent", false))));
-        assertFalse("a young lock settles within the tree window: never tracked (its later spend would leave a phantom)",
-                n.calls.stream().anyMatch(c -> c.startsWith("coinimport")));
         JSONObject lock = new JSONObject().put("coinid", "0x698A").put("created", "3000").put("state", new JSONArray().put(new JSONObject().put("port", 4).put("data", myKey)));
         w.noticeLocksToUs(new JSONObject().put("response", new JSONArray().put(new JSONObject(lock.toString()).put("spent", true))));
         assertFalse("a row already marked spent", n.calls.stream().anyMatch(c -> c.startsWith("coinimport")));
@@ -108,7 +104,9 @@ public class VirtualWalletTest {
         assertFalse("the node says it is spent now", n.calls.stream().anyMatch(c -> c.startsWith("coinimport")));
         spentOnNode[0] = false;
         w.noticeLocksToUs(new JSONObject().put("response", new JSONArray().put(new JSONObject(lock.toString()).put("spent", false))));
-        assertTrue("an old unspent lock to us is tracked before it leaves the tree", n.calls.stream().anyMatch(c -> c.startsWith("coinimport")));
+        assertTrue("an unspent lock to us is tracked at first sight (a late claim needs its proof past the tree)",
+                n.calls.stream().anyMatch(c -> c.startsWith("coinimport")));
+        assertTrue("the unspent check includes the mempool", n.calls.stream().anyMatch(c -> c.equals("coins coinid:0x698A checkmempool:true")));
     }
 
     @Test public void chainReadsPassThroughUntouched() throws Exception {
