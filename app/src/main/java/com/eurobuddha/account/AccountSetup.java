@@ -1,4 +1,4 @@
-// VENDORED VERBATIM from apks/dexicon 0.3.21 (84dd0ae) com/eurobuddha/account/AccountSetup.java by scripts/vendor-account.sh — do not edit here; change Dexicon and re-vendor.
+// VENDORED VERBATIM from apks/dexicon 0.3.22 (8fab503) com/eurobuddha/account/AccountSetup.java by scripts/vendor-account.sh — do not edit here; change Dexicon and re-vendor.
 package com.eurobuddha.account;
 
 import android.app.Activity;

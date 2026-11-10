@@ -70,6 +70,16 @@ final class PandaPoolsAccount {
                 ActivityLog.hasPending(c, 0, ActivityLog.CLOSE) || ActivityLog.hasPending(c, 0, ActivityLog.MIGRATE), payouts, exits);
     }
 
+    /** Pools recorded under a Trading Account while none exists here (a device transfer, a lost account): setup must be
+     *  restore-only — only the SAME words may settle them. */
+    static int accountPools(Context c) {
+        if (new AccountVault(c).everCreated()) return 0;   // a lost account has its own restore-only path
+        int n = 0;
+        try { for (Pool p : OwnPoolStore.all(c)) if (p.accountOwned && (!p.retired || !p.drained)) n++; }
+        catch (RuntimeException unreadable) { return 0; }
+        return n;
+    }
+
     /** Forget the cached answer (a closed pool was just proven empty). */
     static void invalidate() { cachedAt = 0; }
 }

@@ -564,13 +564,19 @@ public class MainActivity extends AppCompatActivity {
             com.eurobuddha.account.AccountSetup.show(this, node, this::onAccountReady, true, openPools());
             return;
         }
+        int acctPools = PandaPoolsAccount.accountPools(this);
+        if (acctPools > 0) {   // pools made under a Trading Account (e.g. carried by a device transfer): only its words settle them
+            offering = true;
+            com.eurobuddha.account.AccountSetup.show(this, node, this::onAccountReady, true, acctPools + (acctPools == 1 ? " pool" : " pools"));
+            return;
+        }
         if (PandaPoolsAccount.legacyPools(this)) { proveClosedPools(); return; }
         offering = true;
         com.eurobuddha.account.AccountSetup.show(this, node, this::onAccountReady, false, null);
     }
 
-    private boolean proving;
-    private long provedAt;
+    private static boolean proving;   // process-wide: a recreated screen must not start a second proof
+    private static long provedAt;
 
     /** Closed node-key pools are all that holds the account back: prove them empty on the node and the MegaMMR (the
      *  hand-over's own check), then offer. A pool still holding funds keeps the old path (and is never hidden). */
@@ -580,10 +586,18 @@ public class MainActivity extends AppCompatActivity {
         java.util.List<Pool> closed = PandaPoolsAccount.closedToProve(this);
         if (closed.isEmpty()) return;
         proving = true; provedAt = now;
-        ClosedPoolCheck.run(this, node, closed, (l, r, d) -> { }, () -> ui.post(() -> {
+        java.util.List<String> failed = new java.util.ArrayList<>();
+        ClosedPoolCheck.run(this, node, closed, (l, r, d) -> failed.add(r + (d.isEmpty() ? "" : "\n" + d)), () -> ui.post(() -> {
             proving = false;
             PandaPoolsAccount.invalidate();
-            if (!isFinishing() && !isDestroyed()) offerAccount();
+            if (isFinishing() || isDestroyed()) return;
+            if (!PandaPoolsAccount.legacyPools(this)) { offerAccount(); return; }
+            if (failed.isEmpty()) return;
+            android.widget.TextView t = new android.widget.TextView(this);   // full pool addresses, copyable
+            t.setText(String.join("\n\n", failed)); t.setTextIsSelectable(true);
+            int pp = (int) (20 * getResources().getDisplayMetrics().density); t.setPadding(pp, pp / 2, pp, 0);
+            new androidx.appcompat.app.AlertDialog.Builder(this).setTitle("Closed pools not proven empty")
+                    .setView(t).setPositiveButton("OK", null).show();
         }));
     }
 
