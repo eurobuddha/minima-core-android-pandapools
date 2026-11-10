@@ -393,7 +393,7 @@ public class SwapView extends BaseView {
         row.setPadding(0, Ui.dp(act, 5), 0, Ui.dp(act, 5));
 
         TextView desc = new TextView(act);
-        desc.setText(e.summary); desc.setTextColor(Design.text()); desc.setTextSize(13);
+        desc.setText(e.display()); desc.setTextColor(Design.text()); desc.setTextSize(13);
         // Wraps instead of clipping at one line: a summary can carry a full tokenid when a token name has
         // not resolved, and this row has no tap-to-copy of its own to recover a clipped one from.
         desc.setMaxLines(3);

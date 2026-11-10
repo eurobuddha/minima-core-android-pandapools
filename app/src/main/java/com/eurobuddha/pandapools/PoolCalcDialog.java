@@ -36,7 +36,7 @@ public final class PoolCalcDialog {
     private TextView derived, outMinima, outToken, outRatio, outValue, outHold, outMove, outFees, outK, outBreakEven, note;
     private CurveView curve;
     private boolean syncing = false;   // guards the price-field ↔ slider echo loop
-    private String tok = "mxUSDT";
+    private String tok = "MxUSD";
 
     private PoolCalcDialog(Context c) { ctx = c; }
 

@@ -33,6 +33,10 @@ public final class ActivityLog {
         public final boolean failed;
         int verifiedDepth = -1;
         long verifiedAt;
+        /** The summary as shown. Rows recorded before 0.10.9 named the Minima dollar token by its on-chain name
+         *  ("USDT"/"mxUSDT"); every dollar amount in PandaPools is that token, MxUSD. */
+        public String display() { return summary == null ? "" : summary.replaceAll("\\b(?:mx|Mx)?USDT\\b", "MxUSD"); }
+
         Entry(String type, String summary, String txpowid, int submitBlock, long ts, boolean failed, String failMsg) {
             this.type=type; this.summary=summary; this.txpowid=txpowid; this.originalTxpowid=txpowid; this.submitBlock=submitBlock;
             this.ts=ts; this.failed=failed && !NodeApi.ERR_WRITE_UNCERTAIN.equals(failMsg); this.failMsg=failMsg;
