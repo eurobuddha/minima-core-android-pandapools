@@ -15,7 +15,10 @@ final class PandaPoolsAccount {
     private PandaPoolsAccount() {}
 
     /** No HTLC contracts here (pool coins are tracked by their own script), no wallet-history rows, platform dialogs. */
-    static Account.Config config() { return new Account.Config("PandaPools", null, null, null, null); }
+    static Account.Config config() {
+        return new Account.Config("PandaPools", null, null, null, null,
+                com.eurobuddha.account.AccountKeys.SLOT_PANDAPOOLS);   // PandaPools' own share of every key's one-time leaves
+    }
 
     /** Pools an earlier PandaPools created with the NODE's keys: until they are closed, PandaPools keeps the node-key
      *  path (and does not offer the Trading Account) — "finish before upgrading", as Dexicon does. Never once an

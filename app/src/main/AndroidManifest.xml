@@ -45,6 +45,10 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.PandaPools"
         tools:targetApi="31">
+        <!-- Leaf share of the Trading Account (com.eurobuddha.account.Family / AccountKeys SLOT_PANDAPOOLS): siblings read this to
+             know this build signs only its own one-time leaves. -->
+        <meta-data android:name="com.eurobuddha.account.leafSlot" android:value="2" />
+
         <!-- Restarts the app once after the Trading Account is created (its own process, so the relaunch survives). -->
         <activity
             android:name=".RestartActivity"

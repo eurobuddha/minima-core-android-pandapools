@@ -1,4 +1,4 @@
-// VENDORED VERBATIM from apks/dexicon 0.3.41 (4182981) com/eurobuddha/account/Transport.java by scripts/vendor-account.sh — do not edit here; change Dexicon and re-vendor.
+// VENDORED VERBATIM from apks/dexicon 0.3.46 (b08e33a) com/eurobuddha/account/Transport.java by scripts/vendor-account.sh — do not edit here; change Dexicon and re-vendor.
 package com.eurobuddha.account;
 
 import org.json.JSONObject;

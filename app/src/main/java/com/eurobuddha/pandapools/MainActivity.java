@@ -542,7 +542,8 @@ public class MainActivity extends AppCompatActivity {
     /** First run (or a lost account): set up the Trading Account PandaPools signs with. Node-key pools from before the
      *  account settle the old way until closed — the account is not offered while any remain ("finish before upgrading"). */
     private void offerAccount() {
-        // Dexicon / AtomiX on this phone: the hand-over banner owns that (never cover it with "one app at a time")
+        // Dexicon on this phone (the alternative to AtomiX + PandaPools): its hand-over banner owns that. AtomiX alongside
+        // is fine — the two share the Trading Account, each signing its own leaf share.
         if (com.eurobuddha.account.Family.otherInstalled(this) != null) return;
         if (offering || node == null || com.eurobuddha.account.Account.get(this, node) != null) { lockedTries = 0; return; }
         if (com.eurobuddha.account.Account.exists(this)) {   // vault present but the keystore is busy: retry, delete nothing

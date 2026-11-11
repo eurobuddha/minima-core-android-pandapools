@@ -1,4 +1,4 @@
-// VENDORED VERBATIM from apks/dexicon 0.3.41 (4182981) com/eurobuddha/account/AccountRouteTest.java by scripts/vendor-account.sh — do not edit here; change Dexicon and re-vendor.
+// VENDORED VERBATIM from apks/dexicon 0.3.46 (b08e33a) com/eurobuddha/account/AccountRouteTest.java by scripts/vendor-account.sh — do not edit here; change Dexicon and re-vendor.
 package com.eurobuddha.account;
 
 import static org.junit.Assert.assertEquals;
@@ -16,7 +16,7 @@ public class AccountRouteTest {
     static final Transport NODE = (c, g, t, cb) -> { };
 
     @Test public void withNoAccountWalletVerbsAreRefusedAndChainReadsPass() {
-        Account.configure(new Account.Config("Test", null, null, null, null));
+        Account.configure(new Account.Config("Test", null, null, null, null, AccountKeys.SLOT_DEXICON));
         Context c = RuntimeEnvironment.getApplication();
         assertEquals(Account.Route.NO_ACCOUNT, Account.route(c, NODE, "balance"));
         assertEquals(Account.Route.NO_ACCOUNT, Account.route(c, NODE, "send address:MxG081Z479YMTA95KCJBUW1B3JN0AMTBFVKG1HENPMM9C0GH76HUW4YYQWTRZFH amount:1"));

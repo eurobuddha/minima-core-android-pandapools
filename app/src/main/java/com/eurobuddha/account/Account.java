@@ -1,4 +1,4 @@
-// VENDORED VERBATIM from apks/dexicon 0.3.41 (4182981) com/eurobuddha/account/Account.java by scripts/vendor-account.sh — do not edit here; change Dexicon and re-vendor.
+// VENDORED VERBATIM from apks/dexicon 0.3.46 (b08e33a) com/eurobuddha/account/Account.java by scripts/vendor-account.sh — do not edit here; change Dexicon and re-vendor.
 package com.eurobuddha.account;
 
 import android.content.Context;
@@ -23,8 +23,9 @@ import java.util.concurrent.atomic.AtomicReference;
  * 26cc3983495acafcb1b99f10c744dc506e254b07).
  *
  * <p>Shared by Dexicon, AtomiX and PandaPools (vendored from Dexicon, the single source). The same 24 words give the
- * same keys in all three (domain {@link AccountKeys#DOMAIN}): the apps are mutually exclusive on a phone, and moving
- * between them is a RESTORE of the words — never two of them signing with one account. The prefs and Keystore names
+ * same keys in all three (domain {@link AccountKeys#DOMAIN}). A phone runs AtomiX + PandaPools side by side, or Dexicon
+ * (see {@link Family}); apps holding the same words each sign only their own leaf share (AccountKeys leaf slots), so
+ * their separate counters can never land on the same one-time leaf. The prefs and Keystore names
  * keep their original "dexicon_" spelling so existing vaults open unchanged.
  */
 public final class Account {
@@ -40,11 +41,15 @@ public final class Account {
         public final AccountSetup.Look look;
         /** Extra warning on the setup screen (e.g. funds left at an old node-derived wallet), or null. */
         public final java.util.function.Function<android.app.Activity, String> setupNotice;
+        /** This app's share of every key's one-time leaves ({@link AccountKeys#SLOT_DEXICON}, {@code SLOT_ATOMIX},
+         *  {@code SLOT_PANDAPOOLS}). REQUIRED: two apps holding the same words must never share a slot. */
+        public final int leafSlot;
         public Config(String appName, java.util.Collection<String> contracts, Incoming incoming, AccountSetup.Look look,
-                      java.util.function.Function<android.app.Activity, String> setupNotice) {
+                      java.util.function.Function<android.app.Activity, String> setupNotice, int leafSlot) {
+            if (leafSlot < 0 || leafSlot >= AccountKeys.LEAF_SLOTS) throw new IllegalArgumentException("leafSlot must be 0.." + (AccountKeys.LEAF_SLOTS - 1));
             this.appName = appName;
             this.contracts = java.util.Collections.unmodifiableSet(new HashSet<>(contracts == null ? java.util.Collections.<String>emptySet() : contracts));
-            this.incoming = incoming; this.look = look; this.setupNotice = setupNotice;
+            this.incoming = incoming; this.look = look; this.setupNotice = setupNotice; this.leafSlot = leafSlot;
         }
     }
 
@@ -54,7 +59,7 @@ public final class Account {
                       java.util.List<String> addresses, long nowMs);
     }
 
-    private static volatile Config config = new Config("Trading Account", null, null, null, null);
+    private static volatile Config config = new Config("Trading Account", null, null, null, null, 3);   // never signs: get() refuses until configure()
     private static volatile boolean configured;
     /** Must run before the first {@link #get}: the wallet caches the contract set when it is built (owner port 254 keeps
      *  locks relevant), so an unconfigured account would silently lose it. {@link #get} refuses until then. */
@@ -126,6 +131,11 @@ public final class Account {
         KeyUses uses = new PrefsKeyUses(app);
         keys = AccountVault.MODE_NODE.equals(mode) ? AccountKeys.fromBase(secret, uses, cache) : AccountKeys.fromPhrase(secret, uses, cache);
         keys.setRestoreFloor(restoreFloor);
+        // the share is defined ONCE, by the app's package (Family): a Config that names another app's share is refused
+        int ownSlot = Family.slotOf(app.getPackageName());
+        if (ownSlot >= 0 && ownSlot != config.leafSlot)
+            throw new IllegalStateException("leaf share " + config.leafSlot + " configured, but " + app.getPackageName() + " signs share " + ownSlot);
+        keys.setLeafSlot(config.leafSlot);
         fp[0] = keys.fingerprint();
         final String countKey = "keys_" + fp[0];
         // 0.2.98 / 0.2.99 kept the key count under "keys": migrate it ONLY when it provably belongs to this seed (its

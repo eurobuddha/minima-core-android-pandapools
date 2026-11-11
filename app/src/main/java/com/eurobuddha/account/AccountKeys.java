@@ -1,4 +1,4 @@
-// VENDORED VERBATIM from apks/dexicon 0.3.41 (4182981) com/eurobuddha/account/AccountKeys.java by scripts/vendor-account.sh — do not edit here; change Dexicon and re-vendor.
+// VENDORED VERBATIM from apks/dexicon 0.3.46 (b08e33a) com/eurobuddha/account/AccountKeys.java by scripts/vendor-account.sh — do not edit here; change Dexicon and re-vendor.
 package com.eurobuddha.account;
 
 import org.minima.objects.Address;
@@ -32,8 +32,9 @@ import java.util.Map;
  * raised to the TIME FLOOR: one leaf per {@link #LEAF_MILLIS} ms since {@link #EPOCH_MS} (stock Minima's
  * block-as-key-uses idea, on wall-clock time so a lagging or hostile node cannot pull it back; the caller refuses to
  * sign when the phone clock disagrees with the chain). A restore on any phone therefore starts beyond every leaf an
- * earlier install signed, unless that install out-signed the clock — more than one signature per 2 s on one key,
- * sustained. A key never signs past its capacity (the vendored {@code TreeKey.sign} wraps to leaf 0) — the in-app
+ * earlier install signed, unless that install out-signed the clock — with leaf shares (index mod 4 per app) a
+ * signature can step up to 4 indices, so "out-signed" means more than one signature per 8 s on one key, sustained (the
+ * restore margin is scaled to match). A key never signs past its capacity (the vendored {@code TreeKey.sign} wraps to leaf 0) — the in-app
  * replacement for fork commit 477db548347392692c443bbfa9a4db193c195aab.
  */
 public final class AccountKeys {
@@ -58,6 +59,17 @@ public final class AccountKeys {
     private final Object signLock = new Object();
     /** A restored / node-derived account's minimum leaf on EVERY key (see {@link #restoreFloor}). */
     private volatile int restoreFloor;
+
+    /**
+     * Leaf shares (owner, 11 Nov 2026): AtomiX and PandaPools hold the SAME Trading Account side by side, and Dexicon the
+     * same words on its own phones. Two apps with one seed keep separate counters, so each signs ONLY bottom leaves whose
+     * index mod {@link #LEAF_SLOTS} is its own slot — no two apps can ever sign different data with one leaf. Safe because
+     * only the bottom leaf of a TreeKey signs the transaction; every upper-level leaf signs its child tree's root, the
+     * same bytes every time, so sharing those reveals nothing (TreeKey.sign caches that signature for the same reason).
+     */
+    public static final int LEAF_SLOTS = 4, SLOT_DEXICON = 0, SLOT_ATOMIX = 1, SLOT_PANDAPOOLS = 2;
+    /** This app's leaf share, 0..3; -1 = none (only direct construction in unit tests — Account always sets one). */
+    private volatile int leafSlot = -1;
 
     private AccountKeys(MiniData base, KeyUses uses, PubCache cache) {
         if (base == null || base.getLength() < 16) throw new IllegalArgumentException("account seed missing");
@@ -137,10 +149,20 @@ public final class AccountKeys {
      *  the clock — so a restore on a slow phone never lands on a leaf a fast one already signed. */
     public static int restoreFloor(long nowMillis) {
         long skewLeaves = 2 * (30 * 60_000L) / LEAF_MILLIS;
-        return (int) Math.min(Integer.MAX_VALUE, (long) timeFloor(nowMillis) + skewLeaves + 10_000L);
+        // the out-signing margin scales with the leaf shares: each signature can now step up to LEAF_SLOTS indices
+        return (int) Math.min(Integer.MAX_VALUE, (long) timeFloor(nowMillis) + skewLeaves + 10_000L * LEAF_SLOTS);
     }
 
     public void setRestoreFloor(int floor) { restoreFloor = Math.max(0, floor); }
+
+    public void setLeafSlot(int slot) {
+        if (slot < 0 || slot >= LEAF_SLOTS) throw new IllegalArgumentException("leaf slot must be 0.." + (LEAF_SLOTS - 1));
+        leafSlot = slot;
+    }
+    public int leafSlot() { return leafSlot; }
+
+    /** The smallest index >= {@code n} in {@code slot}'s share. */
+    static int alignToSlot(int n, int slot) { return n + Math.floorMod(slot - n, LEAF_SLOTS); }
 
     /** The lowest leaf a signature at wall-clock {@code nowMillis} may use. */
     public static int timeFloor(long nowMillis) {
@@ -157,8 +179,15 @@ public final class AccountKeys {
                 throw new IllegalStateException("account key " + index + " does not match its cached public key — refusing to sign");
             int floor = Math.max(timeFloor(nowMillis), restoreFloor);
             if (uses.currentUses(index) < floor) uses.recordExternalUses(index, floor);
+            int slot = leafSlot;
+            if (slot >= 0) {   // raise (never lower: MAX rule) to the next leaf in this app's share
+                int cur = uses.currentUses(index), aligned = alignToSlot(cur, slot);
+                if (aligned != cur) uses.recordExternalUses(index, aligned);
+            }
             int leaf = uses.reserveNextUse(index);
             if (leaf < floor) throw new IllegalStateException("account key " + index + " leaf store did not advance — refusing to sign");
+            if (slot >= 0 && Math.floorMod(leaf, LEAF_SLOTS) != slot)
+                throw new IllegalStateException("account key " + index + " leaf " + leaf + " is outside this app's share " + slot + " — refusing to sign");
             if (leaf >= key.getMaxUses())
                 throw new IllegalStateException("account key " + index + " exhausted: " + leaf + " / " + key.getMaxUses()
                         + " one-time signatures used — refusing to sign (would reuse a leaf)");
