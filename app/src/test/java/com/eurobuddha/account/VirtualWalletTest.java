@@ -1,4 +1,4 @@
-// VENDORED VERBATIM from apks/dexicon 0.3.37 (29872ce) com/eurobuddha/account/VirtualWalletTest.java by scripts/vendor-account.sh — do not edit here; change Dexicon and re-vendor.
+// VENDORED VERBATIM from apks/dexicon 0.3.40 (c012dc3) com/eurobuddha/account/VirtualWalletTest.java by scripts/vendor-account.sh — do not edit here; change Dexicon and re-vendor.
 package com.eurobuddha.account;
 
 import static org.junit.Assert.*;
@@ -107,6 +107,27 @@ public class VirtualWalletTest {
         assertTrue("an unspent lock to us is tracked at first sight (a late claim needs its proof past the tree)",
                 n.calls.stream().anyMatch(c -> c.startsWith("coinimport")));
         assertTrue("the unspent check includes the mempool", n.calls.stream().anyMatch(c -> c.equals("coins coinid:0x698A checkmempool:true")));
+    }
+
+    /** A lock from AtomiX 0.2.32 on carries our address at port 253, so the node tracks it (and its spend) itself:
+     *  never imported by hand — an import is what left the 10 Nov phantom. */
+    @Test public void aLockTheNodeAlreadyTracksIsNotImported() throws Exception {
+        FakeNode n = new FakeNode() {
+            @Override public JSONObject call(String cmd) throws Exception {
+                if (cmd.startsWith("coins relevant:true coinid:")) { calls.add(cmd);
+                    return new JSONObject().put("status", true).put("response", new JSONArray().put(new JSONObject().put("coinid", "0x253"))); }
+                if (cmd.startsWith("coinimport") || cmd.startsWith("coinexport")) { calls.add(cmd); return new JSONObject().put("status", true).put("response", new JSONObject().put("data", "0xDA7A")); }
+                return super.call(cmd);
+            }
+        };
+        VirtualWallet w = wallet(n);
+        String myAddr = w.handle("getaddress").getJSONObject("response").getString("address");
+        JSONObject lock = new JSONObject().put("coinid", "0x253").put("spent", false)
+                .put("state", new JSONArray().put(new JSONObject().put("port", 253).put("data", myAddr)));
+        w.noticeLocksToUs(new JSONObject().put("response", new JSONArray().put(lock)));
+        assertFalse(n.calls.stream().anyMatch(c -> c.startsWith("coinimport") || c.startsWith("coinexport")));
+        w.noticeLocksToUs(new JSONObject().put("response", new JSONArray().put(lock)));
+        assertEquals("looked up once, then remembered", 1, n.calls.stream().filter(c -> c.startsWith("coins relevant:true coinid:")).count());
     }
 
     @Test public void chainReadsPassThroughUntouched() throws Exception {
