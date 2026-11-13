@@ -1,4 +1,4 @@
-// VENDORED VERBATIM from apks/dexicon 0.3.49 (a8b2135) com/eurobuddha/account/AnyPhraseAccountTest.java by scripts/vendor-account.sh — do not edit here; change Dexicon and re-vendor.
+// VENDORED VERBATIM from apks/dexicon 0.3.50 (408ecaf) com/eurobuddha/account/AnyPhraseAccountTest.java by scripts/vendor-account.sh — do not edit here; change Dexicon and re-vendor.
 package com.eurobuddha.account;
 
 import static org.junit.Assert.*;
@@ -31,5 +31,16 @@ public class AnyPhraseAccountTest {
         String words = AccountKeysTest.PHRASE;
         assertEquals(Account.fingerprintOfPhrase(AccountVault.cleanPhrase(words)),
                 Account.fingerprintOfPhrase(AccountVault.cleanPhrase(" 1. " + words.toLowerCase().replace(" ", "\n"))));
+    }
+
+    /** Review L2: an older app reads a MODE_ANY secret as a 24-word phrase; the stored form must make it throw, never
+     *  derive another account (a bare 12-word phrase would have cleaned silently). */
+    @Test public void storedAnySecretCannotBeMisreadByAnOlderApp() {
+        String twelve = "abandon ability able about above absent absorb abstract absurd abuse access accident";
+        String stored = AccountVault.ANY_PREFIX + twelve;
+        assertEquals(twelve, AccountVault.anyPhraseOf(stored));
+        try { org.minima.utils.BIP39.cleanSeedPhrase(stored); fail("an older app must fail loudly"); }
+        catch (IllegalArgumentException expected) {}
+        org.minima.utils.BIP39.cleanSeedPhrase(twelve);   // what the bare form would have done: no error
     }
 }
