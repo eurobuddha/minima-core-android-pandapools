@@ -203,19 +203,26 @@ public class HandoverActivity extends AppCompatActivity {
 
     /** The 24 words, re-typed, must be THIS account's (fingerprint): proof the user can restore it in Dexicon. */
     private void confirmWords() {
-        android.widget.EditText in = new android.widget.EditText(this);
-        in.setHint("24 words, separated by spaces");
-        in.setInputType(android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE | android.text.InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
-        in.setImeOptions(android.view.inputmethod.EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING);
+        // One box per word (the account module's WordEntry, as in every 24-word box in Dexicon, AtomiX and PandaPools).
+        com.eurobuddha.account.WordEntry in = new com.eurobuddha.account.WordEntry(this, 0, null, null);
+        android.widget.ScrollView scroll = new android.widget.ScrollView(this);
+        int pad = Math.round(20 * getResources().getDisplayMetrics().density);
+        scroll.setPadding(pad, pad / 2, pad, 0);
+        scroll.addView(in.view);
         androidx.appcompat.app.AlertDialog d = new androidx.appcompat.app.AlertDialog.Builder(this).setTitle("Confirm your 24 words")
-                .setView(in).setNegativeButton("Cancel", null).setPositiveButton("Confirm", null).create();
-        if (d.getWindow() != null) d.getWindow().setFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE, android.view.WindowManager.LayoutParams.FLAG_SECURE);
+                .setView(scroll).setNegativeButton("Cancel", null).setPositiveButton("Confirm", null).create();
+        if (d.getWindow() != null) {
+            d.getWindow().setFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE, android.view.WindowManager.LayoutParams.FLAG_SECURE);
+            d.getWindow().setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
+        }
         d.setOnShowListener(x -> d.getButton(androidx.appcompat.app.AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
             try {
-                String fp = com.eurobuddha.account.Account.fingerprintOfPhrase(com.eurobuddha.account.AccountVault.cleanPhrase(in.getText().toString()));
+                String typed = in.phrase();
+                if (typed == null) { android.widget.Toast.makeText(this, "Word " + in.firstProblem() + " is empty or not one of the 2048 words.", android.widget.Toast.LENGTH_LONG).show(); return; }
+                String fp = com.eurobuddha.account.Account.fingerprintOfPhrase(com.eurobuddha.account.AccountVault.cleanPhrase(typed));
                 String mine = new com.eurobuddha.account.AccountVault(this).lostFingerprint();   // the recorded identity of this phone's account
                 if (mine.isEmpty() || !mine.equalsIgnoreCase(fp)) { android.widget.Toast.makeText(this, "Those are not this account's words.", android.widget.Toast.LENGTH_LONG).show(); return; }
-                wordsConfirmed = true; in.setText(""); d.dismiss(); runChecks(false);
+                wordsConfirmed = true; d.dismiss(); runChecks(false);
             } catch (Exception e) { android.widget.Toast.makeText(this, String.valueOf(e.getMessage()), android.widget.Toast.LENGTH_LONG).show(); }
         }));
         d.show();

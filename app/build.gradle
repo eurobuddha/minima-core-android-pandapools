@@ -11,8 +11,8 @@ android {
         applicationId "com.eurobuddha.pandapools" + (project.hasProperty('stockTest') ? '.stock' : '')
         minSdk 28
         targetSdk 35
-        versionCode 1015
-        versionName "0.10.15"
+        versionCode 1016
+        versionName "0.10.16"
 
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
     }
