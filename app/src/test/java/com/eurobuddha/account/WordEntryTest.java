@@ -1,4 +1,4 @@
-// VENDORED VERBATIM from apks/dexicon 0.3.48 (3c65148) com/eurobuddha/account/WordEntryTest.java by scripts/vendor-account.sh — do not edit here; change Dexicon and re-vendor.
+// VENDORED VERBATIM from apks/dexicon 0.3.49 (a8b2135) com/eurobuddha/account/WordEntryTest.java by scripts/vendor-account.sh — do not edit here; change Dexicon and re-vendor.
 package com.eurobuddha.account;
 
 import static org.junit.Assert.*;
@@ -60,5 +60,16 @@ public class WordEntryTest {
         String p = String.join(" ", Collections.nCopies(24, "abandon"));
         assertEquals(p, WordEntry.join(Arrays.asList(p.split(" "))));
         assertEquals(p.toUpperCase(), AccountVault.cleanPhrase(p));
+    }
+
+    @Test public void anyPhraseIsForRealCustomPhrasesOnly() {
+        assertEquals("too short", "A phrase needs at least 16 characters.", WordEntry.anyPhraseProblem("short phrase", false));
+        assertNull(WordEntry.anyPhraseProblem("  My very own Phrase, 2019!  ", false));
+        assertNotNull("24 list words belong in the boxes", WordEntry.anyPhraseProblem(PLAIN, false));
+        assertNotNull("...even typed messy", WordEntry.anyPhraseProblem("1. " + PLAIN.toLowerCase().replace(" ", "\n"), false));
+        assertNull("23 list words is a custom phrase", WordEntry.anyPhraseProblem(PLAIN.substring(0, PLAIN.lastIndexOf(' ')), false));
+        assertNull("a colon is fine in the app", WordEntry.anyPhraseProblem("my secret: the long one", false));
+        for (String bad : new String[]{"my secret: the long one", "my \"quoted\" long phrase", "two; commands here please"})
+            assertNotNull("node commands refuse it: " + bad, WordEntry.anyPhraseProblem(bad, true));
     }
 }

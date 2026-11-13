@@ -204,7 +204,7 @@ public class HandoverActivity extends AppCompatActivity {
     /** The 24 words, re-typed, must be THIS account's (fingerprint): proof the user can restore it in Dexicon. */
     private void confirmWords() {
         // One box per word (the account module's WordEntry, as in every 24-word box in Dexicon, AtomiX and PandaPools).
-        com.eurobuddha.account.WordEntry in = new com.eurobuddha.account.WordEntry(this, 0, null, null);
+        com.eurobuddha.account.WordEntry in = new com.eurobuddha.account.WordEntry(this, 0, null, null).enableAnyPhrase(false);
         android.widget.ScrollView scroll = new android.widget.ScrollView(this);
         int pad = Math.round(20 * getResources().getDisplayMetrics().density);
         scroll.setPadding(pad, pad / 2, pad, 0);
@@ -218,8 +218,9 @@ public class HandoverActivity extends AppCompatActivity {
         d.setOnShowListener(x -> d.getButton(androidx.appcompat.app.AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
             try {
                 String typed = in.phrase();
-                if (typed == null) { android.widget.Toast.makeText(this, "Word " + in.firstProblem() + " is empty or not one of the 2048 words.", android.widget.Toast.LENGTH_LONG).show(); return; }
-                String fp = com.eurobuddha.account.Account.fingerprintOfPhrase(com.eurobuddha.account.AccountVault.cleanPhrase(typed));
+                if (typed == null) { android.widget.Toast.makeText(this, in.problem(), android.widget.Toast.LENGTH_LONG).show(); return; }
+                String fp = in.isAnyPhrase() ? com.eurobuddha.account.Account.fingerprintOfAnyPhrase(typed)
+                        : com.eurobuddha.account.Account.fingerprintOfPhrase(com.eurobuddha.account.AccountVault.cleanPhrase(typed));
                 String mine = new com.eurobuddha.account.AccountVault(this).lostFingerprint();   // the recorded identity of this phone's account
                 if (mine.isEmpty() || !mine.equalsIgnoreCase(fp)) { android.widget.Toast.makeText(this, "Those are not this account's words.", android.widget.Toast.LENGTH_LONG).show(); return; }
                 wordsConfirmed = true; d.dismiss(); runChecks(false);

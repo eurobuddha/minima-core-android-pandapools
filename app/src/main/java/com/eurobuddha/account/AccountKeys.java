@@ -1,4 +1,4 @@
-// VENDORED VERBATIM from apks/dexicon 0.3.48 (3c65148) com/eurobuddha/account/AccountKeys.java by scripts/vendor-account.sh — do not edit here; change Dexicon and re-vendor.
+// VENDORED VERBATIM from apks/dexicon 0.3.49 (a8b2135) com/eurobuddha/account/AccountKeys.java by scripts/vendor-account.sh — do not edit here; change Dexicon and re-vendor.
 package com.eurobuddha.account;
 
 import org.minima.objects.Address;
@@ -78,6 +78,13 @@ public final class AccountKeys {
 
     public static AccountKeys fromPhrase(String phrase, KeyUses uses, PubCache cache) {
         MiniData seed = BIP39.convertStringToSeed(BIP39.cleanSeedPhrase(phrase));
+        return new AccountKeys(Crypto.getInstance().hashObjects(new MiniString(DOMAIN), seed), uses, cache);
+    }
+
+    /** A free-form phrase (AccountVault.MODE_ANY): the same domain-separated recipe as {@link #fromPhrase}, but the phrase
+     *  is hashed exactly as made (trimmed) - like the node's anyphrase:true / -anyseed - instead of cleaned to list words. */
+    public static AccountKeys fromAnyPhrase(String phrase, KeyUses uses, PubCache cache) {
+        MiniData seed = BIP39.convertStringToSeed(phrase.trim());
         return new AccountKeys(Crypto.getInstance().hashObjects(new MiniString(DOMAIN), seed), uses, cache);
     }
 

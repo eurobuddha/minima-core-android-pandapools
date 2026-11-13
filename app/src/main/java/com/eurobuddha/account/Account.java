@@ -1,4 +1,4 @@
-// VENDORED VERBATIM from apks/dexicon 0.3.48 (3c65148) com/eurobuddha/account/Account.java by scripts/vendor-account.sh — do not edit here; change Dexicon and re-vendor.
+// VENDORED VERBATIM from apks/dexicon 0.3.49 (a8b2135) com/eurobuddha/account/Account.java by scripts/vendor-account.sh — do not edit here; change Dexicon and re-vendor.
 package com.eurobuddha.account;
 
 import android.content.Context;
@@ -129,7 +129,9 @@ public final class Account {
             public void put(int i, String p) { if (!fp[0].isEmpty()) sp.edit().putString(key(i), p).commit(); }
         };
         KeyUses uses = new PrefsKeyUses(app);
-        keys = AccountVault.MODE_NODE.equals(mode) ? AccountKeys.fromBase(secret, uses, cache) : AccountKeys.fromPhrase(secret, uses, cache);
+        keys = AccountVault.MODE_NODE.equals(mode) ? AccountKeys.fromBase(secret, uses, cache)
+                : AccountVault.MODE_ANY.equals(mode) ? AccountKeys.fromAnyPhrase(secret, uses, cache)
+                : AccountKeys.fromPhrase(secret, uses, cache);
         keys.setRestoreFloor(restoreFloor);
         // the share is defined ONCE, by the app's package (Family): a Config that names another app's share is refused
         int ownSlot = Family.slotOf(app.getPackageName());
@@ -247,6 +249,7 @@ public final class Account {
 
     /** The fingerprint a typed phrase / node base would give: a restore must match the lost account's. */
     public static String fingerprintOfPhrase(String phrase) { return AccountKeys.fromPhrase(phrase, NO_USES, null).fingerprint(); }
+    public static String fingerprintOfAnyPhrase(String phrase) { return AccountKeys.fromAnyPhrase(phrase, NO_USES, null).fingerprint(); }
     public static String fingerprintOfBase(String base) { return AccountKeys.fromBase(base, NO_USES, null).fingerprint(); }
     private static final KeyUses NO_USES = new KeyUses() {
         public int currentUses(int k) { return 0; }

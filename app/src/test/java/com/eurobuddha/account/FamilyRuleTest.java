@@ -1,4 +1,4 @@
-// VENDORED VERBATIM from apks/dexicon 0.3.48 (3c65148) com/eurobuddha/account/FamilyRuleTest.java by scripts/vendor-account.sh — do not edit here; change Dexicon and re-vendor.
+// VENDORED VERBATIM from apks/dexicon 0.3.49 (a8b2135) com/eurobuddha/account/FamilyRuleTest.java by scripts/vendor-account.sh — do not edit here; change Dexicon and re-vendor.
 package com.eurobuddha.account;
 
 import static org.junit.Assert.*;

@@ -8,7 +8,7 @@ cd "$(dirname "$0")/.."
 DEX=${DEXICON:-../dexicon}
 P=com/eurobuddha/account
 MAIN="KeyUses PrefsKeyUses AccountKeys AccountVault VirtualWallet Account AccountSetup Transport Family ArchiveProofs WordEntry"
-TESTS="AccountKeysTest VirtualWalletTest KeyCountMigrationTest AccountTestAccess SameKeysEverywhereTest AccountRouteTest LeafShareTest FamilyRuleTest FamilyInstalledTest WordEntryTest"
+TESTS="AccountKeysTest VirtualWalletTest KeyCountMigrationTest AccountTestAccess SameKeysEverywhereTest AccountRouteTest LeafShareTest FamilyRuleTest FamilyInstalledTest WordEntryTest AnyPhraseAccountTest"
 VER=$(grep -E 'versionName' "$DEX/app/build.gradle" | head -1 | grep -oE '"[^"]+"' | tr -d '"')
 SHA=$(git -C "$DEX" rev-parse --short HEAD 2>/dev/null || echo unknown)
 head_for() { echo "// VENDORED VERBATIM from apks/dexicon $VER ($SHA) $1 by scripts/vendor-account.sh — do not edit here; change Dexicon and re-vendor."; }
